@@ -98,6 +98,7 @@ loop {
 
 /// https://github.com/WireGuard/wireguard-go/blob/master/tun/offload_linux.go
 use crate::platform::linux::checksum::{checksum, pseudo_header_checksum_no_fold};
+use ahash::RandomState as AHashState;
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use libc::{IPPROTO_TCP, IPPROTO_UDP};
@@ -392,7 +393,7 @@ pub struct TcpFlowKey {
 /// - Memory pooling reduces allocations
 /// - State is maintained across multiple recv_multiple calls
 pub struct TcpGROTable {
-    items_by_flow: HashMap<TcpFlowKey, Vec<TcpGROItem>>,
+    items_by_flow: HashMap<TcpFlowKey, Vec<TcpGROItem>, AHashState>,
     items_pool: Vec<Vec<TcpGROItem>>,
 }
 
@@ -409,7 +410,7 @@ impl TcpGROTable {
             items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
         }
         TcpGROTable {
-            items_by_flow: HashMap::with_capacity(IDEAL_BATCH_SIZE),
+            items_by_flow: HashMap::with_capacity_and_hasher(IDEAL_BATCH_SIZE, AHashState::new()),
             items_pool,
         }
     }
@@ -558,7 +559,7 @@ pub struct UdpFlowKey {
 
 ///  udpGROTable holds flow and coalescing information for the purposes of UDP GRO.
 pub struct UdpGROTable {
-    items_by_flow: HashMap<UdpFlowKey, Vec<UdpGROItem>>,
+    items_by_flow: HashMap<UdpFlowKey, Vec<UdpGROItem>, AHashState>,
     items_pool: Vec<Vec<UdpGROItem>>,
 }
 
@@ -575,7 +576,7 @@ impl UdpGROTable {
             items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
         }
         UdpGROTable {
-            items_by_flow: HashMap::with_capacity(IDEAL_BATCH_SIZE),
+            items_by_flow: HashMap::with_capacity_and_hasher(IDEAL_BATCH_SIZE, AHashState::new()),
             items_pool,
         }
     }
