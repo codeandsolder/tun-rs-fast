@@ -13,6 +13,7 @@ documentation = "https://docs.rs/tun-rs"
 crate-type = ["staticlib", "cdylib", "lib"]
 
 [dependencies]
+ahash = "0.8"
 bytes = { version = "1" }
 log = "0.4"
 blocking = { version = "1.6", optional = true }
