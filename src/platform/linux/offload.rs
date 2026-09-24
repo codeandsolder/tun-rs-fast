@@ -101,6 +101,7 @@ use crate::platform::linux::checksum::{checksum, pseudo_header_checksum_no_fold}
 use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use libc::{IPPROTO_TCP, IPPROTO_UDP};
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io;
 
@@ -451,19 +452,28 @@ impl TcpGROTable {
         bufs_index: usize,
     ) -> Option<&mut Vec<TcpGROItem>> {
         let key = TcpFlowKey::new(pkt, src_addr_offset, dst_addr_offset, tcph_offset);
-        if self.items_by_flow.contains_key(&key) {
-            return self.items_by_flow.get_mut(&key);
+        match self.items_by_flow.entry(key) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let item = TcpGROItem {
+                    key,
+                    bufs_index: bufs_index.try_into().expect("bufs_index exceeds u16::MAX"),
+                    num_merged: 0,
+                    gso_size: pkt[tcph_offset + tcph_len..]
+                        .len()
+                        .try_into()
+                        .expect("gso_size exceeds u16::MAX"),
+                    iph_len: tcph_offset.try_into().expect("iph_len exceeds u8::MAX"),
+                    tcph_len: tcph_len.try_into().expect("tcph_len exceeds u8::MAX"),
+                    sent_seq: BigEndian::read_u32(&pkt[tcph_offset + 4..tcph_offset + 8]),
+                    psh_set: pkt[tcph_offset + TCP_FLAGS_OFFSET] & TCP_FLAG_PSH != 0,
+                };
+                let mut items = self.items_pool.pop().unwrap_or_default();
+                items.push(item);
+                entry.insert(items);
+                None
+            }
         }
-        // Insert the new item into the table
-        self.insert(
-            pkt,
-            src_addr_offset,
-            dst_addr_offset,
-            tcph_offset,
-            tcph_len,
-            bufs_index,
-        );
-        None
     }
     /// insert an item in the table for the provided packet and packet metadata.
     fn insert(
@@ -609,19 +619,24 @@ impl UdpGROTable {
         bufs_index: usize,
     ) -> Option<&mut Vec<UdpGROItem>> {
         let key = UdpFlowKey::new(pkt, src_addr_offset, dst_addr_offset, udph_offset);
-        if self.items_by_flow.contains_key(&key) {
-            self.items_by_flow.get_mut(&key)
-        } else {
-            // If the flow does not exist, insert a new entry.
-            self.insert(
-                pkt,
-                src_addr_offset,
-                dst_addr_offset,
-                udph_offset,
-                bufs_index,
-                false,
-            );
-            None
+        match self.items_by_flow.entry(key) {
+            Entry::Occupied(entry) => Some(entry.into_mut()),
+            Entry::Vacant(entry) => {
+                let item = UdpGROItem {
+                    key,
+                    bufs_index: bufs_index.try_into().expect("bufs_index exceeds u16::MAX"),
+                    num_merged: 0,
+                    gso_size: (pkt.len() - (udph_offset + UDP_H_LEN))
+                        .try_into()
+                        .expect("gso_size exceeds u16::MAX"),
+                    iph_len: udph_offset.try_into().expect("iph_len exceeds u8::MAX"),
+                    c_sum_known_invalid: false,
+                };
+                let mut items = self.items_pool.pop().unwrap_or_default();
+                items.push(item);
+                entry.insert(items);
+                None
+            }
         }
     }
     /// Inserts an item in the table for the provided packet and its metadata.
