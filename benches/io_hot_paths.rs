@@ -1,5 +1,6 @@
 use bytes::{Bytes, BytesMut};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
+use std::hint::black_box;
 use tun_rs::async_framed::{BytesCodec, Decoder, Encoder};
 
 fn bench_framed_codec(c: &mut Criterion) {
