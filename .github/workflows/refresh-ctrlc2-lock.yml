@@ -1,0 +1,36 @@
+name: Refresh ctrlc2 lockfile
+
+on:
+  push:
+    branches:
+      - maintenance/ctrlc2-v4-final
+    paths:
+      - Cargo.toml
+      - .github/workflows/refresh-ctrlc2-lock.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: maintenance/ctrlc2-v4-final
+      - name: Install Rust 1.98.1
+        run: rustup toolchain install 1.98.1 --profile minimal
+      - name: Update ctrlc2 lock entry
+        run: cargo +1.98.1 update -p ctrlc2 --precise 4.0.0
+      - name: Commit lockfile
+        run: |
+          if git diff --quiet -- Cargo.lock; then
+            echo "Cargo.lock already current"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.lock
+          git commit -m "chore(deps): refresh ctrlc2 lockfile"
+          git push origin HEAD:maintenance/ctrlc2-v4-final
