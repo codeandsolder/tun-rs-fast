@@ -26,18 +26,14 @@ pub use self::async_io::AsyncDevice;
 
 impl FromRawFd for AsyncDevice {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        match AsyncDevice::from_fd(fd) {
-            Ok(device) => device,
-            Err(_) => std::process::abort(),
-        }
+        // SAFETY: FromRawFd transfers ownership of a valid open descriptor; from_fd
+        // consumes that same ownership contract and aborts rather than leaking on failure.
+        unsafe { Self::from_fd(fd).unwrap_or_else(|_| std::process::abort()) }
     }
 }
 impl IntoRawFd for AsyncDevice {
     fn into_raw_fd(self) -> RawFd {
-        match self.into_fd() {
-            Ok(fd) => fd,
-            Err(_) => std::process::abort(),
-        }
+        self.into_fd().unwrap_or_else(|_| std::process::abort())
     }
 }
 impl AsRawFd for AsyncDevice {
@@ -60,8 +56,8 @@ impl AsyncDevice {
     /// # Errors
     ///
     /// Returns an error if the selected async runtime cannot register the device.
-    pub fn new(device: SyncDevice) -> io::Result<AsyncDevice> {
-        AsyncDevice::new_dev(device.0)
+    pub fn new(device: SyncDevice) -> io::Result<Self> {
+        Self::new_dev(device.0)
     }
 
     /// # Safety
@@ -71,8 +67,10 @@ impl AsyncDevice {
     /// # Errors
     ///
     /// Returns an error if the descriptor is invalid or async runtime registration fails.
-    pub unsafe fn from_fd(fd: RawFd) -> io::Result<AsyncDevice> {
-        AsyncDevice::new_dev(DeviceImpl::from_fd(fd)?)
+    pub unsafe fn from_fd(fd: RawFd) -> io::Result<Self> {
+        // SAFETY: this function's contract transfers ownership of a valid open descriptor
+        // directly to DeviceImpl before registering it with the async runtime.
+        unsafe { Self::new_dev(DeviceImpl::from_fd(fd)?) }
     }
 
     /// # Safety
@@ -81,7 +79,9 @@ impl AsyncDevice {
     /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        AsyncDevice::new_dev(DeviceImpl::borrow_raw(fd)?)
+        // SAFETY: this function's contract guarantees fd remains live externally;
+        // DeviceImpl marks the descriptor borrowed so the async wrapper will not close it.
+        unsafe { Self::new_dev(DeviceImpl::borrow_raw(fd)?) }
     }
 
     /// Consumes the device and returns the owned raw file descriptor.
@@ -299,7 +299,7 @@ impl AsyncDevice {
     ///
     /// Returns an error if another multi-queue attachment cannot be created or registered.
     pub fn try_clone(&self) -> io::Result<Self> {
-        AsyncDevice::new_dev(self.get_ref().try_clone()?)
+        Self::new_dev(self.get_ref().try_clone()?)
     }
     /// Recv a packet from the device.
     /// If offload is enabled. This method can be used to obtain processed data.

@@ -27,10 +27,8 @@ impl FromRawFd for DeviceImpl {
     /// If the descriptor violates this unsafe contract, construction aborts the process rather
     /// than returning a partially initialized device.
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        match DeviceImpl::from_fd(fd) {
-            Ok(device) => device,
-            Err(_) => std::process::abort(),
-        }
+        // SAFETY: FromRawFd's documented contract guarantees fd is valid and ownership is transferred to this DeviceImpl.
+        unsafe { Self::from_fd(fd).unwrap_or_else(|_| std::process::abort()) }
     }
 }
 impl AsRawFd for DeviceImpl {
@@ -40,6 +38,7 @@ impl AsRawFd for DeviceImpl {
 }
 impl AsFd for DeviceImpl {
     fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: self keeps the underlying descriptor alive for at least the lifetime of the returned BorrowedFd.
         unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
     }
 }
@@ -53,8 +52,11 @@ impl DeviceImpl {
     /// # Safety
     /// The fd passed in must be an owned file descriptor; in particular, it must be open.
     pub(crate) unsafe fn from_fd(fd: RawFd) -> io::Result<Self> {
-        let tun = Fd::new_unchecked(fd);
-        DeviceImpl::from_tun(Tun::new(tun))
+        // SAFETY: from_fd's contract transfers ownership of a valid open descriptor, so constructing an owning Fd is valid.
+        unsafe {
+            let tun = Fd::new_unchecked(fd);
+            Self::from_tun(Tun::new(tun))
+        }
     }
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
@@ -62,8 +64,11 @@ impl DeviceImpl {
     /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        let tun = Fd::new_unchecked_with_borrow(fd, true);
-        DeviceImpl::from_tun(Tun::new(tun))
+        // SAFETY: borrow_raw's contract guarantees fd stays valid externally; the Fd wrapper is explicitly marked borrowed and will not close it.
+        unsafe {
+            let tun = Fd::new_unchecked_with_borrow(fd, true);
+            Self::from_tun(Tun::new(tun))
+        }
     }
     pub(crate) fn is_nonblocking(&self) -> io::Result<bool> {
         self.tun.is_nonblocking()
@@ -176,6 +181,7 @@ impl DeviceImpl {
     }
     pub(crate) fn if_index_impl(&self) -> io::Result<u32> {
         let if_name = std::ffi::CString::new(self.name_impl()?)?;
+        // SAFETY: CString guarantees a NUL-terminated name pointer that remains live for the synchronous if_nametoindex call.
         unsafe { Ok(libc::if_nametoindex(if_name.as_ptr())) }
     }
     /// Retrieves all IP addresses associated with the network interface.
@@ -238,11 +244,12 @@ impl DeviceImpl {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub(crate) unsafe fn ctl() -> io::Result<Fd> {
-    Fd::new(libc::socket(AF_INET, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0))
+pub(in crate::platform) fn ctl() -> io::Result<Fd> {
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel; Fd::new validates the latter before taking ownership.
+    unsafe { Fd::new(libc::socket(AF_INET, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0)) }
 }
 #[cfg(target_os = "macos")]
-pub(crate) unsafe fn ctl() -> io::Result<Fd> {
+pub(in crate::platform) fn ctl() -> io::Result<Fd> {
     let fd = Fd::new(libc::socket(AF_INET, SOCK_DGRAM, 0))?;
     _ = fd.set_cloexec();
     Ok(fd)
@@ -253,11 +260,12 @@ pub(crate) unsafe fn ctl() -> io::Result<Fd> {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub(crate) unsafe fn ctl_v6() -> io::Result<Fd> {
-    Fd::new(libc::socket(AF_INET6, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0))
+pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel; Fd::new validates the latter before taking ownership.
+    unsafe { Fd::new(libc::socket(AF_INET6, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0)) }
 }
 #[cfg(target_os = "macos")]
-pub(crate) unsafe fn ctl_v6() -> io::Result<Fd> {
+pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
     let fd = Fd::new(libc::socket(AF_INET6, SOCK_DGRAM, 0))?;
     _ = fd.set_cloexec();
     Ok(fd)

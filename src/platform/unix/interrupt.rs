@@ -177,6 +177,8 @@ impl Fd {
             },
         ];
 
+        // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
+        // the synchronous call; both descriptors are owned/borrowed live descriptors.
         let result = unsafe {
             libc::poll(
                 fds.as_mut_ptr(),
@@ -226,6 +228,8 @@ impl Fd {
             },
         ];
 
+        // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
+        // the synchronous call; both descriptors remain live for this method.
         let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
 
         if result == -1 {
@@ -421,6 +425,8 @@ impl InterruptEvent {
     pub fn new() -> io::Result<Self> {
         let mut fds: [libc::c_int; 2] = [0; 2];
 
+        // SAFETY: fds points to writable storage for exactly two descriptors; on success
+        // pipe initializes both entries and ownership is immediately transferred into Fd.
         unsafe {
             if libc::pipe(fds.as_mut_ptr()) == -1 {
                 return Err(io::Error::last_os_error());
@@ -506,6 +512,10 @@ impl InterruptEvent {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state lock must cover both the state transition and pipe signal so reset cannot race between them"
+    )]
     pub fn trigger_value(&self, val: i32) -> io::Result<()> {
         if val == 0 {
             return Err(io::Error::new(
@@ -522,6 +532,8 @@ impl InterruptEvent {
         }
         *guard = val;
         let buf: [u8; 8] = 1u64.to_ne_bytes();
+        // SAFETY: write_fd is owned and live, and buf is a valid readable byte array
+        // retained for the entire synchronous write syscall.
         let res = unsafe { libc::write(self.write_fd.as_raw_fd(), buf.as_ptr().cast(), buf.len()) };
         if res == -1 {
             let e = io::Error::last_os_error();
@@ -620,6 +632,10 @@ impl InterruptEvent {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the state lock must remain held while draining the pipe so a concurrent trigger cannot interleave a new signal"
+    )]
     pub fn reset(&self) -> io::Result<()> {
         let mut buf = [0; 8];
         let mut guard = self
@@ -628,6 +644,8 @@ impl InterruptEvent {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = 0;
         loop {
+            // SAFETY: read_fd is owned and live, and buf is valid writable storage kept
+            // alive for each synchronous read while the reset lock prevents signal races.
             unsafe {
                 let res = libc::read(self.read_fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len());
                 if res == -1 {

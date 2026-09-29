@@ -2,6 +2,10 @@ mod sys;
 
 mod checksum;
 mod device;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the offload implementation is shared inside the crate but is not a standalone public module"
+)]
 pub(crate) mod offload;
 #[doc(hidden)]
 pub use checksum::{checksum, checksum_no_fold};

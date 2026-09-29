@@ -82,7 +82,7 @@ pub(crate) fn generate_packet_information(_ipv6: bool) -> [u8; PIL] {
     }
 }
 
-pub(crate) struct Tun {
+pub struct Tun {
     pub(crate) fd: Fd,
     #[cfg(any(
         target_os = "macos",
@@ -96,7 +96,7 @@ pub(crate) struct Tun {
 }
 
 impl Tun {
-    pub(crate) fn new(fd: Fd) -> Self {
+    pub(crate) const fn new(fd: Fd) -> Self {
         Self {
             fd,
             #[cfg(any(
@@ -110,10 +110,10 @@ impl Tun {
             ignore_packet_information: AtomicBool::new(true),
         }
     }
-    pub fn is_nonblocking(&self) -> io::Result<bool> {
+    pub(in crate::platform) fn is_nonblocking(&self) -> io::Result<bool> {
         self.fd.is_nonblocking()
     }
-    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+    pub(in crate::platform) fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.fd.set_nonblocking(nonblocking)
     }
     #[cfg(not(any(

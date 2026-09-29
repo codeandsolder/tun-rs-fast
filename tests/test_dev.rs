@@ -413,6 +413,8 @@ fn create_tun() -> TestResult {
     {
         use std::os::fd::IntoRawFd;
         let fd = device.into_raw_fd();
+        // SAFETY: IntoRawFd transfers ownership of the still-open TUN/TAP descriptor;
+        // SyncDevice::from_fd immediately takes over that ownership.
         unsafe {
             let sync_device = SyncDevice::from_fd(fd)?;
             let dev_name = sync_device.name()?;
@@ -451,6 +453,8 @@ fn create_tap() -> TestResult {
     {
         use std::os::fd::IntoRawFd;
         let fd = device.into_raw_fd();
+        // SAFETY: IntoRawFd transfers ownership of the still-open TUN/TAP descriptor;
+        // SyncDevice::from_fd immediately takes over that ownership.
         unsafe {
             let sync_device = SyncDevice::from_fd(fd)?;
             let dev_name = sync_device.name()?;

@@ -168,6 +168,10 @@ Always ensure proper lifetime management when using these methods.
 */
 
 #[cfg(unix)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the async Unix backend must stay crate-visible without leaking through the public async-device glob re-export"
+)]
 pub(crate) mod unix;
 #[cfg(all(unix, not(target_os = "macos")))]
 pub use unix::AsyncDevice;

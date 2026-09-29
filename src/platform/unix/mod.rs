@@ -6,7 +6,7 @@ mod sockaddr;
     target_os = "netbsd",
     target_os = "macos"
 ))]
-pub(crate) use sockaddr::sockaddr_union;
+pub(in crate::platform) use sockaddr::sockaddr_union;
 
 #[cfg(any(
     all(target_os = "linux", not(target_env = "ohos")),
@@ -15,18 +15,18 @@ pub(crate) use sockaddr::sockaddr_union;
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub(crate) use sockaddr::ipaddr_to_sockaddr;
+pub(in crate::platform) use sockaddr::ipaddr_to_sockaddr;
 
 mod fd;
-pub(crate) use self::fd::Fd;
+pub use self::fd::Fd;
 #[cfg(feature = "interruptible")]
 mod interrupt;
 #[cfg(feature = "interruptible")]
 pub use interrupt::InterruptEvent;
 mod tun;
-pub(crate) use self::tun::Tun;
+pub use self::tun::Tun;
 
-pub(crate) mod device;
+pub mod device;
 
 #[cfg(all(
     unix,

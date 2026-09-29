@@ -1,4 +1,8 @@
 #[cfg(unix)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the Unix backend must stay crate-visible without leaking through the public platform glob re-export"
+)]
 pub(crate) mod unix;
 
 #[cfg(all(
@@ -20,6 +24,10 @@ pub use unix::InterruptEvent;
 #[cfg(feature = "interruptible")]
 pub use windows::InterruptEvent;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "the Linux backend must stay crate-visible without becoming a public module through the platform glob re-export"
+)]
 pub(crate) mod linux;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub use self::linux::*;
@@ -66,9 +74,9 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub(crate) const ETHER_ADDR_LEN: u8 = 6;
+const ETHER_ADDR_LEN: u8 = 6;
 
-pub(crate) fn get_if_addrs_by_name(if_name: &str) -> std::io::Result<Vec<Interface>> {
+fn get_if_addrs_by_name(if_name: &str) -> std::io::Result<Vec<Interface>> {
     let addrs = getifaddrs::getifaddrs()?;
     let ifs = addrs.filter(|v| v.name == if_name).collect();
     Ok(ifs)
@@ -185,7 +193,8 @@ impl SyncDevice {
     ///
     /// Returns an I/O error reported by the underlying platform device operation.
     pub unsafe fn from_fd(fd: RawFd) -> std::io::Result<Self> {
-        Ok(SyncDevice(DeviceImpl::from_fd(fd)?))
+        // SAFETY: from_fd's documented contract transfers ownership of a valid open descriptor to DeviceImpl.
+        unsafe { Ok(Self(DeviceImpl::from_fd(fd)?)) }
     }
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
@@ -194,7 +203,8 @@ impl SyncDevice {
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     #[cfg(unix)]
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> std::io::Result<Self> {
-        Ok(SyncDevice(DeviceImpl::borrow_raw(fd)?))
+        // SAFETY: borrow_raw's documented contract guarantees fd remains valid externally; DeviceImpl preserves borrowed ownership.
+        unsafe { Ok(Self(DeviceImpl::borrow_raw(fd)?)) }
     }
     /// Receives data from the device into the provided buffer.
     ///
@@ -286,6 +296,7 @@ impl SyncDevice {
     ///
     /// Returns an I/O error reported by the underlying platform device operation.
     pub fn shutdown(&self) -> std::io::Result<()> {
+        let _ = self;
         Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
     /// Reads data into the provided buffer, with support for interruption.
@@ -860,9 +871,9 @@ impl SyncDevice {
     /// # Errors
     ///
     /// Returns an I/O error reported by the underlying platform device operation.
-    pub fn try_clone(&self) -> std::io::Result<SyncDevice> {
+    pub fn try_clone(&self) -> std::io::Result<Self> {
         let device_impl = self.0.try_clone()?;
-        Ok(SyncDevice(device_impl))
+        Ok(Self(device_impl))
     }
 }
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
@@ -916,10 +927,8 @@ impl Deref for SyncDevice {
 )]
 impl FromRawFd for SyncDevice {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        match SyncDevice::from_fd(fd) {
-            Ok(device) => device,
-            Err(_) => std::process::abort(),
-        }
+        // SAFETY: FromRawFd's contract guarantees fd is a valid owned descriptor transferred to this SyncDevice.
+        unsafe { Self::from_fd(fd).unwrap_or_else(|_| std::process::abort()) }
     }
 }
 #[cfg(unix)]
@@ -935,6 +944,7 @@ impl AsRawFd for SyncDevice {
 )]
 impl AsFd for SyncDevice {
     fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: self keeps the underlying descriptor alive for at least the lifetime of the returned BorrowedFd.
         unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
     }
 }

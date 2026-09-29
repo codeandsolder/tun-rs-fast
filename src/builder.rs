@@ -260,7 +260,7 @@ pub enum Layer {
 /// This structure stores settings such as the device name, operating layer,
 /// and platform-specific parameters (e.g., GUID, wintun file, ring capacity on Windows).
 #[derive(Clone, Default, Debug)]
-pub(crate) struct DeviceConfig {
+pub struct DeviceConfig {
     /// The name of the device/interface.
     pub(crate) dev_name: Option<String>,
     /// The description of the device/interface.
@@ -431,7 +431,7 @@ impl DeviceBuilderGuard<'_> {
         target_os = "macos",
         target_os = "netbsd"
     ))]
-    pub fn mac_addr(&mut self, mac_addr: [u8; 6]) -> &mut Self {
+    pub const fn mac_addr(&mut self, mac_addr: [u8; 6]) -> &mut Self {
         self.0.mac_addr = Some(mac_addr);
         self
     }
@@ -539,7 +539,7 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// Linux only.
     #[cfg(target_os = "linux")]
-    pub fn tx_queue_len(&mut self, tx_queue_len: u32) -> &mut Self {
+    pub const fn tx_queue_len(&mut self, tx_queue_len: u32) -> &mut Self {
         self.0.tx_queue_len = Some(tx_queue_len);
         self
     }
@@ -590,7 +590,7 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// Linux only. Requires kernel support for `IFF_VNET_HDR` (Linux 2.6.32+).
     #[cfg(target_os = "linux")]
-    pub fn offload(&mut self, offload: bool) -> &mut Self {
+    pub const fn offload(&mut self, offload: bool) -> &mut Self {
         self.0.offload = Some(offload);
         self
     }
@@ -650,7 +650,7 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// Linux only. Requires kernel support for `IFF_MULTI_QUEUE`.
     #[cfg(target_os = "linux")]
-    pub fn multi_queue(&mut self, multi_queue: bool) -> &mut Self {
+    pub const fn multi_queue(&mut self, multi_queue: bool) -> &mut Self {
         self.0.multi_queue = Some(multi_queue);
         self
     }
@@ -670,7 +670,7 @@ impl DeviceBuilderGuard<'_> {
         target_os = "openbsd",
         target_os = "netbsd"
     ))]
-    pub fn packet_information(&mut self, packet_information: bool) -> &mut Self {
+    pub const fn packet_information(&mut self, packet_information: bool) -> &mut Self {
         self.0.packet_information = Some(packet_information);
         self
     }
@@ -914,7 +914,7 @@ impl DeviceBuilder {
         self
     }
     /// Sets the device MTU (Maximum Transmission Unit).
-    pub fn mtu(mut self, mtu: u16) -> Self {
+    pub const fn mtu(mut self, mtu: u16) -> Self {
         self.mtu = Some(mtu);
         #[cfg(windows)]
         {
@@ -944,7 +944,7 @@ impl DeviceBuilder {
         target_os = "macos",
         target_os = "netbsd"
     ))]
-    pub fn mac_addr(mut self, mac_addr: [u8; 6]) -> Self {
+    pub const fn mac_addr(mut self, mac_addr: [u8; 6]) -> Self {
         self.mac_addr = Some(mac_addr);
         self
     }
@@ -1031,7 +1031,7 @@ impl DeviceBuilder {
     ///
     /// * L2 corresponds to TAP
     /// * L3 corresponds to TUN
-    pub fn layer(mut self, layer: Layer) -> Self {
+    pub const fn layer(mut self, layer: Layer) -> Self {
         self.layer = Some(layer);
         self
     }
@@ -1107,20 +1107,20 @@ impl DeviceBuilder {
     }
     /// Sets the transmit queue length on Linux.
     #[cfg(target_os = "linux")]
-    pub fn tx_queue_len(mut self, tx_queue_len: u32) -> Self {
+    pub const fn tx_queue_len(mut self, tx_queue_len: u32) -> Self {
         self.tx_queue_len = Some(tx_queue_len);
         self
     }
     /// Enables TUN offloads on Linux.
     /// After enabling, use `recv_multiple`/`send_multiple` for data transmission.
     #[cfg(target_os = "linux")]
-    pub fn offload(mut self, offload: bool) -> Self {
+    pub const fn offload(mut self, offload: bool) -> Self {
         self.offload = Some(offload);
         self
     }
     /// Enables multi-queue support on Linux.
     #[cfg(target_os = "linux")]
-    pub fn multi_queue(mut self, multi_queue: bool) -> Self {
+    pub const fn multi_queue(mut self, multi_queue: bool) -> Self {
         self.multi_queue = Some(multi_queue);
         self
     }
@@ -1140,7 +1140,7 @@ impl DeviceBuilder {
         target_os = "openbsd",
         target_os = "netbsd"
     ))]
-    pub fn packet_information(mut self, packet_information: bool) -> Self {
+    pub const fn packet_information(mut self, packet_information: bool) -> Self {
         self.packet_information = Some(packet_information);
         self
     }
@@ -1209,7 +1209,7 @@ impl DeviceBuilder {
     /// # See Also
     ///
     /// - [`inherit_enable_state`](Self::inherit_enable_state) - Preserve existing device state
-    pub fn enable(mut self, enable: bool) -> Self {
+    pub const fn enable(mut self, enable: bool) -> Self {
         self.enabled = Some(enable);
         self
     }
@@ -1246,11 +1246,11 @@ impl DeviceBuilder {
     /// # See Also
     ///
     /// - [`enable`](Self::enable) - Explicitly enable or disable the device
-    pub fn inherit_enable_state(mut self) -> Self {
+    pub const fn inherit_enable_state(mut self) -> Self {
         self.enabled = None;
         self
     }
-    pub(crate) fn build_config(&mut self) -> DeviceConfig {
+    pub(crate) const fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),
             #[cfg(windows)]
@@ -1423,8 +1423,8 @@ impl ToIpv4Address for Ipv4Addr {
 impl ToIpv4Address for IpAddr {
     fn ipv4(&self) -> io::Result<Ipv4Addr> {
         match self {
-            IpAddr::V4(ip) => Ok(*ip),
-            IpAddr::V6(_) => Err(io::Error::new(
+            Self::V4(ip) => Ok(*ip),
+            Self::V6(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid address",
             )),
@@ -1466,11 +1466,11 @@ impl ToIpv6Address for Ipv6Addr {
 impl ToIpv6Address for IpAddr {
     fn ipv6(&self) -> io::Result<Ipv6Addr> {
         match self {
-            IpAddr::V4(_) => Err(io::Error::new(
+            Self::V4(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid address",
             )),
-            IpAddr::V6(ip) => Ok(*ip),
+            Self::V6(ip) => Ok(*ip),
         }
     }
 }

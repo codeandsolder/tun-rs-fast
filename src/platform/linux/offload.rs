@@ -272,11 +272,11 @@ impl VirtioNetHdr {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
-    pub fn decode(buf: &[u8]) -> io::Result<VirtioNetHdr> {
+    pub fn decode(buf: &[u8]) -> io::Result<Self> {
         if buf.len() < VIRTIO_NET_HDR_LEN {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "too short"));
         }
-        Ok(VirtioNetHdr {
+        Ok(Self {
             flags: buf[0],
             gso_type: buf[1],
             hdr_len: u16::from_ne_bytes([buf[2], buf[3]]),
@@ -423,7 +423,7 @@ impl TcpGROTable {
         for _ in 0..IDEAL_BATCH_SIZE {
             items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
         }
-        TcpGROTable {
+        Self {
             items_by_flow: HashMap::with_capacity_and_hasher(IDEAL_BATCH_SIZE, AHashState::new()),
             items_pool,
         }
@@ -432,7 +432,7 @@ impl TcpGROTable {
 
 impl TcpFlowKey {
     fn new(pkt: &[u8], src_addr_offset: usize, dst_addr_offset: usize, tcph_offset: usize) -> Self {
-        let mut key = TcpFlowKey {
+        let mut key = Self {
             src_addr: [0; 16],
             dst_addr: [0; 16],
             src_port: 0,
@@ -538,17 +538,18 @@ pub struct UdpGROTable {
 
 impl Default for UdpGROTable {
     fn default() -> Self {
-        UdpGROTable::new()
+        Self::new()
     }
 }
 
 impl UdpGROTable {
+    #[must_use]
     pub fn new() -> Self {
         let mut items_pool = Vec::with_capacity(IDEAL_BATCH_SIZE);
         for _ in 0..IDEAL_BATCH_SIZE {
             items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
         }
-        UdpGROTable {
+        Self {
             items_by_flow: HashMap::with_capacity_and_hasher(IDEAL_BATCH_SIZE, AHashState::new()),
             items_pool,
         }
@@ -556,13 +557,14 @@ impl UdpGROTable {
 }
 
 impl UdpFlowKey {
+    #[must_use]
     pub fn new(
         pkt: &[u8],
         src_addr_offset: usize,
         dst_addr_offset: usize,
         udph_offset: usize,
-    ) -> UdpFlowKey {
-        let mut key = UdpFlowKey {
+    ) -> Self {
+        let mut key = Self {
             src_addr: [0; 16],
             dst_addr: [0; 16],
             src_port: 0,
@@ -651,7 +653,7 @@ enum CanCoalesce {
 /// ipHeadersCanCoalesce returns true if the IP headers found in pktA and pktB
 /// meet all requirements to be merged as part of a GRO operation, otherwise it
 /// returns false.
-fn ip_headers_can_coalesce(pkt_a: &[u8], pkt_b: &[u8]) -> bool {
+const fn ip_headers_can_coalesce(pkt_a: &[u8], pkt_b: &[u8]) -> bool {
     if pkt_a.len() < 9 || pkt_b.len() < 9 {
         return false;
     }
@@ -1335,7 +1337,8 @@ pub enum GroCandidateType {
     Udp6GRO,
 }
 
-pub fn packet_is_gro_candidate(b: &[u8], can_udp_gro: bool) -> GroCandidateType {
+#[must_use]
+pub const fn packet_is_gro_candidate(b: &[u8], can_udp_gro: bool) -> GroCandidateType {
     if b.len() < 28 {
         return GroCandidateType::NotGRO;
     }
@@ -2047,8 +2050,8 @@ pub struct GROTable {
 
 impl GROTable {
     #[must_use]
-    pub fn new() -> GROTable {
-        GROTable {
+    pub fn new() -> Self {
+        Self {
             to_write: Vec::with_capacity(IDEAL_BATCH_SIZE),
             tcp_gro_table: TcpGROTable::new(),
             udp_gro_table: UdpGROTable::new(),
