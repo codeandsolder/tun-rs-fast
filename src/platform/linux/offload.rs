@@ -2252,7 +2252,7 @@ mod tests {
     }
 
     #[test]
-    fn handle_gro_rejects_invalid_offset() -> TestResult {
+    fn miri_handle_gro_rejects_invalid_offset() -> TestResult {
         let mut table = GROTable::new();
         let mut bufs = vec![vec![0u8; VIRTIO_NET_HDR_LEN]];
         let Err(err) = table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false) else {
@@ -2402,7 +2402,7 @@ mod tests {
     }
 
     #[test]
-    fn virtio_header_round_trips_wire_fields() -> TestResult {
+    fn miri_virtio_header_round_trips_wire_fields() -> TestResult {
         let expected = VirtioNetHdr {
             flags: VIRTIO_NET_HDR_F_NEEDS_CSUM,
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
