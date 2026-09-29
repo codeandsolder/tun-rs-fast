@@ -24,6 +24,9 @@ pub trait Decoder {
     ///
     /// Returns `Ok(Some(frame))` if a complete frame was decoded,
     /// `Ok(None)` if more data is needed, or `Err` on decoding errors.
+    /// # Errors
+    ///
+    /// Returns a codec-specific error when the buffered frame is invalid.
     fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error>;
 
     /// Decodes a frame from the buffer when the stream has ended.
@@ -44,6 +47,9 @@ pub trait Decoder {
     /// - `Ok(Some(frame))` - Successfully decoded a final frame
     /// - `Ok(None)` - No more frames and buffer is empty (normal EOF)
     /// - `Err` - Incomplete data remains or decoding error
+    /// # Errors
+    ///
+    /// Returns a codec-specific error when the final buffered frame is invalid.
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         match self.decode(buf)? {
             Some(frame) => Ok(Some(frame)),
@@ -72,6 +78,9 @@ pub trait Encoder<Item> {
     type Error: From<io::Error>;
 
     /// Encodes a frame into the buffer provided.
+    /// # Errors
+    ///
+    /// Returns a codec-specific error when the item cannot be encoded.
     fn encode(&mut self, item: Item, dst: &mut BytesMut) -> Result<(), Self::Error>;
 }
 
@@ -110,7 +119,7 @@ impl<T: Encoder<Item>, Item> Encoder<Item> for &mut T {
 ///
 /// # Examples
 ///
-/// ## Basic usage with BytesCodec
+/// ## Basic usage with `BytesCodec`
 ///
 /// ```no_run
 /// use bytes::BytesMut;
@@ -132,7 +141,7 @@ impl<T: Encoder<Item>, Item> Encoder<Item> for &mut T {
 ///
 ///     // Send a frame (Replace with real IP message)
 ///     let packet = b"[IP Packet: 10.0.0.1 -> 10.0.0.2] Hello, TUN!";
-///     framed.send(BytesMut::from(packet)).await?;
+///     framed.send(BytesMut::from(packet.as_slice())).await?;
 ///
 ///     // Receive frames
 ///     while let Some(frame) = framed.next().await {
@@ -276,6 +285,7 @@ where
     ///         .build_async()?,
     /// );
     /// let (r, w) = DeviceFramed::new(dev, BytesCodec::new()).split();
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     pub fn split(self) -> (DeviceFramedRead<C, T>, DeviceFramedWrite<C, T>) {
         let dev = self.dev;
@@ -355,6 +365,7 @@ where
     /// );
     /// let mut w = DeviceFramedWrite::new(dev.clone(), BytesCodec::new());
     /// let mut r = DeviceFramedRead::new(dev, BytesCodec::new());
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     /// # Note
     /// An efficient way is to directly use [`DeviceFramed::split`] if the device is cloneable
@@ -431,7 +442,7 @@ where
 ///
 ///     // Send a frame (Replace with real IP message)
 ///     let packet = b"[IP Packet: 10.0.0.1 -> 10.0.0.2] Hello, TUN!";
-///     framed_write.send(BytesMut::from(packet)).await?;
+///     framed_write.send(BytesMut::from(packet.as_slice())).await?;
 ///
 ///     Ok(())
 /// }
@@ -463,6 +474,7 @@ where
     /// );
     /// let mut w = DeviceFramedWrite::new(dev.clone(), BytesCodec::new());
     /// let mut r = DeviceFramedRead::new(dev, BytesCodec::new());
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     /// # Note
     /// An efficient way is to directly use [`DeviceFramed::split`] if the device is cloneable
@@ -529,19 +541,19 @@ where
         DeviceFramedWriteInner::new(&pin.dev, &mut pin.codec, &mut pin.state).poll_close(cx)
     }
 }
-fn compute_buffer_size<T: Borrow<AsyncDevice>>(_dev: &T) -> usize {
-    // The interface MTU covers only the L3 payload. In TAP (Layer::L2) mode the
-    // device delivers complete Ethernet frames, which exceed the MTU by the
-    // Ethernet header (14 bytes) — plus 4 bytes when the frame carries an
-    // IEEE 802.1Q VLAN tag (double-tagged QinQ frames would need 8). Sizing the
-    // buffer to the raw MTU would reject almost every TAP packet ("receive
-    // buffer too small"); always add the header + VLAN overhead so the same
-    // default works for both TUN and TAP (for TUN this only costs a few extra
-    // bytes).
-    const ETHERNET_HEADER_LEN: usize = 14;
-    const VLAN_TAG_LEN: usize = 4;
-    const FRAME_OVERHEAD: usize = ETHERNET_HEADER_LEN + VLAN_TAG_LEN;
+const ETHERNET_HEADER_LEN: usize = 14;
+const VLAN_TAG_LEN: usize = 4;
+const MAX_VLAN_TAGS: usize = 2;
+const FRAME_OVERHEAD: usize = ETHERNET_HEADER_LEN + VLAN_TAG_LEN * MAX_VLAN_TAGS;
 
+const fn framed_buffer_size_for_mtu(mtu: usize) -> usize {
+    mtu + FRAME_OVERHEAD
+}
+
+fn compute_buffer_size<T: Borrow<AsyncDevice>>(dev: &T) -> usize {
+    // The interface MTU covers only the L3 payload. TAP devices deliver the
+    // complete Ethernet frame, so reserve the Ethernet header plus two VLAN
+    // tags. Two tags cover ordinary 802.1Q as well as provider/customer QinQ.
     #[cfg(any(
         target_os = "windows",
         all(target_os = "linux", not(target_env = "ohos")),
@@ -550,7 +562,7 @@ fn compute_buffer_size<T: Borrow<AsyncDevice>>(_dev: &T) -> usize {
         target_os = "openbsd",
         target_os = "netbsd",
     ))]
-    let mtu = _dev.borrow().mtu().map(|m| m as usize).unwrap_or(4096) + FRAME_OVERHEAD;
+    let mtu = framed_buffer_size_for_mtu(dev.borrow().mtu().map_or(4096, usize::from));
 
     #[cfg(not(any(
         target_os = "windows",
@@ -560,10 +572,10 @@ fn compute_buffer_size<T: Borrow<AsyncDevice>>(_dev: &T) -> usize {
         target_os = "openbsd",
         target_os = "netbsd",
     )))]
-    let mtu = 4096usize + FRAME_OVERHEAD;
+    let mtu = framed_buffer_size_for_mtu(4096);
 
     #[cfg(windows)]
-    let mtu_v6 = _dev.borrow().mtu_v6().map(|m| m as usize).unwrap_or(4096) + FRAME_OVERHEAD;
+    let mtu_v6 = framed_buffer_size_for_mtu(_dev.borrow().mtu_v6().map_or(4096, usize::from));
     #[cfg(not(windows))]
     let mtu_v6 = 0usize;
 
@@ -576,9 +588,9 @@ struct ReadState {
     packet_splitter: Option<PacketSplitter>,
 }
 impl ReadState {
-    pub(crate) fn new(recv_buffer_size: usize, _device: &AsyncDevice) -> ReadState {
+    pub(crate) fn new(recv_buffer_size: usize, device: &AsyncDevice) -> ReadState {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-        let packet_splitter = if _device.tcp_gso() {
+        let packet_splitter = if device.tcp_gso() {
             Some(PacketSplitter::new(recv_buffer_size))
         } else {
             None
@@ -611,9 +623,9 @@ struct WriteState {
     packet_arena: Option<PacketArena>,
 }
 impl WriteState {
-    pub(crate) fn new(send_buffer_size: usize, _device: &AsyncDevice) -> WriteState {
+    pub(crate) fn new(send_buffer_size: usize, device: &AsyncDevice) -> WriteState {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-        let packet_arena = if _device.tcp_gso() {
+        let packet_arena = if device.tcp_gso() {
             Some(PacketArena::new())
         } else {
             None
@@ -647,6 +659,7 @@ impl WriteState {
 pub struct BytesCodec(());
 impl BytesCodec {
     /// Creates a new `BytesCodec` for shipping around raw bytes.
+    #[must_use]
     pub fn new() -> BytesCodec {
         BytesCodec(())
     }
@@ -656,11 +669,11 @@ impl Decoder for BytesCodec {
     type Error = io::Error;
 
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<BytesMut>, io::Error> {
-        if !buf.is_empty() {
+        if buf.is_empty() {
+            Ok(None)
+        } else {
             // Use split_to to efficiently transfer ownership without copying
             Ok(Some(buf.split_to(buf.len())))
-        } else {
-            Ok(None)
         }
     }
 }
@@ -708,10 +721,10 @@ impl PacketSplitter {
     }
     fn handle(&mut self, dev: &AsyncDevice, input: &mut [u8]) -> io::Result<()> {
         if input.len() <= VIRTIO_NET_HDR_LEN {
-            Err(io::Error::other(format!(
+            return Err(io::Error::other(format!(
                 "length of packet ({}) <= VIRTIO_NET_HDR_LEN ({VIRTIO_NET_HDR_LEN})",
                 input.len(),
-            )))?
+            )));
         }
         for buf in &mut self.bufs {
             buf.resize(self.recv_buffer_size, 0);
@@ -756,7 +769,7 @@ struct PacketArena {
 impl PacketArena {
     fn new() -> PacketArena {
         Self {
-            gro_table: Default::default(),
+            gro_table: GROTable::default(),
             offset: 0,
             bufs: Vec::with_capacity(IDEAL_BATCH_SIZE),
             send_index: 0,
@@ -822,7 +835,7 @@ impl PacketArena {
     }
     fn reset(&mut self) {
         self.gro_table.reset();
-        for buf in self.bufs[..self.offset].iter_mut() {
+        for buf in &mut self.bufs[..self.offset] {
             buf.clear();
         }
         self.offset = 0;
@@ -850,6 +863,10 @@ where
         DeviceFramedReadInner { dev, codec, state }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "poll_recv_uninit initializes exactly the returned byte count; BytesMut::advance_mut exposes those initialized bytes without an extra memset"
+    )]
     fn poll_next(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<C::Item, C::Error>>> {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if let Some(packet_splitter) = &mut self.state.packet_splitter {
@@ -974,5 +991,17 @@ where
     {
         ready!(self.poll_flush(cx))?;
         Poll::Ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod buffer_size_tests {
+    use super::{framed_buffer_size_for_mtu, ETHERNET_HEADER_LEN, VLAN_TAG_LEN};
+
+    #[test]
+    fn default_framed_buffer_accepts_full_mtu_qinq_frame() {
+        const MTU: usize = 1500;
+        let qinq_frame_len = MTU + ETHERNET_HEADER_LEN + 2 * VLAN_TAG_LEN;
+        assert_eq!(framed_buffer_size_for_mtu(MTU), qinq_frame_len);
     }
 }

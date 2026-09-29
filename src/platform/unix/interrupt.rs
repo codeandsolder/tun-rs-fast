@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "poll/pipe/eventfd integration requires libc calls over raw descriptors"
+)]
+
 /*!
 # Interruptible I/O Module
 
@@ -65,7 +70,7 @@ handle.join().unwrap();
 
 ## Performance Considerations
 
-- Interruptible I/O has slightly more overhead than regular I/O due to the additional poll() fd
+- Interruptible I/O has slightly more overhead than regular I/O due to the additional `poll()` fd
 - The pipe is created once and reused across all operations
 - Non-blocking mode is set on the pipe fds to prevent deadlocks
 
@@ -176,9 +181,9 @@ impl Fd {
             libc::poll(
                 fds.as_mut_ptr(),
                 fds.len() as libc::nfds_t,
-                timeout
-                    .map(|t| t.as_millis().min(i32::MAX as _) as _)
-                    .unwrap_or(-1),
+                timeout.map_or(-1, |duration| {
+                    i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
+                }),
             )
         };
 
@@ -508,19 +513,16 @@ impl InterruptEvent {
                 "value cannot be 0",
             ));
         }
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if *guard != 0 {
             return Ok(());
         }
         *guard = val;
         let buf: [u8; 8] = 1u64.to_ne_bytes();
-        let res = unsafe {
-            libc::write(
-                self.write_fd.as_raw_fd(),
-                buf.as_ptr() as *const _,
-                buf.len(),
-            )
-        };
+        let res = unsafe { libc::write(self.write_fd.as_raw_fd(), buf.as_ptr().cast(), buf.len()) };
         if res == -1 {
             let e = io::Error::last_os_error();
             if e.kind() == io::ErrorKind::WouldBlock {
@@ -554,7 +556,11 @@ impl InterruptEvent {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     pub fn is_trigger(&self) -> bool {
-        *self.state.lock().unwrap() != 0
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            != 0
     }
 
     /// Returns the current trigger value.
@@ -578,7 +584,10 @@ impl InterruptEvent {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     pub fn value(&self) -> i32 {
-        *self.state.lock().unwrap()
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Resets the event to the non-triggered state.
@@ -613,15 +622,14 @@ impl InterruptEvent {
     /// ```
     pub fn reset(&self) -> io::Result<()> {
         let mut buf = [0; 8];
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = 0;
         loop {
             unsafe {
-                let res = libc::read(
-                    self.read_fd.as_raw_fd(),
-                    buf.as_mut_ptr() as *mut _,
-                    buf.len(),
-                );
+                let res = libc::read(self.read_fd.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len());
                 if res == -1 {
                     let error = io::Error::last_os_error();
                     return if error.kind() == io::ErrorKind::WouldBlock {

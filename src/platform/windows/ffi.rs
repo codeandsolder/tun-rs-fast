@@ -34,6 +34,7 @@ use windows_sys::{
         },
         Foundation::{
             CloseHandle, GetLastError, ERROR_NO_MORE_ITEMS, FALSE, FILETIME, HANDLE, TRUE,
+            WAIT_FAILED, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         NetworkManagement::{
             IpHelper::{
@@ -55,8 +56,8 @@ use windows_sys::{
     },
 };
 
-#[allow(non_camel_case_types)]
-#[allow(non_snake_case)]
+#[expect(non_camel_case_types, reason = "name mirrors the Windows API ABI")]
+#[expect(non_snake_case, reason = "name mirrors the Windows API ABI")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 /// Custom type to handle variable size SP_DRVINFO_DETAIL_DATA_W
@@ -134,12 +135,13 @@ pub fn reset_event(handle: RawHandle) -> io::Result<()> {
     Ok(())
 }
 pub fn wait_for_single_object(handle: RawHandle, timeout: u32) -> io::Result<()> {
-    unsafe {
-        if 0 == WaitForSingleObject(handle, timeout) {
-            Ok(())
-        } else {
-            Err(io::Error::last_os_error())
-        }
+    match unsafe { WaitForSingleObject(handle, timeout) } {
+        WAIT_OBJECT_0 => Ok(()),
+        WAIT_TIMEOUT => Err(io::Error::from(io::ErrorKind::TimedOut)),
+        WAIT_FAILED => Err(io::Error::last_os_error()),
+        value => Err(io::Error::other(format!(
+            "WaitForSingleObject returned unexpected status {value:#x}"
+        ))),
     }
 }
 pub fn set_event(handle: RawHandle) -> io::Result<()> {
@@ -266,7 +268,6 @@ pub fn try_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Resu
         }
     }
 }
-#[allow(dead_code)]
 pub fn cancel_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
     unsafe {
         CancelIoEx(handle, io_overlapped);
@@ -861,4 +862,28 @@ pub fn set_device_state(
     }
 
     call_class_installer(devinfo, devinfo_data, DIF_PROPERTYCHANGE)
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::{create_event, set_event, wait_for_single_object};
+    use std::io;
+    use std::os::windows::io::AsRawHandle;
+
+    #[test]
+    fn unsignalled_event_reports_timeout() -> io::Result<()> {
+        let event = create_event()?;
+        let error = wait_for_single_object(event.as_raw_handle(), 0)
+            .err()
+            .ok_or_else(|| io::Error::other("unsignalled event unexpectedly became ready"))?;
+        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        Ok(())
+    }
+
+    #[test]
+    fn signalled_event_is_ready() -> io::Result<()> {
+        let event = create_event()?;
+        set_event(event.as_raw_handle())?;
+        wait_for_single_object(event.as_raw_handle(), 0)
+    }
 }

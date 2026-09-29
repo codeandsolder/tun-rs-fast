@@ -103,7 +103,7 @@ impl AsyncDevice {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
@@ -187,6 +187,10 @@ impl AsyncDevice {
         device.set_nonblocking(true)?;
         Ok(Self(TokioAsyncFd::new(device)?))
     }
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "runtime adapters share a fallible signature; async-io into_inner can fail"
+    )]
     pub(crate) fn into_device(self) -> io::Result<DeviceImpl> {
         Ok(self.0.into_inner())
     }

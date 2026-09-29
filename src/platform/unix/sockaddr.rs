@@ -1,6 +1,11 @@
+#![expect(
+    unsafe_code,
+    reason = "socket address conversion is the dedicated libc union/FFI boundary"
+)]
+
 /// # Safety
 unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAddr> {
-    match sa.addr_stor.ss_family as libc::c_int {
+    match libc::c_int::from(sa.addr_stor.ss_family) {
         libc::AF_INET => {
             let sa_in = sa.addr4;
             let ip = std::net::Ipv4Addr::from(sa_in.sin_addr.s_addr.to_ne_bytes());
@@ -17,6 +22,10 @@ unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAdd
     }
 }
 
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "sockaddr family constants and sockaddr structure sizes are ABI-defined to fit their destination fields"
+)]
 fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
     match addr {
         std::net::SocketAddr::V4(ipv4) => {
@@ -63,7 +72,6 @@ fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-#[allow(dead_code)]
 pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
     src_addr: T,
     src_port: u16,
@@ -74,8 +82,8 @@ pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
 {
     let sa = rs_addr_to_sockaddr((src_addr.into(), src_port).into());
     std::ptr::copy_nonoverlapping(
-        &sa as *const _ as *const libc::c_void,
-        addr as *mut _ as *mut libc::c_void,
+        (&raw const sa).cast::<libc::c_void>(),
+        std::ptr::from_mut(addr).cast::<libc::c_void>(),
         size.min(std::mem::size_of::<sockaddr_union>()),
     );
 }
@@ -135,26 +143,27 @@ impl<T: Into<std::net::IpAddr>> From<(T, u16)> for sockaddr_union {
 }
 
 #[test]
-fn test_conversion() {
+fn test_conversion() -> std::io::Result<()> {
     let old = std::net::SocketAddr::new([127, 0, 0, 1].into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
+    #[cfg(target_endian = "big")]
     unsafe {
-        if cfg!(target_endian = "big") {
-            assert_eq!(0x7f000001, addr.addr4.sin_addr.s_addr);
-            assert_eq!(0x0208, addr.addr4.sin_port);
-        } else if cfg!(target_endian = "little") {
-            assert_eq!(0x0100007f, addr.addr4.sin_addr.s_addr);
-            assert_eq!(0x0802, addr.addr4.sin_port);
-        } else {
-            unreachable!();
-        }
-    };
-    let ip = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+        assert_eq!(0x7f00_0001, addr.addr4.sin_addr.s_addr);
+        assert_eq!(0x0208, addr.addr4.sin_port);
+    }
+    #[cfg(target_endian = "little")]
+    unsafe {
+        assert_eq!(0x0100_007f, addr.addr4.sin_addr.s_addr);
+        assert_eq!(0x0802, addr.addr4.sin_port);
+    }
+    let ip = unsafe { sockaddr_to_rs_addr(&addr) }
+        .ok_or_else(|| std::io::Error::other("IPv4 sockaddr round-trip failed"))?;
     assert_eq!(ip, old);
 
     let old = std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
-    let ip = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+    let ip = unsafe { sockaddr_to_rs_addr(&addr) }
+        .ok_or_else(|| std::io::Error::other("IPv6 sockaddr round-trip failed"))?;
     assert_eq!(ip, old);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -163,7 +172,9 @@ fn test_conversion() {
         let size = std::mem::size_of::<libc::sockaddr_in>();
 
         unsafe { ipaddr_to_sockaddr(old, 0x0208, &mut addr.addr, size) };
-        let ip = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+        let ip = unsafe { sockaddr_to_rs_addr(&addr) }
+            .ok_or_else(|| std::io::Error::other("IP sockaddr conversion failed"))?;
         assert_eq!(ip, std::net::SocketAddr::new(old, 0x0208));
     }
+    Ok(())
 }

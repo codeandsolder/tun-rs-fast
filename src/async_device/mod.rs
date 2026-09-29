@@ -201,8 +201,8 @@ compile_error! {"More than one asynchronous runtime is simultaneously specified 
 /// This type wraps an [`AsyncDevice`] but does not take ownership of the underlying file descriptor.
 /// It's designed for scenarios where the file descriptor is managed externally, such as:
 ///
-/// - iOS PacketTunnelProvider (NetworkExtension framework)
-/// - Android VpnService
+/// - iOS `PacketTunnelProvider` (`NetworkExtension` framework)
+/// - Android `VpnService`
 /// - Other FFI scenarios where file descriptor ownership is managed by foreign code
 ///
 /// # Ownership and Lifetime
@@ -281,7 +281,7 @@ impl BorrowedAsyncDevice<'_> {
     /// use std::os::fd::RawFd;
     /// use tun_rs::BorrowedAsyncDevice;
     ///
-    /// // Obtain fd from iOS PacketTunnelProvider or Android VpnService
+    /// // Obtain fd from iOS PacketTunnelProvider or Android `VpnService`
     /// let fd: RawFd = get_vpn_fd(); // exposition-only
     ///
     /// // SAFETY: fd is valid and managed by the OS framework
@@ -306,8 +306,12 @@ impl BorrowedAsyncDevice<'_> {
     /// - Invalid file descriptor
     /// - File descriptor does not refer to a TUN/TAP device
     /// - Platform-specific configuration failures
+    #[expect(
+        unsafe_code,
+        reason = "the caller guarantees the external descriptor outlives this borrowed async device"
+    )]
     pub unsafe fn borrow_raw(fd: std::os::fd::RawFd) -> std::io::Result<Self> {
-        #[allow(unused_unsafe)]
+        // SAFETY: forwarded unchanged from this function's documented contract.
         unsafe {
             Ok(Self {
                 dev: AsyncDevice::borrow_raw(fd)?,

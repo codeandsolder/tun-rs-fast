@@ -232,7 +232,10 @@ impl AsyncDevice {
         Ok(())
     }
     pub fn poll_readable(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut guard = self.recv_task_lock.lock().unwrap();
+        let mut guard = self
+            .recv_task_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut task = if let Some(task) = guard.take() {
             task
         } else {
@@ -267,7 +270,7 @@ impl AsyncDevice {
             }
         }
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
@@ -287,7 +290,10 @@ impl AsyncDevice {
         }
     }
     pub fn poll_writable(&self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-        let mut guard = self.send_task_lock.lock().unwrap();
+        let mut guard = self
+            .send_task_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut task = if let Some(task) = guard.take() {
             task
         } else {

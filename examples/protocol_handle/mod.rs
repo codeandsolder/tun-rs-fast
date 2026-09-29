@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use pnet_packet::arp::{ArpOperations, MutableArpPacket};
 use pnet_packet::ethernet::{EthernetPacket, MutableEthernetPacket};
 use pnet_packet::icmp::IcmpPacket;
@@ -13,6 +11,8 @@ use pnet_packet::ipv4::{Ipv4Packet, MutableIpv4Packet};
 use pnet_packet::ipv6::{Ipv6Packet, MutableIpv6Packet};
 use pnet_packet::{MutablePacket, Packet};
 use std::net::Ipv4Addr;
+
+const EXAMPLE_MAC: [u8; 6] = [0x2, 0xf, 0xf, 0xf, 0xe, 0x9];
 
 fn handle_ipv4_ping(ip_pkt: &Ipv4Packet) -> Option<Vec<u8>> {
     if ip_pkt.get_next_level_protocol() != IpNextHeaderProtocols::Icmp {
@@ -31,15 +31,15 @@ fn handle_ipv4_ping(ip_pkt: &Ipv4Packet) -> Option<Vec<u8>> {
     );
 
     let mut icmp_payload = ip_pkt.payload().to_owned();
-    let mut mutable_icmp_pkt = MutableIcmpPacket::new(&mut icmp_payload).unwrap();
+    let mut mutable_icmp_pkt = MutableIcmpPacket::new(&mut icmp_payload)?;
     mutable_icmp_pkt.set_icmp_type(IcmpTypes::EchoReply);
     mutable_icmp_pkt.set_checksum(pnet_packet::icmp::checksum(
         &mutable_icmp_pkt.to_immutable(),
     ));
 
-    let total_len = ip_pkt.get_total_length() as usize;
+    let total_len = usize::from(ip_pkt.get_total_length());
     let mut response_buf = vec![0u8; total_len];
-    let mut res_ipv4_pkt = MutableIpv4Packet::new(&mut response_buf).unwrap();
+    let mut res_ipv4_pkt = MutableIpv4Packet::new(&mut response_buf)?;
 
     res_ipv4_pkt.set_version(4);
     res_ipv4_pkt.set_header_length(ip_pkt.get_header_length());
@@ -72,7 +72,7 @@ fn handle_ipv6_ping(ip_pkt: &Ipv6Packet) -> Option<Vec<u8>> {
     );
 
     let mut icmp_payload = ip_pkt.payload().to_owned();
-    let mut mutable_icmpv6_pkt = MutableIcmpv6Packet::new(&mut icmp_payload).unwrap();
+    let mut mutable_icmpv6_pkt = MutableIcmpv6Packet::new(&mut icmp_payload)?;
     mutable_icmpv6_pkt.set_icmpv6_type(Icmpv6Types::EchoReply);
 
     let checksum = pnet_packet::icmpv6::checksum(
@@ -84,12 +84,13 @@ fn handle_ipv6_ping(ip_pkt: &Ipv6Packet) -> Option<Vec<u8>> {
 
     let total_len = 40 + icmp_payload.len();
     let mut response_buf = vec![0u8; total_len];
-    let mut res_ipv6_pkt = MutableIpv6Packet::new(&mut response_buf).unwrap();
+    let mut res_ipv6_pkt = MutableIpv6Packet::new(&mut response_buf)?;
 
     res_ipv6_pkt.set_version(6);
     res_ipv6_pkt.set_traffic_class(0);
     res_ipv6_pkt.set_flow_label(0);
-    res_ipv6_pkt.set_payload_length(icmp_payload.len() as u16);
+    let payload_len = u16::try_from(icmp_payload.len()).ok()?;
+    res_ipv6_pkt.set_payload_length(payload_len);
     res_ipv6_pkt.set_next_header(IpNextHeaderProtocols::Icmpv6);
     res_ipv6_pkt.set_hop_limit(64);
     res_ipv6_pkt.set_source(ip_pkt.get_destination());
@@ -99,6 +100,7 @@ fn handle_ipv6_ping(ip_pkt: &Ipv6Packet) -> Option<Vec<u8>> {
     Some(response_buf)
 }
 
+#[must_use]
 pub fn ping(buf: &[u8]) -> Option<Vec<u8>> {
     if buf.is_empty() {
         return None;
@@ -120,12 +122,13 @@ pub fn ping(buf: &[u8]) -> Option<Vec<u8>> {
         }
     }
 }
+#[must_use]
 pub fn ping_ethernet(buf: &[u8]) -> Option<Vec<u8>> {
     if let Some(packet) = EthernetPacket::new(buf) {
         if let Some(ping_buf) = ping(packet.payload()) {
             let mut buf = vec![0u8; 14 + ping_buf.len()];
 
-            let mut ethernet_packet = MutableEthernetPacket::new(&mut buf).unwrap();
+            let mut ethernet_packet = MutableEthernetPacket::new(&mut buf)?;
             ethernet_packet.set_source(packet.get_destination());
             ethernet_packet.set_destination(packet.get_source());
             ethernet_packet.set_ethertype(packet.get_ethertype());
@@ -135,12 +138,11 @@ pub fn ping_ethernet(buf: &[u8]) -> Option<Vec<u8>> {
     }
     None
 }
+#[must_use]
 pub fn arp(buf: &[u8]) -> Option<Vec<u8>> {
     let packet = EthernetPacket::new(buf)?;
-    // Use a valid MAC address
-    const MAC: [u8; 6] = [0x2, 0xf, 0xf, 0xf, 0xe, 0x9];
     let mut buf = packet.packet().to_vec();
-    let mut ethernet_packet = MutableEthernetPacket::new(&mut buf).unwrap();
+    let mut ethernet_packet = MutableEthernetPacket::new(&mut buf)?;
     let sender_h = packet.get_source();
     let mut arp_packet = MutableArpPacket::new(ethernet_packet.payload_mut())?;
     if arp_packet.get_operation() != ArpOperations::Request {
@@ -158,9 +160,9 @@ pub fn arp(buf: &[u8]) -> Option<Vec<u8>> {
     arp_packet.set_target_hw_addr(sender_h);
     arp_packet.set_target_proto_addr(sender_p);
     arp_packet.set_sender_proto_addr(target_p);
-    arp_packet.set_sender_hw_addr(MAC.into());
+    arp_packet.set_sender_hw_addr(EXAMPLE_MAC.into());
     ethernet_packet.set_destination(sender_h);
-    ethernet_packet.set_source(MAC.into());
+    ethernet_packet.set_source(EXAMPLE_MAC.into());
     println!("arp query {target_p}");
     Some(buf)
 }

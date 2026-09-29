@@ -1,7 +1,13 @@
+#![expect(
+    unsafe_code,
+    reason = "this module is the dedicated POSIX raw-file-descriptor syscall boundary"
+)]
+
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 
+#[cfg(any(feature = "async_tokio", feature = "async_io"))]
 use bytes::buf::UninitSlice;
 use libc::{self, fcntl, F_GETFL, O_NONBLOCK};
 
@@ -63,7 +69,7 @@ impl Fd {
     }
     /// Enable non-blocking mode
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-        let mut nonblocking = nonblocking as libc::c_int;
+        let mut nonblocking = libc::c_int::from(nonblocking);
         match unsafe { libc::ioctl(self.as_raw_fd(), libc::FIONBIO, &mut nonblocking) } {
             0 => Ok(()),
             _ => Err(io::Error::last_os_error()),
@@ -73,38 +79,43 @@ impl Fd {
     #[inline]
     pub fn read(&self, buf: &mut [u8]) -> io::Result<usize> {
         let fd = self.as_raw_fd();
-        let amount = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        let amount = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
         if amount < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(amount as usize)
+        usize::try_from(amount)
+            .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
     pub(crate) fn read_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let fd = self.as_raw_fd();
-        let amount = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+        let amount = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
         if amount < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(amount as usize)
+        usize::try_from(amount)
+            .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
     #[inline]
     pub fn readv(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         if bufs.len() > max_iov() {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
+        let iov_count = libc::c_int::try_from(bufs.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         let amount = unsafe {
             libc::readv(
                 self.as_raw_fd(),
-                bufs.as_mut_ptr() as *mut libc::iovec as *const libc::iovec,
-                bufs.len() as libc::c_int,
+                bufs.as_mut_ptr().cast::<libc::iovec>().cast_const(),
+                iov_count,
             )
         };
         if amount < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(amount as usize)
+        usize::try_from(amount)
+            .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
     #[inline]
     #[cfg(any(
@@ -119,39 +130,45 @@ impl Fd {
         if bufs.len() > max_iov() {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
-        let amount =
-            unsafe { libc::readv(self.as_raw_fd(), bufs.as_ptr(), bufs.len() as libc::c_int) };
+        let iov_count = libc::c_int::try_from(bufs.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let amount = unsafe { libc::readv(self.as_raw_fd(), bufs.as_ptr(), iov_count) };
         if amount < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(amount as usize)
+        usize::try_from(amount)
+            .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
 
     #[inline]
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
         let fd = self.as_raw_fd();
-        let amount = unsafe { libc::write(fd, buf.as_ptr() as *const _, buf.len()) };
+        let amount = unsafe { libc::write(fd, buf.as_ptr().cast(), buf.len()) };
         if amount < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(amount as usize)
+        usize::try_from(amount)
+            .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
     #[inline]
     pub fn writev(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         if bufs.len() > max_iov() {
             return Err(io::Error::from(io::ErrorKind::InvalidInput));
         }
+        let iov_count = libc::c_int::try_from(bufs.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         let amount = unsafe {
             libc::writev(
                 self.as_raw_fd(),
-                bufs.as_ptr() as *const libc::iovec,
-                bufs.len() as libc::c_int,
+                bufs.as_ptr().cast::<libc::iovec>(),
+                iov_count,
             )
         };
         if amount < 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(amount as usize)
+        usize::try_from(amount)
+            .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
 }
 #[cfg(any(
@@ -218,19 +235,20 @@ mod tests {
     }
 
     #[test]
-    fn borrowed_fd_drop_leaves_descriptor_open() {
-        let file = File::open("/dev/null").unwrap();
+    fn borrowed_fd_drop_leaves_descriptor_open() -> std::io::Result<()> {
+        let file = File::open("/dev/null")?;
         let raw_fd = file.as_raw_fd();
 
         let fd = unsafe { Fd::new_unchecked_with_borrow(raw_fd, true) };
         drop(fd);
 
         assert!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) } >= 0);
+        Ok(())
     }
 
     #[test]
-    fn owned_fd_drop_closes_descriptor() {
-        let file = File::open("/dev/null").unwrap();
+    fn owned_fd_drop_closes_descriptor() -> std::io::Result<()> {
+        let file = File::open("/dev/null")?;
         let raw_fd = unsafe { libc::dup(file.as_raw_fd()) };
         assert!(raw_fd >= 0);
 
@@ -242,5 +260,6 @@ mod tests {
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::EBADF)
         );
+        Ok(())
     }
 }

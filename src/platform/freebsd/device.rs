@@ -339,12 +339,17 @@ impl DeviceImpl {
     pub(crate) fn name_impl(&self) -> std::io::Result<String> {
         match Self::name_of_fd(&self.tun) {
             Ok(name) => {
-                *self.name.write().unwrap() = name.clone();
+                *self
+                    .name
+                    .write()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = name.clone();
                 Ok(name)
             }
-            Err(err) if err.raw_os_error() == Some(libc::ENOTTY) => {
-                Ok(self.name.read().unwrap().clone())
-            }
+            Err(err) if err.raw_os_error() == Some(libc::ENOTTY) => Ok(self
+                .name
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()),
             Err(err) => Err(err),
         }
     }
@@ -388,13 +393,19 @@ impl DeviceImpl {
 impl DeviceImpl {
     /// Retrieves the name of the network interface.
     pub fn name(&self) -> std::io::Result<String> {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.name_impl()
     }
     /// Sets a new name for the network interface.
     pub fn set_name(&self, value: &str) -> std::io::Result<()> {
         use std::ffi::CString;
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             if value.len() > IFNAMSIZ {
                 return Err(std::io::Error::new(
@@ -413,7 +424,10 @@ impl DeviceImpl {
             if let Err(err) = siocsifname(ctl()?.as_raw_fd(), &req) {
                 return Err(io::Error::from(err));
             }
-            *self.name.write().unwrap() = value.to_owned();
+            *self
+                .name
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = value.to_owned();
 
             Ok(())
         }
@@ -422,13 +436,19 @@ impl DeviceImpl {
     /// If true (default), the program will automatically add or remove routes to provide consistent routing behavior across all platforms.
     /// Set this to be false to obtain the platform's default routing behavior.
     pub fn set_associate_route(&self, associate_route: bool) {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.associate_route
             .store(associate_route, Ordering::Relaxed);
     }
     /// Retrieve whether route is associated with the IP setting interface, see [`DeviceImpl::set_associate_route`]
     pub fn associate_route(&self) -> bool {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.associate_route.load(Ordering::Relaxed)
     }
 
@@ -443,7 +463,10 @@ impl DeviceImpl {
     /// # Note
     /// Retrieve whether the packet is ignored for the TUN Device; The TAP device always returns `false`.
     pub fn ignore_packet_info(&self) -> bool {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.tun.ignore_packet_info()
     }
     /// Sets whether the TUN device should ignore packet information (PI).
@@ -459,7 +482,10 @@ impl DeviceImpl {
     /// # Note
     /// This only works for a TUN device; The invocation will be ignored if the device is a TAP.
     pub fn set_ignore_packet_info(&self, ign: bool) {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Ok(name) = self.name_impl() {
             if name.starts_with("tun") {
                 self.tun.set_ignore_packet_info(ign)
@@ -468,7 +494,10 @@ impl DeviceImpl {
     }
     /// Enables or disables the network interface.
     pub fn enabled(&self, value: bool) -> std::io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             let mut req = self.request()?;
             let ctl = ctl()?;
@@ -491,7 +520,10 @@ impl DeviceImpl {
     }
     /// Retrieves the current MTU (Maximum Transmission Unit) for the interface.
     pub fn mtu(&self) -> std::io::Result<u16> {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             let mut req = self.request()?;
 
@@ -505,7 +537,10 @@ impl DeviceImpl {
     }
     /// Sets the MTU (Maximum Transmission Unit) for the interface.
     pub fn set_mtu(&self, value: u16) -> std::io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_mtu = value as i32;
@@ -524,7 +559,10 @@ impl DeviceImpl {
         netmask: Netmask,
         destination: Option<IPv4>,
     ) -> io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let associate_route = self.associate_route.load(Ordering::Relaxed);
         self.set_network_address_impl(address, netmask, destination, associate_route)
     }
@@ -566,7 +604,10 @@ impl DeviceImpl {
         address: IPv4,
         netmask: Netmask,
     ) -> io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let associate_route = self.associate_route.load(Ordering::Relaxed);
         let addr = address.ipv4()?.into();
         let netmask = netmask.netmask()?.into();
@@ -575,7 +616,10 @@ impl DeviceImpl {
     }
     /// Removes an IP address from the interface.
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             match addr {
                 IpAddr::V4(addr) => {
@@ -632,7 +676,10 @@ impl DeviceImpl {
         addr: IPv6,
         netmask: Netmask,
     ) -> io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let associate_route = self.associate_route.load(Ordering::Relaxed);
         self.add_address(
             addr.ipv6()?.into(),
@@ -647,7 +694,10 @@ impl DeviceImpl {
     /// into the hardware address field. It then applies the change via a system call.
     /// This operation is typically supported only for TAP devices.
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> std::io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_addr.sa_len = ETHER_ADDR_LEN;
@@ -665,7 +715,10 @@ impl DeviceImpl {
     /// This function queries the MAC address by the interface name using getifaddrs.
     /// An error is returned if the MAC address cannot be found.
     pub fn mac_address(&self) -> std::io::Result<[u8; ETHER_ADDR_LEN as usize]> {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let name = self.name_impl()?;
         let interfaces = getifaddrs::getifaddrs()?;
         for interface in interfaces {
@@ -684,7 +737,10 @@ impl DeviceImpl {
     /// family to all packets (same as NetBSD).
     /// If this is not enabled, the kernel silently drops all IPv6 packets on output and gets confused on input.
     pub fn enable_tunsifhead(&self) -> io::Result<()> {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Self::enable_tunsifhead_impl(&self.tun.fd)
     }
 }
@@ -705,8 +761,8 @@ mod tests {
     use std::os::fd::AsRawFd;
 
     #[test]
-    fn borrowed_device_drop_leaves_descriptor_open() {
-        let file = File::open("/dev/null").unwrap();
+    fn borrowed_device_drop_leaves_descriptor_open() -> io::Result<()> {
+        let file = File::open("/dev/null")?;
         let raw_fd = file.as_raw_fd();
         let device = DeviceImpl {
             name: RwLock::new("tun-test".into()),
@@ -718,5 +774,6 @@ mod tests {
         drop(device);
 
         assert!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) } >= 0);
+        Ok(())
     }
 }

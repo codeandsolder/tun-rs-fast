@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 use log::*;
 
 use crate::platform::windows::tun::wintun_raw;
@@ -7,10 +6,6 @@ use widestring::U16CStr;
 /// Sets the logger wintun will use when logging. Maps to the WintunSetLogger C function
 pub fn set_logger(win_tun: &wintun_raw::wintun, f: wintun_raw::WINTUN_LOGGER_CALLBACK) {
     unsafe { win_tun.WintunSetLogger(f) };
-}
-
-pub fn reset_logger(win_tun: &wintun_raw::wintun) {
-    set_logger(win_tun, None);
 }
 
 /// The logger that is active by default. Logs messages to the log crate
@@ -39,7 +34,6 @@ pub unsafe extern "C" fn default_logger(
 }
 fn default_logger_(level: wintun_raw::WINTUN_LOGGER_LEVEL, message: *const wintun_raw::WCHAR) {
     //Cant wait for RFC 2585
-    #[allow(unused_unsafe)]
     //Wintun will always give us a valid UTF16 null termineted string
     let msg = unsafe { U16CStr::from_ptr_str(message) };
     let utf8_msg = msg.to_string_lossy();

@@ -1,11 +1,30 @@
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use bytes::BytesMut;
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use futures::{SinkExt, StreamExt};
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::net::Ipv4Addr;
-#[allow(unused_imports)]
-use std::sync::Arc;
 use tun_rs::async_framed::{BytesCodec, DeviceFramed};
 #[cfg(any(
     target_os = "windows",
@@ -15,12 +34,17 @@ use tun_rs::async_framed::{BytesCodec, DeviceFramed};
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-#[allow(unused_imports)]
 use tun_rs::DeviceBuilder;
-#[allow(unused_imports)]
-use tun_rs::{AsyncDevice, SyncDevice};
 
-mod protocol_handle;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+pub mod protocol_handle;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -64,10 +88,20 @@ async fn main() -> std::io::Result<()> {
 ))]
 
 fn main() -> std::io::Result<()> {
-    unimplemented!()
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this example requires native TUN/TAP device creation",
+    ))
 }
 
-#[allow(dead_code)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 async fn handle_pkt(pkt: &[u8], framed: &mut DeviceFramed<BytesCodec>) -> std::io::Result<()> {
     if let Some(buf) = protocol_handle::ping(pkt) {
         framed.send(BytesMut::from(buf.as_slice())).await?;
