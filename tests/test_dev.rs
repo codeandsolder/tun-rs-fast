@@ -21,7 +21,9 @@ use pnet_packet::Packet;
 use tun_rs::DeviceBuilder;
 use tun_rs::SyncDevice;
 
+#[cfg(any(feature = "async_tokio", not(feature = "async_io")))]
 const TEST_IPV4_LOCAL: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 26, 1, 100);
+#[cfg(any(feature = "async_tokio", not(feature = "async_io")))]
 const TEST_IPV4_REMOTE: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 26, 1, 101);
 
 #[cfg(any(
