@@ -105,6 +105,14 @@ jobs:
           cargo-args: "--all-targets --features async_io,async_framed,interruptible,experimental"
           install-toolchain: "false"
 
+      - name: Targeted Miri packet-safety checks
+        if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
+        shell: bash
+        run: |
+          rustup +nightly component add miri
+          cargo +nightly miri setup
+          cargo +nightly miri test --lib miri_ -- --test-threads=1
+
       - name: Unit tests
         if: ${{ !cancelled() }}
         run: |
