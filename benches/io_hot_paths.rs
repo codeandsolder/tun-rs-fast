@@ -4,17 +4,11 @@ use std::hint::black_box;
 use tun_rs::async_framed::{BytesCodec, Decoder, Encoder};
 
 fn benchmark_result<T, E>(result: Result<T, E>) -> T {
-    match result {
-        Ok(value) => value,
-        Err(_) => std::process::abort(),
-    }
+    result.unwrap_or_else(|_| std::process::abort())
 }
 
 fn benchmark_option<T>(value: Option<T>) -> T {
-    match value {
-        Some(value) => value,
-        None => std::process::abort(),
-    }
+    value.unwrap_or_else(|| std::process::abort())
 }
 
 fn bench_framed_codec(c: &mut Criterion) {

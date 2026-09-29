@@ -21,6 +21,11 @@ use pnet_packet::Packet;
 use tun_rs::DeviceBuilder;
 use tun_rs::SyncDevice;
 
+#[cfg(any(feature = "async_tokio", not(feature = "async_io")))]
+const TEST_IPV4_LOCAL: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 26, 1, 100);
+#[cfg(any(feature = "async_tokio", not(feature = "async_io")))]
+const TEST_IPV4_REMOTE: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 26, 1, 101);
+
 #[cfg(any(
     target_os = "windows",
     target_os = "macos",
@@ -34,7 +39,7 @@ use tun_rs::SyncDevice;
 fn test_udp_v4() -> TestResult {
     let test_msg = "test udp";
     let device = DeviceBuilder::new()
-        .ipv4("10.26.1.100", 24, None)
+        .ipv4(TEST_IPV4_LOCAL, 24, None)
         .build_sync()?;
     let device = Arc::new(device);
     let _device = device.clone();
@@ -66,8 +71,8 @@ fn test_udp_v4() -> TestResult {
         }
     });
     std::thread::sleep(Duration::from_secs(6));
-    let udp_socket = std::net::UdpSocket::bind("10.26.1.100:0")?;
-    udp_socket.send_to(test_msg.as_bytes(), "10.26.1.101:8080")?;
+    let udp_socket = std::net::UdpSocket::bind((TEST_IPV4_LOCAL, 0))?;
+    udp_socket.send_to(test_msg.as_bytes(), (TEST_IPV4_REMOTE, 8080))?;
     let time_now = std::time::Instant::now();
     // check whether the thread completes
     while !recv_flag_c.load(Ordering::Acquire) {
@@ -164,7 +169,7 @@ fn test_udp_v6() -> TestResult {
 async fn test_udp_v4() -> TestResult {
     let test_msg = "test udp";
     let device = DeviceBuilder::new()
-        .ipv4("10.26.1.100", 24, None)
+        .ipv4(TEST_IPV4_LOCAL, 24, None)
         .build_async()?;
 
     let device = Arc::new(device);
@@ -198,9 +203,9 @@ async fn test_udp_v4() -> TestResult {
     });
     tokio::time::sleep(Duration::from_secs(6)).await;
 
-    let udp_socket = tokio::net::UdpSocket::bind("10.26.1.200:0").await?;
+    let udp_socket = tokio::net::UdpSocket::bind((TEST_IPV4_LOCAL, 0)).await?;
     udp_socket
-        .send_to(test_msg.as_bytes(), "10.26.1.101:8080")
+        .send_to(test_msg.as_bytes(), (TEST_IPV4_REMOTE, 8080))
         .await?;
     tokio::select! {
         ()=tokio::time::sleep(Duration::from_secs(2))=>{
@@ -413,6 +418,8 @@ fn create_tun() -> TestResult {
     {
         use std::os::fd::IntoRawFd;
         let fd = device.into_raw_fd();
+        // SAFETY: IntoRawFd transfers ownership of the still-open TUN/TAP descriptor;
+        // SyncDevice::from_fd immediately takes over that ownership.
         unsafe {
             let sync_device = SyncDevice::from_fd(fd)?;
             let dev_name = sync_device.name()?;
@@ -451,6 +458,8 @@ fn create_tap() -> TestResult {
     {
         use std::os::fd::IntoRawFd;
         let fd = device.into_raw_fd();
+        // SAFETY: IntoRawFd transfers ownership of the still-open TUN/TAP descriptor;
+        // SyncDevice::from_fd immediately takes over that ownership.
         unsafe {
             let sync_device = SyncDevice::from_fd(fd)?;
             let dev_name = sync_device.name()?;

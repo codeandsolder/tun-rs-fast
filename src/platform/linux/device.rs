@@ -103,8 +103,9 @@ impl DeviceImpl {
         // Create the device node if it is missing.
         // Silently ignore errors, let opening the device report an error.
         // This way, we don't fail if someone races us to create the device node.
-        if let Ok(false) = std::fs::exists("/dev/net/tun") {
+        if matches!(std::fs::exists("/dev/net/tun"), Ok(false)) {
             std::fs::create_dir_all("/dev/net").ok();
+            // SAFETY: the path is a static NUL-terminated C string and mknod receives only value arguments; no Rust memory is retained.
             unsafe {
                 libc::mknod(
                     c"/dev/net/tun".as_ptr(),
@@ -114,6 +115,7 @@ impl DeviceImpl {
             }
         }
 
+        // SAFETY: ifreq is valid zero-initialized C storage; the checked device name copy is bounded, Fd::new validates open(), and ioctl pointers stay live synchronously.
         unsafe {
             let mut req: ifreq = mem::zeroed();
 
@@ -174,7 +176,7 @@ impl DeviceImpl {
                 (false, false)
             };
 
-            let device = DeviceImpl {
+            let device = Self {
                 tun: Tun::new(tun_fd),
                 vnet_hdr,
                 udp_gso,
@@ -185,17 +187,23 @@ impl DeviceImpl {
         }
     }
     unsafe fn set_tcp_offloads(&self) -> io::Result<()> {
-        let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
-        tunsetoffload(self.as_raw_fd(), tun_tcp_offloads as _)
-            .map(|_| ())
-            .map_err(io::Error::from)
+        // SAFETY: self owns a live TUN descriptor and the offload mask is an ABI-defined integer consumed synchronously by TUNSETOFFLOAD.
+        unsafe {
+            let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
+            tunsetoffload(self.as_raw_fd(), tun_tcp_offloads as _)
+                .map(|_| ())
+                .map_err(io::Error::from)
+        }
     }
     unsafe fn set_tcp_udp_offloads(&self) -> io::Result<()> {
-        let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
-        let tun_udp_offloads = libc::TUN_F_USO4 | libc::TUN_F_USO6;
-        tunsetoffload(self.as_raw_fd(), (tun_tcp_offloads | tun_udp_offloads) as _)
-            .map(|_| ())
-            .map_err(io::Error::from)
+        // SAFETY: self owns a live TUN descriptor and the offload mask is an ABI-defined integer consumed synchronously by TUNSETOFFLOAD.
+        unsafe {
+            let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
+            let tun_udp_offloads = libc::TUN_F_USO4 | libc::TUN_F_USO6;
+            tunsetoffload(self.as_raw_fd(), (tun_tcp_offloads | tun_udp_offloads) as _)
+                .map(|_| ())
+                .map_err(io::Error::from)
+        }
     }
     #[expect(
         clippy::unnecessary_wraps,
@@ -217,7 +225,7 @@ impl DeviceImpl {
     ///
     /// # Description
     /// When multi-queue is enabled, create a new queue by duplicating an existing one.
-    pub(crate) fn try_clone(&self) -> io::Result<DeviceImpl> {
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
         let flags = self.flags;
         if flags & IFF_MULTI_QUEUE_SHORT != IFF_MULTI_QUEUE_SHORT {
             return Err(io::Error::new(
@@ -225,6 +233,7 @@ impl DeviceImpl {
                 "iff_multi_queue not enabled",
             ));
         }
+        // SAFETY: request() returns initialized ifreq storage, the copied descriptor is validated by Fd::new, and all ioctl pointers remain live for each call.
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_flags = flags;
@@ -233,7 +242,7 @@ impl DeviceImpl {
             if let Err(err) = tunsetiff(tun_fd.inner, (&raw mut req).cast()) {
                 return Err(io::Error::from(err));
             }
-            let dev = DeviceImpl {
+            let dev = Self {
                 tun: Tun::new(tun_fd),
                 vnet_hdr: self.vnet_hdr,
                 udp_gso: self.udp_gso,
@@ -255,14 +264,14 @@ impl DeviceImpl {
     ///
     /// This is determined by the `udp_gso` flag in the device.
     #[must_use]
-    pub fn udp_gso(&self) -> bool {
+    pub const fn udp_gso(&self) -> bool {
         self.udp_gso
     }
     /// Returns whether TCP Generic Segmentation Offload (GSO) is enabled.
     ///
     /// In this implementation, this is represented by the `vnet_hdr` flag.
     #[must_use]
-    pub fn tcp_gso(&self) -> bool {
+    pub const fn tcp_gso(&self) -> bool {
         self.vnet_hdr
     }
     /// Sets the transmit queue length for the network interface.
@@ -280,6 +289,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: request() returns initialized ifreq storage; ctl() owns a live socket and the request pointer remains valid for the synchronous ioctl.
         unsafe {
             let mut ifreq = self.request()?;
             ifreq.ifr_ifru.ifru_metric = libc::c_int::try_from(tx_queue_len).map_err(|_| {
@@ -304,6 +314,7 @@ impl DeviceImpl {
             .op_lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: request() returns initialized ifreq storage; ctl() owns a live socket and the kernel writes into ifreq only during the synchronous ioctl.
         unsafe {
             let mut ifreq = self.request()?;
             if let Err(err) = tx_queue_len(ctl()?.as_raw_fd(), &raw mut ifreq) {
@@ -350,6 +361,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: self owns a live TUN descriptor; the pointer to the constant persist flag remains valid for the synchronous ioctl.
         unsafe {
             if let Err(err) = tunsetpersist(self.as_raw_fd(), &1) {
                 Err(io::Error::from(err))
@@ -389,6 +401,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: self owns a live TUN descriptor and value remains valid for the synchronous TUNSETOWNER ioctl.
         unsafe {
             if let Err(err) = tunsetowner(self.as_raw_fd(), &raw const value) {
                 Err(io::Error::from(err))
@@ -428,6 +441,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: self owns a live TUN descriptor and value remains valid for the synchronous TUNSETGROUP ioctl.
         unsafe {
             if let Err(err) = tunsetgroup(self.as_raw_fd(), &raw const value) {
                 Err(io::Error::from(err))
@@ -832,6 +846,7 @@ impl DeviceImpl {
     ///
     /// Returns an error if the underlying TUN/TAP ioctl, socket operation, address conversion, or interface lookup fails.
     pub fn remove_address_v6_impl(&self, addr: Ipv6Addr, prefix: u8) -> io::Result<()> {
+        // SAFETY: in6_ifreq is zero-initialized then populated with checked index/prefix/address values; the live control socket and request outlive the ioctl.
         unsafe {
             let if_index = self.if_index_impl()?;
             let ctl = ctl_v6()?;
@@ -857,9 +872,10 @@ impl DeviceImpl {
         request(&self.name_impl()?)
     }
     fn set_address_v4(&self, addr: Ipv4Addr) -> io::Result<()> {
+        // SAFETY: req owns the address sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
             let mut req = self.request()?;
-            ipaddr_to_sockaddr(addr, 0, &mut req.ifr_ifru.ifru_addr, OVERWRITE_SIZE);
+            ipaddr_to_sockaddr(addr, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
             if let Err(err) = siocsifaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
@@ -867,9 +883,10 @@ impl DeviceImpl {
         Ok(())
     }
     fn set_netmask(&self, value: Ipv4Addr) -> io::Result<()> {
+        // SAFETY: req owns the netmask sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
             let mut req = self.request()?;
-            ipaddr_to_sockaddr(value, 0, &mut req.ifr_ifru.ifru_netmask, OVERWRITE_SIZE);
+            ipaddr_to_sockaddr(value, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
             if let Err(err) = siocsifnetmask(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
@@ -878,9 +895,10 @@ impl DeviceImpl {
     }
 
     fn set_destination(&self, value: Ipv4Addr) -> io::Result<()> {
+        // SAFETY: req owns the destination sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
             let mut req = self.request()?;
-            ipaddr_to_sockaddr(value, 0, &mut req.ifr_ifru.ifru_dstaddr, OVERWRITE_SIZE);
+            ipaddr_to_sockaddr(value, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
             if let Err(err) = siocsifdstaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
@@ -890,10 +908,12 @@ impl DeviceImpl {
 
     /// Retrieves the name of the network interface.
     pub(crate) fn name_impl(&self) -> io::Result<String> {
+        // SAFETY: self owns a live TUN descriptor for the duration of name(), satisfying its raw-fd contract.
         unsafe { name(self.as_raw_fd()) }
     }
 
     fn ifru_flags(&self) -> io::Result<i16> {
+        // SAFETY: req is initialized for SIOCGIFFLAGS, ctl() owns a live socket, and the kernel writes into req only during the synchronous ioctl.
         unsafe {
             let ctl = ctl()?;
             let mut req = self.request()?;
@@ -977,6 +997,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: CString and the IFNAMSIZ check bound the non-overlapping copy into ifru_newname; the initialized req then lives through the rename ioctl.
         unsafe {
             let tun_name = CString::new(value)?;
 
@@ -1026,6 +1047,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is initialized before each flags ioctl; ctl() owns the live socket and the raw pointers remain valid for each synchronous call.
         unsafe {
             let ctl = ctl()?;
             let mut req = self.request()?;
@@ -1078,6 +1100,7 @@ impl DeviceImpl {
             .op_lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is initialized for SIOCGIFBRDADDR; after the successful ioctl the returned sockaddr bytes are initialized before conversion.
         unsafe {
             let mut req = self.request()?;
             if let Err(err) = siocgifbrdaddr(ctl()?.as_raw_fd(), &raw mut req) {
@@ -1100,9 +1123,10 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req owns the sockaddr storage filled by ipaddr_to_sockaddr; ctl() owns a live socket and the ioctl only borrows req for the call.
         unsafe {
             let mut req = self.request()?;
-            ipaddr_to_sockaddr(value, 0, &mut req.ifr_ifru.ifru_broadaddr, OVERWRITE_SIZE);
+            ipaddr_to_sockaddr(value, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
             if let Err(err) = siocsifbrdaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
@@ -1305,6 +1329,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: in6_ifreq is zero-initialized then populated with a checked interface index/prefix/address; ctl_v6() owns the live socket used synchronously.
         unsafe {
             let if_index = self.if_index_impl()?;
             let ctl = ctl_v6()?;
@@ -1336,6 +1361,7 @@ impl DeviceImpl {
             .op_lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is initialized for SIOCGIFMTU, ctl() owns a live control socket, and the kernel writes only during the synchronous ioctl.
         unsafe {
             let mut req = self.request()?;
 
@@ -1381,6 +1407,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is initialized for SIOCSIFMTU, ctl() owns a live control socket, and the ioctl pointer is valid for the synchronous call.
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_mtu = i32::from(value);
@@ -1405,6 +1432,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is initialized for SIOCSIFHWADDR, ctl() owns a live control socket, and the ioctl pointer is valid for the synchronous call.
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_hwaddr.sa_family = ARPHRD_ETHER;
@@ -1432,6 +1460,7 @@ impl DeviceImpl {
             .op_lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is initialized for SIOCGIFHWADDR, ctl() owns a live control socket, and the ioctl pointer is valid for the synchronous call.
         unsafe {
             let mut req = self.request()?;
 
@@ -1450,13 +1479,16 @@ impl DeviceImpl {
 }
 
 unsafe fn name(fd: RawFd) -> io::Result<String> {
-    let mut req: ifreq = mem::zeroed();
-    if let Err(err) = tungetiff(fd, (&raw mut req).cast()) {
-        return Err(io::Error::from(err));
+    // SAFETY: callers pass a live TUN descriptor; tungetiff initializes req, including a NUL-terminated ifr_name, before CStr reads it.
+    unsafe {
+        let mut req: ifreq = mem::zeroed();
+        if let Err(err) = tungetiff(fd, (&raw mut req).cast()) {
+            return Err(io::Error::from(err));
+        }
+        let c_str = std::ffi::CStr::from_ptr(req.ifr_name.as_ptr().cast::<c_char>());
+        let tun_name = c_str.to_string_lossy().into_owned();
+        Ok(tun_name)
     }
-    let c_str = std::ffi::CStr::from_ptr(req.ifr_name.as_ptr().cast::<c_char>());
-    let tun_name = c_str.to_string_lossy().into_owned();
-    Ok(tun_name)
 }
 
 fn request(name: &str) -> io::Result<ifreq> {
@@ -1472,6 +1504,7 @@ fn request(name: &str) -> io::Result<ifreq> {
     // the request union. The bounds check above proves the copy fits in
     // ifr_name, and CString::as_bytes_with_nul provides the terminator.
     let mut req: ifreq = unsafe { mem::zeroed() };
+    // SAFETY: the CString length check proves the NUL-terminated name fits in ifr_name; both pointers reference live non-overlapping storage.
     unsafe {
         ptr::copy_nonoverlapping(
             name.as_ptr(),
@@ -1489,8 +1522,8 @@ fn request(name: &str) -> io::Result<ifreq> {
 impl From<Layer> for c_short {
     fn from(layer: Layer) -> Self {
         match layer {
-            Layer::L2 => IFF_TAP as c_short,
-            Layer::L3 => IFF_TUN as c_short,
+            Layer::L2 => IFF_TAP as Self,
+            Layer::L3 => IFF_TUN as Self,
         }
     }
 }

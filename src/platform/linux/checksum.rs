@@ -63,7 +63,9 @@ unsafe fn checksum_no_fold_avx2(mut b: &[u8], initial: u64) -> u64 {
 
         while b.len() >= CHUNK_SIZE {
             // Load 32 bytes of data.
-            let data = _mm256_loadu_si256(b.as_ptr().cast::<__m256i>());
+            // SAFETY: the AVX2 caller contract is active and b.len() >= CHUNK_SIZE, so
+            // the unaligned load reads exactly 32 initialized bytes from the slice.
+            let data = unsafe { _mm256_loadu_si256(b.as_ptr().cast::<__m256i>()) };
             // Swap byte order from BE to LE.
             let swapped = _mm256_shuffle_epi8(data, shuffle_mask);
 
@@ -117,7 +119,9 @@ unsafe fn checksum_no_fold_sse41(mut b: &[u8], initial: u64) -> u64 {
 
         while b.len() >= CHUNK_SIZE {
             // Load 16 bytes of data.
-            let data = _mm_loadu_si128(b.as_ptr().cast::<__m128i>());
+            // SAFETY: the SSE4.1 caller contract is active and b.len() >= CHUNK_SIZE, so
+            // the unaligned load reads exactly 16 initialized bytes from the slice.
+            let data = unsafe { _mm_loadu_si128(b.as_ptr().cast::<__m128i>()) };
             // Swap byte order from BE to LE.
             let swapped = _mm_shuffle_epi8(data, shuffle_mask);
 
@@ -256,6 +260,7 @@ mod tests {
                 let expected = checksum_no_fold_scalar(&data, initial);
                 if is_x86_feature_detected!("avx2") {
                     // Calculate the actual value using the AVX2 function
+                    // SAFETY: the immediately preceding runtime feature check proves AVX2 is available on this CPU.
                     let actual = unsafe { checksum_no_fold_avx2(&data, initial) };
 
                     // Assert that the results are equal
@@ -266,6 +271,7 @@ mod tests {
                     );
                 }
                 if is_x86_feature_detected!("sse4.1") {
+                    // SAFETY: the immediately preceding runtime feature check proves SSE4.1 is available on this CPU.
                     let actual = unsafe { checksum_no_fold_sse41(&data, initial) };
 
                     // Assert that the results are equal

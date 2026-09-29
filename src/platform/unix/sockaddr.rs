@@ -5,20 +5,23 @@
 
 /// # Safety
 unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAddr> {
-    match libc::c_int::from(sa.addr_stor.ss_family) {
-        libc::AF_INET => {
-            let sa_in = sa.addr4;
-            let ip = std::net::Ipv4Addr::from(sa_in.sin_addr.s_addr.to_ne_bytes());
-            let port = u16::from_be(sa_in.sin_port);
-            Some(std::net::SocketAddr::new(ip.into(), port))
+    // SAFETY: ss_family selects the active sockaddr layout before its corresponding union member is read.
+    unsafe {
+        match libc::c_int::from(sa.addr_stor.ss_family) {
+            libc::AF_INET => {
+                let sa_in = sa.addr4;
+                let ip = std::net::Ipv4Addr::from(sa_in.sin_addr.s_addr.to_ne_bytes());
+                let port = u16::from_be(sa_in.sin_port);
+                Some(std::net::SocketAddr::new(ip.into(), port))
+            }
+            libc::AF_INET6 => {
+                let sa_in6 = sa.addr6;
+                let ip = std::net::Ipv6Addr::from(sa_in6.sin6_addr.s6_addr);
+                let port = u16::from_be(sa_in6.sin6_port);
+                Some(std::net::SocketAddr::new(ip.into(), port))
+            }
+            _ => None,
         }
-        libc::AF_INET6 => {
-            let sa_in6 = sa.addr6;
-            let ip = std::net::Ipv6Addr::from(sa_in6.sin6_addr.s6_addr);
-            let port = u16::from_be(sa_in6.sin6_port);
-            Some(std::net::SocketAddr::new(ip.into(), port))
-        }
-        _ => None,
     }
 }
 
@@ -26,9 +29,10 @@ unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAdd
     clippy::cast_possible_truncation,
     reason = "sockaddr family constants and sockaddr structure sizes are ABI-defined to fit their destination fields"
 )]
-fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
+const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
     match addr {
         std::net::SocketAddr::V4(ipv4) => {
+            // SAFETY: zero is a valid byte initialization for this C sockaddr union; the IPv4 member is fully populated before the value escapes.
             let mut addr: sockaddr_union = unsafe { std::mem::zeroed() };
             #[cfg(any(
                 target_os = "freebsd",
@@ -45,6 +49,7 @@ fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
             addr
         }
         std::net::SocketAddr::V6(ipv6) => {
+            // SAFETY: zero is a valid byte initialization for this C sockaddr union; the IPv6 member is fully populated before the value escapes.
             let mut addr: sockaddr_union = unsafe { std::mem::zeroed() };
             #[cfg(any(
                 target_os = "freebsd",
@@ -64,7 +69,10 @@ fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
 }
 
 /// # Safety
-/// Fill the `addr` with the `src_addr` and `src_port`, the `size` should be the size of overwriting
+/// `dst` must point to writable storage for at least
+/// `min(size, size_of::<sockaddr_union>())` bytes. The pointer must be derived from
+/// the complete backing C object being overwritten, not from a narrower Rust reference
+/// to one of its fields. The destination must not overlap the local source value.
 #[cfg(any(
     target_os = "linux",
     target_os = "macos",
@@ -75,17 +83,18 @@ fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
 pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
     src_addr: T,
     src_port: u16,
-    addr: &mut libc::sockaddr,
+    dst: *mut libc::c_void,
     size: usize,
 ) where
     T: Into<std::net::IpAddr>,
 {
     let sa = rs_addr_to_sockaddr((src_addr.into(), src_port).into());
-    std::ptr::copy_nonoverlapping(
-        (&raw const sa).cast::<libc::c_void>(),
-        std::ptr::from_mut(addr).cast::<libc::c_void>(),
-        size.min(std::mem::size_of::<sockaddr_union>()),
-    );
+    let copy_len = size.min(std::mem::size_of::<sockaddr_union>());
+    // SAFETY: the caller guarantees dst is valid for copy_len writable bytes and
+    // does not overlap the live local source union. u8 alignment is 1.
+    unsafe {
+        std::ptr::copy_nonoverlapping((&raw const sa).cast::<u8>(), dst.cast::<u8>(), copy_len);
+    }
 }
 
 #[repr(C)]
@@ -131,7 +140,8 @@ impl TryFrom<sockaddr_union> for std::net::SocketAddr {
     type Error = std::io::Error;
 
     fn try_from(addr: sockaddr_union) -> Result<Self, Self::Error> {
-        unsafe { sockaddr_to_rs_addr(&addr).ok_or(std::io::ErrorKind::InvalidInput.into()) }
+        // SAFETY: the family tag is read from the storage member first; sockaddr_to_rs_addr only reads the union member selected by that tag.
+        unsafe { sockaddr_to_rs_addr(&addr).ok_or_else(|| std::io::ErrorKind::InvalidInput.into()) }
     }
 }
 
@@ -152,29 +162,55 @@ fn test_conversion() -> std::io::Result<()> {
         assert_eq!(0x0208, addr.addr4.sin_port);
     }
     #[cfg(target_endian = "little")]
+    // SAFETY: rs_addr_to_sockaddr initialized the IPv4 union member selected by the test before these field reads.
     unsafe {
         assert_eq!(0x0100_007f, addr.addr4.sin_addr.s_addr);
         assert_eq!(0x0802, addr.addr4.sin_port);
     }
+    // SAFETY: addr was created by rs_addr_to_sockaddr, so its family tag and selected union member agree.
     let ip = unsafe { sockaddr_to_rs_addr(&addr) }
         .ok_or_else(|| std::io::Error::other("IPv4 sockaddr round-trip failed"))?;
     assert_eq!(ip, old);
 
     let old = std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
+    // SAFETY: addr was created by rs_addr_to_sockaddr, so its family tag and selected union member agree.
     let ip = unsafe { sockaddr_to_rs_addr(&addr) }
         .ok_or_else(|| std::io::Error::other("IPv6 sockaddr round-trip failed"))?;
     assert_eq!(ip, old);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let old = std::net::IpAddr::V4([10, 0, 0, 33].into());
+        // SAFETY: zero is valid initialization for the C sockaddr union before the helper writes the selected member.
         let mut addr: sockaddr_union = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::sockaddr_in>();
 
-        unsafe { ipaddr_to_sockaddr(old, 0x0208, &mut addr.addr, size) };
+        // SAFETY: the destination pointer comes from the complete sockaddr_union allocation,
+        // which is writable for at least size bytes and cannot overlap the local source union.
+        unsafe { ipaddr_to_sockaddr(old, 0x0208, (&raw mut addr).cast(), size) };
+        // SAFETY: addr was initialized immediately above and ipaddr_to_sockaddr populated its tagged sockaddr bytes before conversion.
         let ip = unsafe { sockaddr_to_rs_addr(&addr) }
             .ok_or_else(|| std::io::Error::other("IP sockaddr conversion failed"))?;
         assert_eq!(ip, std::net::SocketAddr::new(old, 0x0208));
     }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn miri_ipaddr_to_sockaddr_writes_enclosing_storage() -> std::io::Result<()> {
+    let old = std::net::IpAddr::V4([10, 26, 1, 100].into());
+    // SAFETY: all-zero is a valid initial byte state for the libc ifreq union storage.
+    let mut ifru: libc::__c_anonymous_ifr_ifru = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::__c_anonymous_ifr_ifru>();
+
+    // SAFETY: the pointer is derived from the complete ifreq union allocation, not
+    // from ifru_addr, and the declared size is exactly that writable allocation.
+    unsafe { ipaddr_to_sockaddr(old, 0x0208, (&raw mut ifru).cast(), size) };
+
+    // SAFETY: ipaddr_to_sockaddr initialized the sockaddr prefix of the union above.
+    let addr = sockaddr_union::from(unsafe { ifru.ifru_addr });
+    let actual = std::net::SocketAddr::try_from(addr)?;
+    assert_eq!(actual, std::net::SocketAddr::new(old, 0x0208));
     Ok(())
 }

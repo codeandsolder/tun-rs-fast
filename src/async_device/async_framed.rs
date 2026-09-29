@@ -50,6 +50,10 @@ pub trait Decoder {
     /// # Errors
     ///
     /// Returns a codec-specific error when the final buffered frame is invalid.
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the explicit match keeps EOF framing control flow branch-direct in a hot path"
+    )]
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         match self.decode(buf)? {
             Some(frame) => Ok(Some(frame)),
@@ -127,8 +131,7 @@ impl<T: Encoder<Item>, Item> Encoder<Item> for &mut T {
 /// use tun_rs::async_framed::{BytesCodec, DeviceFramed};
 /// use tun_rs::DeviceBuilder;
 ///
-/// #[tokio::main]
-/// async fn main() -> std::io::Result<()> {
+/// async fn run() -> std::io::Result<()> {
 ///     // Create a TUN device with IPv4 configuration
 ///     let dev = DeviceBuilder::new()
 ///         .name("tun0")
@@ -203,9 +206,9 @@ where
     T: Borrow<AsyncDevice>,
 {
     /// Construct from a [`AsyncDevice`] with a specific codec
-    pub fn new(dev: T, codec: C) -> DeviceFramed<C, T> {
+    pub fn new(dev: T, codec: C) -> Self {
         let buffer_size = compute_buffer_size(&dev);
-        DeviceFramed {
+        Self {
             r_state: ReadState::new(buffer_size, dev.borrow()),
             w_state: WriteState::new(buffer_size, dev.borrow()),
             dev,
@@ -216,21 +219,21 @@ where
     /// Returns the size of the read buffer in bytes.
     ///
     /// This indicates how much space is available for receiving packet data.
-    pub fn read_buffer_size(&self) -> usize {
+    pub const fn read_buffer_size(&self) -> usize {
         self.r_state.read_buffer_size()
     }
 
     /// Returns the size of the write buffer in bytes.
     ///
     /// This indicates how much space is available for buffering outbound packets.
-    pub fn write_buffer_size(&self) -> usize {
+    pub const fn write_buffer_size(&self) -> usize {
         self.w_state.write_buffer_size()
     }
 
     /// Sets the size of the read buffer in bytes.
     ///
     /// Must be at least as large as the MTU to ensure complete packet reception.
-    pub fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
+    pub const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.r_state.set_read_buffer_size(read_buffer_size);
     }
     /// Sets the size of the write buffer in bytes.
@@ -243,11 +246,11 @@ where
     ///
     /// # Parameters
     /// - `write_buffer_size`: Desired size in bytes for the write buffer.
-    pub fn set_write_buffer_size(&mut self, write_buffer_size: usize) {
+    pub const fn set_write_buffer_size(&mut self, write_buffer_size: usize) {
         self.w_state.set_write_buffer_size(write_buffer_size);
     }
     /// Returns a reference to the read buffer.
-    pub fn read_buffer(&self) -> &BytesMut {
+    pub const fn read_buffer(&self) -> &BytesMut {
         &self.r_state.rd
     }
 
@@ -255,7 +258,7 @@ where
     ///
     /// This allows direct manipulation of the buffer contents, which can be useful
     /// for advanced use cases or optimization.
-    pub fn read_buffer_mut(&mut self) -> &mut BytesMut {
+    pub const fn read_buffer_mut(&mut self) -> &mut BytesMut {
         &mut self.r_state.rd
     }
     /// Consumes the `Framed`, returning its underlying I/O stream.
@@ -272,7 +275,7 @@ where
     /// Split the framed device to read-half and write-half
     ///
     /// # Example
-    /// ```
+    /// ```no_run
     /// use std::net::Ipv4Addr;
     /// use std::sync::Arc;
     /// use tun_rs::{
@@ -314,8 +317,7 @@ where
 /// use tun_rs::async_framed::{BytesCodec, DeviceFramedRead};
 /// use tun_rs::DeviceBuilder;
 ///
-/// #[tokio::main]
-/// async fn main() -> std::io::Result<()> {
+/// async fn run() -> std::io::Result<()> {
 ///     // Create a TUN device with IPv4 configuration
 ///     let dev = DeviceBuilder::new()
 ///         .name("tun0")
@@ -351,7 +353,7 @@ where
     ///
     /// The read side of the framed device.
     /// # Example
-    /// ```
+    /// ```no_run
     /// use std::net::Ipv4Addr;
     /// use std::sync::Arc;
     /// use tun_rs::{
@@ -369,9 +371,9 @@ where
     /// ```
     /// # Note
     /// An efficient way is to directly use [`DeviceFramed::split`] if the device is cloneable
-    pub fn new(dev: T, codec: C) -> DeviceFramedRead<C, T> {
+    pub fn new(dev: T, codec: C) -> Self {
         let buffer_size = compute_buffer_size(&dev);
-        DeviceFramedRead {
+        Self {
             state: ReadState::new(buffer_size, dev.borrow()),
             dev,
             codec,
@@ -381,13 +383,13 @@ where
     /// Returns the size of the read buffer in bytes.
     ///
     /// This indicates how much space is available for receiving packet data.
-    pub fn read_buffer_size(&self) -> usize {
+    pub const fn read_buffer_size(&self) -> usize {
         self.state.read_buffer_size()
     }
     /// Sets the size of the read buffer in bytes.
     ///
     /// Must be at least as large as the MTU to ensure complete packet reception.
-    pub fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
+    pub const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.state.set_read_buffer_size(read_buffer_size);
     }
     /// Consumes the `Framed`, returning its underlying I/O stream.
@@ -428,8 +430,7 @@ where
 /// use tun_rs::async_framed::{BytesCodec, DeviceFramedWrite};
 /// use tun_rs::DeviceBuilder;
 ///
-/// #[tokio::main]
-/// async fn main() -> std::io::Result<()> {
+/// async fn run() -> std::io::Result<()> {
 ///     // Create a TUN device with IPv4 configuration
 ///     let dev = DeviceBuilder::new()
 ///         .name("tun0")
@@ -460,7 +461,7 @@ where
     ///
     /// The write side of the framed device.
     /// # Example
-    /// ```
+    /// ```no_run
     /// use std::net::Ipv4Addr;
     /// use std::sync::Arc;
     /// use tun_rs::{
@@ -478,9 +479,9 @@ where
     /// ```
     /// # Note
     /// An efficient way is to directly use [`DeviceFramed::split`] if the device is cloneable
-    pub fn new(dev: T, codec: C) -> DeviceFramedWrite<C, T> {
+    pub fn new(dev: T, codec: C) -> Self {
         let buffer_size = compute_buffer_size(&dev);
-        DeviceFramedWrite {
+        Self {
             state: WriteState::new(buffer_size, dev.borrow()),
             dev,
             codec,
@@ -490,7 +491,7 @@ where
     /// Returns the size of the write buffer in bytes.
     ///
     /// This indicates how much space is available for buffering outbound packets.
-    pub fn write_buffer_size(&self) -> usize {
+    pub const fn write_buffer_size(&self) -> usize {
         self.state.send_buffer_size
     }
     /// Sets the size of the write buffer in bytes.
@@ -503,7 +504,7 @@ where
     ///
     /// # Parameters
     /// - `write_buffer_size`: Desired size in bytes for the write buffer.
-    pub fn set_write_buffer_size(&mut self, write_buffer_size: usize) {
+    pub const fn set_write_buffer_size(&mut self, write_buffer_size: usize) {
         self.state.set_write_buffer_size(write_buffer_size);
     }
 
@@ -588,7 +589,7 @@ struct ReadState {
     packet_splitter: Option<PacketSplitter>,
 }
 impl ReadState {
-    pub(crate) fn new(recv_buffer_size: usize, device: &AsyncDevice) -> ReadState {
+    pub(crate) fn new(recv_buffer_size: usize, device: &AsyncDevice) -> Self {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         let packet_splitter = if device.tcp_gso() {
             Some(PacketSplitter::new(recv_buffer_size))
@@ -596,7 +597,7 @@ impl ReadState {
             None
         };
 
-        ReadState {
+        Self {
             recv_buffer_size,
             rd: BytesMut::with_capacity(recv_buffer_size),
             #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
@@ -604,11 +605,11 @@ impl ReadState {
         }
     }
 
-    pub(crate) fn read_buffer_size(&self) -> usize {
+    pub(crate) const fn read_buffer_size(&self) -> usize {
         self.recv_buffer_size
     }
 
-    pub(crate) fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
+    pub(crate) const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.recv_buffer_size = read_buffer_size;
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if let Some(packet_splitter) = &mut self.packet_splitter {
@@ -623,7 +624,7 @@ struct WriteState {
     packet_arena: Option<PacketArena>,
 }
 impl WriteState {
-    pub(crate) fn new(send_buffer_size: usize, device: &AsyncDevice) -> WriteState {
+    pub(crate) fn new(send_buffer_size: usize, device: &AsyncDevice) -> Self {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         let packet_arena = if device.tcp_gso() {
             Some(PacketArena::new())
@@ -631,18 +632,18 @@ impl WriteState {
             None
         };
 
-        WriteState {
+        Self {
             send_buffer_size,
             wr: BytesMut::new(),
             #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
             packet_arena,
         }
     }
-    pub(crate) fn write_buffer_size(&self) -> usize {
+    pub(crate) const fn write_buffer_size(&self) -> usize {
         self.send_buffer_size
     }
 
-    pub(crate) fn set_write_buffer_size(&mut self, write_buffer_size: usize) {
+    pub(crate) const fn set_write_buffer_size(&mut self, write_buffer_size: usize) {
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if self.packet_arena.is_some() {
             // When GSO is enabled, send_buffer_size is no longer controlled by this parameter.
@@ -660,8 +661,8 @@ pub struct BytesCodec(());
 impl BytesCodec {
     /// Creates a new `BytesCodec` for shipping around raw bytes.
     #[must_use]
-    pub fn new() -> BytesCodec {
-        BytesCodec(())
+    pub const fn new() -> Self {
+        Self(())
     }
 }
 impl Decoder for BytesCodec {
@@ -708,7 +709,7 @@ struct PacketSplitter {
 }
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 impl PacketSplitter {
-    fn new(recv_buffer_size: usize) -> PacketSplitter {
+    fn new(recv_buffer_size: usize) -> Self {
         let bufs = vec![BytesMut::zeroed(recv_buffer_size); IDEAL_BATCH_SIZE];
         let sizes = vec![0usize; IDEAL_BATCH_SIZE];
         Self {
@@ -754,7 +755,7 @@ impl PacketSplitter {
             Some(buf)
         }
     }
-    fn set_recv_buffer_size(&mut self, recv_buffer_size: usize) {
+    const fn set_recv_buffer_size(&mut self, recv_buffer_size: usize) {
         self.recv_buffer_size = recv_buffer_size;
     }
 }
@@ -767,7 +768,7 @@ struct PacketArena {
 }
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 impl PacketArena {
-    fn new() -> PacketArena {
+    fn new() -> Self {
         Self {
             gro_table: GROTable::default(),
             offset: 0,
@@ -841,7 +842,7 @@ impl PacketArena {
         self.offset = 0;
         self.send_index = 0;
     }
-    fn is_idle(&self) -> bool {
+    const fn is_idle(&self) -> bool {
         IDEAL_BATCH_SIZE > self.offset && self.gro_table.to_write.is_empty()
     }
 }
@@ -855,11 +856,7 @@ where
     T: Borrow<AsyncDevice>,
     C: Decoder,
 {
-    fn new(
-        dev: &'a T,
-        codec: &'a mut C,
-        state: &'a mut ReadState,
-    ) -> DeviceFramedReadInner<'a, C, T> {
+    const fn new(dev: &'a T, codec: &'a mut C, state: &'a mut ReadState) -> Self {
         DeviceFramedReadInner { dev, codec, state }
     }
 
@@ -896,6 +893,8 @@ where
             }
             len
         };
+        // SAFETY: poll_recv_uninit initialized exactly len bytes in the spare capacity,
+        // and the explicit check above proves len does not exceed that capacity.
         unsafe { self.state.rd.advance_mut(len) };
 
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
@@ -923,11 +922,7 @@ impl<'a, C, T> DeviceFramedWriteInner<'a, C, T>
 where
     T: Borrow<AsyncDevice>,
 {
-    fn new(
-        dev: &'a T,
-        codec: &'a mut C,
-        state: &'a mut WriteState,
-    ) -> DeviceFramedWriteInner<'a, C, T> {
+    const fn new(dev: &'a T, codec: &'a mut C, state: &'a mut WriteState) -> Self {
         DeviceFramedWriteInner { dev, codec, state }
     }
 
