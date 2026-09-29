@@ -82,7 +82,7 @@ pub(crate) fn generate_packet_information(_ipv6: bool) -> [u8; PIL] {
     }
 }
 
-pub struct Tun {
+pub(crate) struct Tun {
     pub(crate) fd: Fd,
     #[cfg(any(
         target_os = "macos",

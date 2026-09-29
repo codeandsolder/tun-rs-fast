@@ -12,7 +12,7 @@ use bytes::buf::UninitSlice;
 use libc::{self, fcntl, F_GETFL, O_NONBLOCK};
 
 /// POSIX file descriptor support for `io` traits.
-pub struct Fd {
+pub(crate) struct Fd {
     pub(crate) inner: RawFd,
     borrow: bool,
 }
@@ -59,6 +59,8 @@ impl Fd {
     }
     #[cfg(target_os = "macos")]
     pub(crate) fn set_cloexec(&self) -> io::Result<()> {
+        // SAFETY: self owns or borrows a live descriptor; both fcntl calls are
+        // synchronous value-only operations and do not retain Rust memory.
         unsafe {
             let flags = fcntl(self.inner, libc::F_GETFD);
             if flags < 0 {

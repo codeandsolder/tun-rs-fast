@@ -250,8 +250,10 @@ pub(in crate::platform) fn ctl() -> io::Result<Fd> {
 }
 #[cfg(target_os = "macos")]
 pub(in crate::platform) fn ctl() -> io::Result<Fd> {
-    let fd = Fd::new(libc::socket(AF_INET, SOCK_DGRAM, 0))?;
-    _ = fd.set_cloexec();
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel;
+    // Fd::new validates the latter before taking ownership.
+    let fd = unsafe { Fd::new(libc::socket(AF_INET, SOCK_DGRAM, 0))? };
+    fd.set_cloexec()?;
     Ok(fd)
 }
 #[cfg(any(
@@ -266,8 +268,10 @@ pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
 }
 #[cfg(target_os = "macos")]
 pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
-    let fd = Fd::new(libc::socket(AF_INET6, SOCK_DGRAM, 0))?;
-    _ = fd.set_cloexec();
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel;
+    // Fd::new validates the latter before taking ownership.
+    let fd = unsafe { Fd::new(libc::socket(AF_INET6, SOCK_DGRAM, 0))? };
+    fd.set_cloexec()?;
     Ok(fd)
 }
 

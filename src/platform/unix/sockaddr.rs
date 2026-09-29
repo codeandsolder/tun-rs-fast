@@ -69,7 +69,10 @@ const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
 }
 
 /// # Safety
-/// Fill the `addr` with the `src_addr` and `src_port`, the `size` should be the size of overwriting
+/// `dst` must point to writable storage for at least
+/// `min(size, size_of::<sockaddr_union>())` bytes. The pointer must be derived from
+/// the complete backing C object being overwritten, not from a narrower Rust reference
+/// to one of its fields. The destination must not overlap the local source value.
 #[cfg(any(
     target_os = "linux",
     target_os = "macos",
@@ -77,22 +80,20 @@ const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub unsafe fn ipaddr_to_sockaddr<T>(
+pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
     src_addr: T,
     src_port: u16,
-    addr: &mut libc::sockaddr,
+    dst: *mut libc::c_void,
     size: usize,
 ) where
     T: Into<std::net::IpAddr>,
 {
-    // SAFETY: addr is a valid writable sockaddr reference, the source is a live local union, and the copy length is clamped to the union size.
+    let sa = rs_addr_to_sockaddr((src_addr.into(), src_port).into());
+    let copy_len = size.min(std::mem::size_of::<sockaddr_union>());
+    // SAFETY: the caller guarantees dst is valid for copy_len writable bytes and
+    // does not overlap the live local source union. u8 alignment is 1.
     unsafe {
-        let sa = rs_addr_to_sockaddr((src_addr.into(), src_port).into());
-        std::ptr::copy_nonoverlapping(
-            (&raw const sa).cast::<libc::c_void>(),
-            std::ptr::from_mut(addr).cast::<libc::c_void>(),
-            size.min(std::mem::size_of::<sockaddr_union>()),
-        );
+        std::ptr::copy_nonoverlapping((&raw const sa).cast::<u8>(), dst.cast::<u8>(), copy_len);
     }
 }
 
@@ -184,12 +185,32 @@ fn test_conversion() -> std::io::Result<()> {
         let mut addr: sockaddr_union = unsafe { std::mem::zeroed() };
         let size = std::mem::size_of::<libc::sockaddr_in>();
 
-        // SAFETY: addr is valid writable sockaddr storage and size is the exact sockaddr size used by the helper.
-        unsafe { ipaddr_to_sockaddr(old, 0x0208, &mut addr.addr, size) };
+        // SAFETY: the destination pointer comes from the complete sockaddr_union allocation,
+        // which is writable for at least size bytes and cannot overlap the local source union.
+        unsafe { ipaddr_to_sockaddr(old, 0x0208, (&raw mut addr).cast(), size) };
         // SAFETY: addr was initialized immediately above and ipaddr_to_sockaddr populated its tagged sockaddr bytes before conversion.
         let ip = unsafe { sockaddr_to_rs_addr(&addr) }
             .ok_or_else(|| std::io::Error::other("IP sockaddr conversion failed"))?;
         assert_eq!(ip, std::net::SocketAddr::new(old, 0x0208));
     }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn miri_ipaddr_to_sockaddr_writes_enclosing_storage() -> std::io::Result<()> {
+    let old = std::net::IpAddr::V4([10, 26, 1, 100].into());
+    // SAFETY: all-zero is a valid initial byte state for the libc ifreq union storage.
+    let mut ifru: libc::__c_anonymous_ifr_ifru = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::__c_anonymous_ifr_ifru>();
+
+    // SAFETY: the pointer is derived from the complete ifreq union allocation, not
+    // from ifru_addr, and the declared size is exactly that writable allocation.
+    unsafe { ipaddr_to_sockaddr(old, 0x0208, (&raw mut ifru).cast(), size) };
+
+    // SAFETY: ipaddr_to_sockaddr initialized the sockaddr prefix of the union above.
+    let addr = sockaddr_union::from(unsafe { ifru.ifru_addr });
+    let actual = std::net::SocketAddr::try_from(addr)?;
+    assert_eq!(actual, std::net::SocketAddr::new(old, 0x0208));
     Ok(())
 }

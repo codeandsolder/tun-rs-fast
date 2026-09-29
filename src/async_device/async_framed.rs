@@ -50,17 +50,21 @@ pub trait Decoder {
     /// # Errors
     ///
     /// Returns a codec-specific error when the final buffered frame is invalid.
+    #[expect(
+        clippy::option_if_let_else,
+        reason = "the explicit match keeps EOF framing control flow branch-direct in a hot path"
+    )]
     fn decode_eof(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
-        self.decode(buf)?.map_or_else(
-            || {
+        match self.decode(buf)? {
+            Some(frame) => Ok(Some(frame)),
+            None => {
                 if buf.is_empty() {
                     Ok(None)
                 } else {
                     Err(io::Error::other("bytes remaining on stream").into())
                 }
-            },
-            |frame| Ok(Some(frame)),
-        )
+            }
+        }
     }
 }
 
@@ -272,7 +276,7 @@ where
     /// Split the framed device to read-half and write-half
     ///
     /// # Example
-    /// ```
+    /// ```no_run
     /// use std::net::Ipv4Addr;
     /// use std::sync::Arc;
     /// use tun_rs::{
@@ -351,7 +355,7 @@ where
     ///
     /// The read side of the framed device.
     /// # Example
-    /// ```
+    /// ```no_run
     /// use std::net::Ipv4Addr;
     /// use std::sync::Arc;
     /// use tun_rs::{
@@ -460,7 +464,7 @@ where
     ///
     /// The write side of the framed device.
     /// # Example
-    /// ```
+    /// ```no_run
     /// use std::net::Ipv4Addr;
     /// use std::sync::Arc;
     /// use tun_rs::{

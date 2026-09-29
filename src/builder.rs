@@ -260,7 +260,11 @@ pub enum Layer {
 /// This structure stores settings such as the device name, operating layer,
 /// and platform-specific parameters (e.g., GUID, wintun file, ring capacity on Windows).
 #[derive(Clone, Default, Debug)]
-pub struct DeviceConfig {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "builder is publicly glob-reexported; lexical pub here would accidentally expose the internal DeviceConfig API"
+)]
+pub(crate) struct DeviceConfig {
     /// The name of the device/interface.
     pub(crate) dev_name: Option<String>,
     /// The description of the device/interface.
