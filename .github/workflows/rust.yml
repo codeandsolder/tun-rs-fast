@@ -109,7 +109,7 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
         shell: bash
         run: |
-          rustup +nightly component add miri
+          rustup +nightly component add miri rust-src
           cargo +nightly miri setup
           cargo +nightly miri test --lib miri_ -- --test-threads=1
 
