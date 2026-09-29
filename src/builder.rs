@@ -306,7 +306,7 @@ pub(crate) struct DeviceConfig {
     /// Capacity of the ring buffer on Windows.
     #[cfg(windows)]
     pub(crate) ring_capacity: Option<u32>,
-    /// Whether to call WintunDeleteDriver to remove the driver.
+    /// Whether to call `WintunDeleteDriver` to remove the driver.
     /// Default: false.
     #[cfg(windows)]
     pub(crate) delete_driver: Option<bool>,

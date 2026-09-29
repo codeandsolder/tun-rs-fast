@@ -5,6 +5,7 @@
 
 use crate::platform::windows::ffi;
 use crate::platform::windows::tap::READ_BUFFER_SIZE;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use bytes::BytesMut;
 use std::io;
@@ -73,6 +74,11 @@ impl ReadOverlapped {
             }
         }
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn overlapped_event(&self) -> OverlappedEvent {
         OverlappedEvent {
             event: self.inner.event_handle.clone(),
@@ -101,6 +107,11 @@ impl WriteOverlapped {
         self.finish_pending_blocking();
         self.submit(buf)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn write_interruptible(
         &mut self,
         buf: &[u8],
@@ -164,6 +175,11 @@ impl WriteOverlapped {
         }
         inner.no_pending_io = true;
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     fn finish_pending_interruptible(&mut self, interrupt_event: &OwnedHandle) -> io::Result<()> {
         if self.inner.no_pending_io {
             return Ok(());
@@ -224,6 +240,11 @@ impl OverlappedEvent {
     pub fn wait(&self) -> io::Result<()> {
         ffi::wait_for_single_object(self.event.as_raw_handle(), INFINITE)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn wait_interruptible(
         &self,
         interrupt_event: &OwnedHandle,

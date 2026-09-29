@@ -5,6 +5,7 @@ use crate::platform::windows::tap::TapDevice;
 use crate::platform::windows::tun::{check_adapter_if_orphaned_devices, TunDevice};
 use crate::platform::ETHER_ADDR_LEN;
 use crate::{Layer, ToIpv4Address, ToIpv4Netmask, ToIpv6Address, ToIpv6Netmask};
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use getifaddrs::Interface;
 use ipnet::IpNet;
@@ -35,6 +36,10 @@ pub struct DeviceImpl {
 
 impl DeviceImpl {
     /// Create a new `Device` for the given `Configuration`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "all platform constructors consume DeviceConfig through the shared builder API"
+    )]
     pub(crate) fn new(config: DeviceConfig) -> io::Result<Self> {
         let layer = config.layer.unwrap_or(Layer::L3);
         let mut count = 0;
@@ -84,7 +89,7 @@ impl DeviceImpl {
                     Ok(tun_device) => break tun_device,
                     Err(e) => {
                         if attempts > 3 {
-                            Err(e)?
+                            return Err(e);
                         }
                         attempts += 1;
                     }
@@ -107,9 +112,9 @@ impl DeviceImpl {
                         count += 1;
                         continue;
                     } else if !config.reuse_dev.unwrap_or(true) {
-                        Err(io::Error::other(format!(
+                        return Err(io::Error::other(format!(
                             "The network adapter [{name}] already exists."
-                        )))?
+                        )));
                     }
                     let tap =
                         TapDevice::open(HARDWARE_ID, name, persist, config.mac_address.as_ref())?;
@@ -118,7 +123,7 @@ impl DeviceImpl {
                 let tap = TapDevice::create(HARDWARE_ID, persist, config.mac_address.as_ref())?;
                 if let Err(e) = tap.set_name(name) {
                     if config.dev_name.is_some() {
-                        Err(e)?
+                        return Err(e);
                     }
                 }
                 break tap;
@@ -226,10 +231,10 @@ impl DeviceImpl {
         }
     }
 
-    fn if_index_impl(&self) -> io::Result<u32> {
+    fn if_index_impl(&self) -> u32 {
         match &self.driver {
-            Driver::Tun(tun) => Ok(tun.index()),
-            Driver::Tap(tap) => Ok(tap.index()),
+            Driver::Tun(tun) => tun.index(),
+            Driver::Tap(tap) => tap.index(),
         }
     }
     fn luid_impl(&self) -> NET_LUID_LH {
@@ -276,7 +281,7 @@ impl DeviceImpl {
         }
         netsh::set_interface_name(&name, value)
     }
-    /// Retrieves the interface index (if_index) of the device.
+    /// Retrieves the interface index (`if_index`) of the device.
     ///
     /// This is used for various network configuration commands.
     pub fn if_index(&self) -> io::Result<u32> {
@@ -284,7 +289,7 @@ impl DeviceImpl {
             .lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.if_index_impl()
+        Ok(self.if_index_impl())
     }
     /// Retrieves the interface LUID (locally unique identifier) of the device.
     ///
@@ -318,7 +323,7 @@ impl DeviceImpl {
             .lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = self.if_index_impl()?;
+        let index = self.if_index_impl();
         let r = Self::get_all_adapter_address()?
             .into_iter()
             .filter(|v| v.index == Some(index))
@@ -328,6 +333,10 @@ impl DeviceImpl {
     }
     /// Sets the IPv4 network address, netmask, and an optional destination address.
     /// Remove all previous set IPv4 addresses and set the specified address.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
+    )]
     pub fn set_network_address<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -342,10 +351,10 @@ impl DeviceImpl {
         // peer on Unix). On Windows it is used as the gateway for a default route, matching
         // the behavior of the previous `netsh ... set address gateway=` implementation.
         super::ffi::set_address(
-            self.if_index_impl()?,
+            self.if_index_impl(),
             address.ipv4()?.into(),
             netmask.prefix()?,
-            destination.map(|v| v.ipv4()).transpose()?.map(|v| v.into()),
+            destination.map(|v| v.ipv4()).transpose()?.map(Into::into),
         )
     }
     /// Add IPv4 network address and netmask to the interface.
@@ -379,6 +388,10 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
+    )]
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -388,7 +401,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let interface = netconfig_rs::Interface::try_from_index(self.if_index_impl()?)
+        let interface = netconfig_rs::Interface::try_from_index(self.if_index_impl())
             .map_err(io::Error::from)?;
         interface
             .add_address(IpNet::new_assert(address.ipv4()?.into(), netmask.prefix()?))
@@ -400,7 +413,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::remove_address(self.if_index_impl()?, addr)
+        super::ffi::remove_address(self.if_index_impl(), addr)
     }
     /// Adds an IPv6 address and netmask to the device.
     ///
@@ -433,6 +446,10 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
+    )]
     pub fn add_address_v6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         &self,
         addr: IPv6,
@@ -443,7 +460,7 @@ impl DeviceImpl {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         super::ffi::add_address(
-            self.if_index_impl()?,
+            self.if_index_impl(),
             addr.ipv6()?.into(),
             netmask.prefix()?,
             None,
@@ -457,9 +474,14 @@ impl DeviceImpl {
             .lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = self.if_index_impl()?;
+        let index = self.if_index_impl();
         let mtu = crate::platform::windows::ffi::get_mtu_by_index(index, true)?;
-        Ok(mtu as _)
+        u16::try_from(mtu).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("reported MTU {mtu} exceeds u16::MAX"),
+            )
+        })
     }
     /// Retrieves the MTU for the device (IPv6).
     ///
@@ -469,9 +491,14 @@ impl DeviceImpl {
             .lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let index = self.if_index_impl()?;
+        let index = self.if_index_impl();
         let mtu = crate::platform::windows::ffi::get_mtu_by_index(index, false)?;
-        Ok(mtu as _)
+        u16::try_from(mtu).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("reported MTU {mtu} exceeds u16::MAX"),
+            )
+        })
     }
     /// Sets the MTU for the device (IPv4).
     pub fn set_mtu(&self, mtu: u16) -> io::Result<()> {
@@ -479,7 +506,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu as _, true)
+        super::ffi::set_interface_mtu(self.if_index_impl(), u32::from(mtu), true)
     }
     /// Sets the MTU for the device (IPv6).
     pub fn set_mtu_v6(&self, mtu: u16) -> io::Result<()> {
@@ -487,7 +514,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu as _, false)
+        super::ffi::set_interface_mtu(self.if_index_impl(), u32::from(mtu), false)
     }
     /// Sets the MAC address for the device.
     ///
@@ -553,7 +580,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::set_interface_metric(self.if_index_impl()?, metric as u32)
+        super::ffi::set_interface_metric(self.if_index_impl(), u32::from(metric))
     }
     /// Retrieves the version of the underlying driver.
     ///
@@ -581,7 +608,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        dns::set_dns_servers(self.if_index_impl()?, &self.luid_impl(), dns_servers)
+        dns::set_dns_servers(self.if_index_impl(), &self.luid_impl(), dns_servers)
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
     /// is_ipv4: true to clear IPv4 DNS, false to clear IPv6 DNS

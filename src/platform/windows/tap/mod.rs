@@ -5,6 +5,7 @@
 
 use crate::platform::windows::tap::overlapped::{ReadOverlapped, WriteOverlapped};
 use crate::platform::windows::{ffi, netsh};
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::{Arc, Mutex};
