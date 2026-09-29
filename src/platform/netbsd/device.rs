@@ -325,7 +325,7 @@ impl DeviceImpl {
     unsafe fn request(&self) -> io::Result<ifreq> {
         let mut req: ifreq = mem::zeroed();
         let tun_name = self.name_impl()?;
-        copy_device_name(&tun_name, req.ifr_name.as_mut_ptr(), IFNAMSIZ);
+        copy_device_name(&tun_name, &mut req.ifr_name);
         Ok(req)
     }
 
@@ -333,7 +333,7 @@ impl DeviceImpl {
     unsafe fn request_v6(&self) -> io::Result<in6_ifreq> {
         let tun_name = self.name_impl()?;
         let mut req: in6_ifreq = mem::zeroed();
-        copy_device_name(&tun_name, req.ifra_name.as_mut_ptr(), IFNAMSIZ);
+        copy_device_name(&tun_name, &mut req.ifra_name);
         req.ifr_ifru.ifru_flags = IN6_IFF_NODAD as _;
         Ok(req)
     }

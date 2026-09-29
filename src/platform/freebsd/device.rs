@@ -170,7 +170,7 @@ impl DeviceImpl {
         unsafe {
             let tun_name = self.name_impl()?;
             let mut req: in6_ndireq = mem::zeroed();
-            copy_device_name(&tun_name, req.ifra_name.as_mut_ptr(), IFNAMSIZ);
+            copy_device_name(&tun_name, &mut req.ifra_name);
             req.ndi.flags &= !(ND6_IFF_AUTO_LINKLOCAL as u32);
             if let Err(err) = siocsifinfoin6(ctl_v6()?.as_raw_fd(), &mut req) {
                 return Err(io::Error::from(err));
@@ -267,7 +267,7 @@ impl DeviceImpl {
     unsafe fn request(&self) -> std::io::Result<ifreq> {
         let mut req: ifreq = mem::zeroed();
         let tun_name = self.name_impl()?;
-        copy_device_name(&tun_name, req.ifr_name.as_mut_ptr(), IFNAMSIZ);
+        copy_device_name(&tun_name, &mut req.ifr_name);
         Ok(req)
     }
 
@@ -275,7 +275,7 @@ impl DeviceImpl {
     unsafe fn request_v6(&self) -> std::io::Result<in6_ifreq> {
         let tun_name = self.name_impl()?;
         let mut req: in6_ifreq = mem::zeroed();
-        copy_device_name(&tun_name, req.ifra_name.as_mut_ptr(), IFNAMSIZ);
+        copy_device_name(&tun_name, &mut req.ifra_name);
         req.ifr_ifru.ifru_flags = IN6_IFF_NODAD as _;
         Ok(req)
     }

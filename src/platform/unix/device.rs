@@ -275,11 +275,56 @@ pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
     Ok(fd)
 }
 
-/// Helper function to safely copy a device name into a C buffer.
-/// This reduces code duplication across BSD platforms for setting interface names.
-#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd",))]
-pub(crate) unsafe fn copy_device_name(name: &str, dest: *mut libc::c_char, max_len: usize) {
-    use std::ptr;
-    let copy_len = name.len().min(max_len - 1);
-    ptr::copy_nonoverlapping(name.as_ptr() as *const libc::c_char, dest, copy_len);
+/// Copy a device name into a fixed-size C character buffer.
+///
+/// The name is truncated if necessary and the destination is always NUL-terminated when non-empty.
+#[cfg(any(
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    test
+))]
+pub(crate) fn copy_device_name(name: &str, dest: &mut [libc::c_char]) {
+    let Some((terminator, body)) = dest.split_last_mut() else {
+        return;
+    };
+    let copy_len = name.len().min(body.len());
+    for (slot, &byte) in body[..copy_len]
+        .iter_mut()
+        .zip(&name.as_bytes()[..copy_len])
+    {
+        *slot = libc::c_char::from_ne_bytes([byte]);
+    }
+    body[copy_len..].fill(0);
+    *terminator = 0;
+}
+
+#[cfg(test)]
+mod copy_device_name_tests {
+    use super::copy_device_name;
+
+    fn bytes(buf: &[libc::c_char]) -> Vec<u8> {
+        buf.iter().map(|&value| value.to_ne_bytes()[0]).collect()
+    }
+
+    #[test]
+    fn empty_destination_is_a_noop() {
+        let mut dest = [];
+        copy_device_name("tun0", &mut dest);
+        assert_eq!(dest.as_slice(), &[]);
+    }
+
+    #[test]
+    fn copies_and_nul_terminates() {
+        let mut dest = [libc::c_char::MAX; 8];
+        copy_device_name("tun0", &mut dest);
+        assert_eq!(bytes(&dest), b"tun0\0\0\0\0");
+    }
+
+    #[test]
+    fn truncates_to_leave_a_terminator() {
+        let mut dest = [libc::c_char::MAX; 4];
+        copy_device_name("tunnel", &mut dest);
+        assert_eq!(bytes(&dest), b"tun\0");
+    }
 }
