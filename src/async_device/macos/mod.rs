@@ -70,12 +70,18 @@ impl AsyncModel {
 }
 impl FromRawFd for AsyncDevice {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        AsyncDevice::from_fd(fd).unwrap()
+        match AsyncDevice::from_fd(fd) {
+            Ok(device) => device,
+            Err(_) => std::process::abort(),
+        }
     }
 }
 impl IntoRawFd for AsyncDevice {
     fn into_raw_fd(self) -> RawFd {
-        self.into_fd().unwrap()
+        match self.into_fd() {
+            Ok(fd) => fd,
+            Err(_) => std::process::abort(),
+        }
     }
 }
 impl AsRawFd for AsyncDevice {
@@ -98,7 +104,7 @@ impl AsyncDevice {
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
     /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
+    /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
         AsyncDevice::new_dev(DeviceImpl::borrow_raw(fd)?)
@@ -212,7 +218,7 @@ impl AsyncDevice {
             AsyncModel::Select(dev) => dev.poll_recv(cx, buf),
         }
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,

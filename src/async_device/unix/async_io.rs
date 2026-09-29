@@ -95,14 +95,14 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.0.poll_readable(cx) {
-                Poll::Ready(Ok(())) => continue,
+                Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
@@ -114,7 +114,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.0.poll_readable(cx) {
-                Poll::Ready(Ok(())) => continue,
+                Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }
@@ -169,7 +169,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.0.poll_writable(cx) {
-                Poll::Ready(Ok(())) => continue,
+                Poll::Ready(Ok(())) => {}
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }

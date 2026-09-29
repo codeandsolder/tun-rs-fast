@@ -1,8 +1,33 @@
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::net::Ipv4Addr;
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::sync::Arc;
-#[allow(unused_imports)]
+#[cfg(all(
+    any(feature = "async_tokio", feature = "async_io"),
+    any(
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+    )
+))]
+use tun_rs::AsyncDevice;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -12,10 +37,8 @@ use std::sync::Arc;
     target_os = "netbsd",
 ))]
 use tun_rs::DeviceBuilder;
-#[allow(unused_imports)]
-use tun_rs::{AsyncDevice, SyncDevice};
 
-mod protocol_handle;
+pub mod protocol_handle;
 
 #[cfg(feature = "async_tokio")]
 #[cfg(any(
@@ -39,8 +62,8 @@ async fn main() -> std::io::Result<()> {
 
     println!("name:{:?}", dev.name()?);
     println!("addresses:{:?}", dev.addresses()?);
-    let size = dev.mtu()? as usize;
-    println!("mtu:{size:?}",);
+    let size = usize::from(dev.mtu()?);
+    println!("mtu:{size:?}");
     let mut buf = vec![0; size];
     loop {
         tokio::select! {
@@ -77,15 +100,18 @@ async fn main() -> std::io::Result<()> {
             .ipv4(Ipv4Addr::from([10, 0, 0, 9]), 24, None)
             .build_async()?,
     );
-    let size = dev.mtu()? as usize;
+    let size = usize::from(dev.mtu()?);
     let mut buf = vec![0; size];
-    let ctrlc = CtrlC::new().expect("cannot create Ctrl+C handler?");
+    let ctrlc = CtrlC::new().map_err(|error| std::io::Error::other(error.to_string()))?;
     ctrlc
         .race(async {
             while let Ok(len) = dev.recv(&mut buf).await {
                 println!("len = {len}");
                 //println!("pkt: {:?}", &buf[..len]);
-                handle_pkt(&buf[..len], &dev).await.unwrap();
+                if let Err(error) = handle_pkt(&buf[..len], &dev).await {
+                    eprintln!("packet handling failed: {error}");
+                    break;
+                }
             }
         })
         .await;
@@ -99,10 +125,23 @@ async fn main() -> std::io::Result<()> {
     all(target_os = "linux", target_env = "ohos")
 ))]
 fn main() -> std::io::Result<()> {
-    unimplemented!()
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this example requires native TUN/TAP device creation",
+    ))
 }
 
-#[allow(dead_code)]
+#[cfg(all(
+    any(feature = "async_tokio", feature = "async_io"),
+    any(
+        target_os = "windows",
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+    )
+))]
 async fn handle_pkt(pkt: &[u8], dev: &AsyncDevice) -> std::io::Result<()> {
     if let Some(buf) = protocol_handle::ping(pkt) {
         dev.send(&buf).await?;

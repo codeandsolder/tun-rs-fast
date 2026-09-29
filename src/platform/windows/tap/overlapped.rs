@@ -22,7 +22,7 @@ impl ReadOverlapped {
     pub fn try_read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.try_read_raw(buf.as_mut_ptr(), buf.len())
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub fn try_read_uninit(&mut self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.try_read_raw(buf.as_mut_ptr(), buf.len())
     }

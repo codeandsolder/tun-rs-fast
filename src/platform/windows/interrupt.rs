@@ -18,21 +18,34 @@ impl InterruptEvent {
         self.trigger_value(1)
     }
     pub fn trigger_value(&self, val: i32) -> io::Result<()> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = val;
         ffi::set_event(self.handle.as_raw_handle())
     }
     #[cfg(feature = "interruptible")]
     pub fn is_trigger(&self) -> bool {
-        *self.state.lock().unwrap() != 0
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            != 0
     }
     #[cfg(feature = "interruptible")]
     pub fn value(&self) -> i32 {
-        *self.state.lock().unwrap()
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
     #[cfg(feature = "interruptible")]
     pub fn reset(&self) -> io::Result<()> {
-        let mut guard = self.state.lock().unwrap();
+        let mut guard = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = 0;
         ffi::reset_event(self.handle.as_raw_handle())
     }

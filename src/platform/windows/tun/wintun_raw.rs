@@ -1,4 +1,9 @@
-#![allow(warnings)]
+#![expect(
+    warnings,
+    unsafe_code,
+    clippy::pedantic,
+    reason = "generated Wintun bindgen output mirrors the C ABI and is regenerated rather than hand-edited"
+)]
 
 #[cfg(all(not(docsrs), feature = "bindgen"))]
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));

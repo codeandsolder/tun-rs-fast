@@ -1,5 +1,11 @@
+#![expect(
+    unsafe_code,
+    reason = "this module adapts raw Unix TUN/TAP descriptors and ioctl control sockets"
+)]
+
 use crate::platform::unix::{Fd, Tun};
 use crate::platform::DeviceImpl;
+#[cfg(any(feature = "async_tokio", feature = "async_io"))]
 use bytes::buf::UninitSlice;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "ohos")),
@@ -18,18 +24,13 @@ impl FromRawFd for DeviceImpl {
     ///
     /// The caller must ensure that `fd` is a valid, open file descriptor for a TUN/TAP device.
     ///
-    /// # Panics
-    ///
-    /// This function will panic if the provided file descriptor is invalid or cannot be used
-    /// to create a TUN/TAP device. This is acceptable because providing an invalid fd violates
-    /// the safety contract of `FromRawFd`.
+    /// If the descriptor violates this unsafe contract, construction aborts the process rather
+    /// than returning a partially initialized device.
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // If this panics, the caller violated the safety contract by providing an invalid fd
-        DeviceImpl::from_fd(fd).expect(
-            "Failed to create device from file descriptor. \
-                                         The provided fd must be a valid, open file descriptor \
-                                         for a TUN/TAP device.",
-        )
+        match DeviceImpl::from_fd(fd) {
+            Ok(device) => device,
+            Err(_) => std::process::abort(),
+        }
     }
 }
 impl AsRawFd for DeviceImpl {
@@ -58,7 +59,7 @@ impl DeviceImpl {
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
     /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
+    /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
         let tun = Fd::new_unchecked_with_borrow(fd, true);
@@ -78,7 +79,7 @@ impl DeviceImpl {
         self.tun.recv(buf)
     }
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.tun.recv_uninit(buf)
     }
@@ -160,10 +161,17 @@ impl DeviceImpl {
     /// Retrieves the interface index for the network interface.
     ///
     /// This function converts the interface name (obtained via `self.name()`) into a
-    /// C-compatible string (CString) and then calls the libc function `if_nametoindex`
+    /// C-compatible string (`CString`) and then calls the libc function `if_nametoindex`
     /// to retrieve the corresponding interface index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the underlying descriptor or interface operation fails.
     pub fn if_index(&self) -> io::Result<u32> {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.if_index_impl()
     }
     pub(crate) fn if_index_impl(&self) -> io::Result<u32> {
@@ -175,8 +183,12 @@ impl DeviceImpl {
     /// This function calls `getifaddrs` with the interface name,
     /// then iterates over the returned list of interface addresses, extracting and collecting
     /// the IP addresses into a vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the underlying descriptor or interface operation fails.
     pub fn addresses(&self) -> io::Result<Vec<std::net::IpAddr>> {
-        Ok(crate::platform::get_if_addrs_by_name(self.name_impl()?)?
+        Ok(crate::platform::get_if_addrs_by_name(&self.name_impl()?)?
             .iter()
             .filter_map(|v| v.address.ip_addr())
             .collect())
@@ -195,7 +207,10 @@ impl DeviceImpl {
     /// # Note
     /// Retrieve whether the packet is ignored for the TUN Device; The TAP device always returns `false`.
     pub fn ignore_packet_info(&self) -> bool {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.tun.ignore_packet_info()
     }
     /// Sets whether the TUN device should ignore packet information (PI).
@@ -210,7 +225,10 @@ impl DeviceImpl {
     /// # Note
     /// This only works for a TUN device; The invocation will be ignored if the device is a TAP.
     pub fn set_ignore_packet_info(&self, ign: bool) {
-        let _guard = self.op_lock.write().unwrap();
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.tun.set_ignore_packet_info(ign)
     }
 }

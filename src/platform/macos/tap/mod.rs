@@ -231,7 +231,10 @@ impl Tap {
         self.s_ndrv_fd.writev(bufs)
     }
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut guard = self.buffer.lock().unwrap();
+        let mut guard = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.is_empty() {
             self.recv_to_buffer(&mut guard)?;
         }
@@ -252,7 +255,10 @@ impl Tap {
         Ok(buffer.len())
     }
     pub fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
-        let mut guard = self.buffer.lock().unwrap();
+        let mut guard = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.is_empty() {
             self.recv_to_buffer(&mut guard)?;
         }
@@ -303,58 +309,12 @@ impl Tap {
         }
         Ok(())
     }
-    #[allow(dead_code)]
-    pub fn recv_multiple<B: AsRef<[u8]> + AsMut<[u8]>>(
-        &self,
-        bufs: &mut [B],
-        sizes: &mut [usize],
-    ) -> io::Result<usize> {
-        if bufs.is_empty() || sizes.len() < bufs.len() {
-            return Err(io::Error::other("sizes must be at least as long as bufs"));
-        }
-        let mut buffer = [0; BUFFER_LEN];
-        let len = self.s_bpf_fd.read(&mut buffer)?;
-        let mut num = 0;
-        if len > 0 {
-            let mut p = 0;
-            while p < len {
-                let remaining_bytes = len - p;
-                if remaining_bytes < BPF_HDR_SIZE {
-                    break;
-                }
-                // SAFETY: We use read_unaligned to avoid UB from misaligned access.
-                let hdr: libc::bpf_hdr = unsafe {
-                    std::ptr::read_unaligned(buffer.as_ptr().add(p) as *const libc::bpf_hdr)
-                };
-                let bh_caplen = hdr.bh_caplen as usize;
-                let bh_hdrlen = hdr.bh_hdrlen as usize;
-                if bh_caplen > 0 && p + bh_hdrlen + bh_caplen <= len {
-                    let buf = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
-                    if let Some(dst) = bufs.get_mut(num) {
-                        let dst = dst.as_mut();
-                        if dst.len() < buf.len() {
-                            return Err(io::Error::new(
-                                io::ErrorKind::InvalidData,
-                                "buffer too small",
-                            ));
-                        }
-                        dst[..buf.len()].copy_from_slice(buf);
-                        sizes[num] = buf.len();
-                        num += 1;
-                    } else {
-                        break;
-                    }
-                }
-                let Some(step) = next_bpf_step(bh_hdrlen, bh_caplen) else {
-                    break;
-                };
-                p += step;
-            }
-        }
-        Ok(num)
-    }
+
     pub fn recv_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        let mut guard = self.buffer.lock().unwrap();
+        let mut guard = self
+            .buffer
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if guard.is_empty() {
             self.recv_to_buffer(&mut guard)?;
         }

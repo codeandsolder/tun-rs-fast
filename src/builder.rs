@@ -45,11 +45,11 @@ let dev = DeviceBuilder::new()
         builder
             .offload(true)        // Enable TSO/GSO offload
             .multi_queue(true)    // Enable multi-queue support
-            .tx_queue_len(1000)   // Set transmit queue length
+            .tx_queue_len(1000);  // Set transmit queue length
     })
     .build_sync()?;
-# Ok::<(), std::io::Error>(())
 # }
+# Ok::<(), std::io::Error>(())
 ```
 
 ### Windows Specific
@@ -288,7 +288,6 @@ pub(crate) struct DeviceConfig {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) persist: Option<bool>,
     /// Specifies whether the interface operates at L2 or L3.
-    #[allow(dead_code)]
     pub(crate) layer: Option<Layer>,
     /// Device GUID on Windows.
     #[cfg(windows)]
@@ -529,7 +528,7 @@ impl DeviceBuilderGuard<'_> {
     /// let dev = DeviceBuilder::new()
     ///     .ipv4("10.0.0.1", 24, None)
     ///     .with(|builder| {
-    ///         builder.tx_queue_len(1000) // Set queue length to 1000 packets
+    ///         builder.tx_queue_len(1000); // Set queue length to 1000 packets
     ///     })
     ///     .build_sync()?;
     /// # }
@@ -567,7 +566,7 @@ impl DeviceBuilderGuard<'_> {
     /// let dev = DeviceBuilder::new()
     ///     .ipv4("10.0.0.1", 24, None)
     ///     .with(|builder| {
-    ///         builder.offload(true) // Enable TSO/GSO/GRO
+    ///         builder.offload(true); // Enable TSO/GSO/GRO
     ///     })
     ///     .build_sync()?;
     ///
@@ -589,7 +588,7 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// # Platform
     ///
-    /// Linux only. Requires kernel support for IFF_VNET_HDR (Linux 2.6.32+).
+    /// Linux only. Requires kernel support for `IFF_VNET_HDR` (Linux 2.6.32+).
     #[cfg(target_os = "linux")]
     pub fn offload(&mut self, offload: bool) -> &mut Self {
         self.0.offload = Some(offload);
@@ -616,7 +615,7 @@ impl DeviceBuilderGuard<'_> {
     /// let dev = DeviceBuilder::new()
     ///     .ipv4("10.0.0.1", 24, None)
     ///     .with(|builder| {
-    ///         builder.multi_queue(true) // Enable multi-queue
+    ///         builder.multi_queue(true); // Enable multi-queue
     ///     })
     ///     .build_sync()?;
     ///
@@ -649,7 +648,7 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// # Platform
     ///
-    /// Linux only. Requires kernel support for IFF_MULTI_QUEUE.
+    /// Linux only. Requires kernel support for `IFF_MULTI_QUEUE`.
     #[cfg(target_os = "linux")]
     pub fn multi_queue(&mut self, multi_queue: bool) -> &mut Self {
         self.0.multi_queue = Some(multi_queue);
@@ -832,6 +831,7 @@ impl DeviceBuilderGuard<'_> {
 /// This is a unified constructor of a device for various platforms. The specification of every API can be found by looking at
 /// the documentation of the concrete platform.
 #[derive(Default)]
+#[must_use]
 pub struct DeviceBuilder {
     dev_name: Option<String>,
     #[cfg(windows)]
@@ -898,7 +898,7 @@ pub struct DeviceBuilder {
 }
 
 impl DeviceBuilder {
-    /// Creates a new DeviceBuilder instance with default settings.
+    /// Creates a new `DeviceBuilder` instance with default settings.
     pub fn new() -> Self {
         Self::default().enable(true)
     }
@@ -959,6 +959,10 @@ impl DeviceBuilder {
     /// use tun_rs::DeviceBuilder;
     /// DeviceBuilder::new().ipv4(Ipv4Addr::new(10, 0, 0, 12), 24, None);
     /// ```
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "builder methods intentionally accept ergonomic conversion inputs by value"
+    )]
     pub fn ipv4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         mut self,
         address: IPv4,
@@ -977,6 +981,10 @@ impl DeviceBuilder {
     /// use tun_rs::DeviceBuilder;
     /// DeviceBuilder::new().ipv6("CDCD:910A:2222:5498:8475:1111:3900:2021", 64);
     /// ```
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "builder methods intentionally accept ergonomic conversion inputs by value"
+    )]
     pub fn ipv6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         mut self,
         address: IPv6,
@@ -1273,12 +1281,13 @@ impl DeviceBuilder {
             delete_driver: self.delete_driver.take(),
             #[cfg(windows)]
             mac_address: self.mac_addr.map(|v| {
-                use std::fmt::Write;
-                v.iter()
-                    .fold(String::with_capacity(v.len() * 2), |mut s, b| {
-                        write!(&mut s, "{b:02X}").unwrap();
-                        s
-                    })
+                const HEX: &[u8; 16] = b"0123456789ABCDEF";
+                let mut encoded = String::with_capacity(v.len() * 2);
+                for byte in v {
+                    encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                    encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+                }
+                encoded
             }),
             #[cfg(any(
                 target_os = "macos",
@@ -1340,6 +1349,10 @@ impl DeviceBuilder {
         Ok(())
     }
     /// Builds a synchronous device instance and applies all configuration parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if address conversion, device creation, or platform-specific configuration fails.
     pub fn build_sync(mut self) -> io::Result<SyncDevice> {
         let device = DeviceImpl::new(self.build_config())?;
         self.config(&device)?;
@@ -1347,11 +1360,15 @@ impl DeviceBuilder {
     }
     /// Builds an asynchronous device instance.
     ///
-    /// This method is available only when either async_io or async_tokio feature is enabled.
+    /// This method is available only when either `async_io` or `async_tokio` feature is enabled.
     ///
     /// # Note
     /// Choose one of the two async runtimes; otherwise, a compile error will be incurred if both are enabled.
     #[cfg(any(feature = "async_io", feature = "async_tokio"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if address conversion, device creation, or platform-specific configuration fails.
     pub fn build_async(self) -> io::Result<crate::AsyncDevice> {
         let sync_device = self.build_sync()?;
         let device = crate::AsyncDevice::new_dev(sync_device.0)?;
@@ -1392,7 +1409,10 @@ impl DeviceBuilder {
 /// Trait for converting various types into an IPv4 address.
 pub trait ToIpv4Address {
     /// Attempts to convert the implementing type into an `Ipv4Addr`.
-    /// Returns the IPv4 address on success or an error on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value cannot represent an IPv4 address.
     fn ipv4(&self) -> io::Result<Ipv4Addr>;
 }
 impl ToIpv4Address for Ipv4Addr {
@@ -1431,7 +1451,10 @@ impl ToIpv4Address for &str {
 /// Trait for converting various types into an IPv6 address.
 pub trait ToIpv6Address {
     /// Attempts to convert the implementing type into an `Ipv6Addr`.
-    /// Returns the IPv6 address on success or an error on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the value cannot represent an IPv6 address.
     fn ipv6(&self) -> io::Result<Ipv6Addr>;
 }
 
@@ -1470,11 +1493,19 @@ impl ToIpv6Address for &str {
 /// Trait for converting various types into an IPv4 netmask (prefix length).
 pub trait ToIpv4Netmask {
     /// Returns the prefix length (i.e., the number of consecutive 1s in the netmask).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the netmask is invalid or non-contiguous.
     fn prefix(&self) -> io::Result<u8>;
     /// Computes the IPv4 netmask based on the prefix length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the prefix representation is invalid.
     fn netmask(&self) -> io::Result<Ipv4Addr> {
         let ip = u32::MAX
-            .checked_shl(32 - self.prefix()? as u32)
+            .checked_shl(32 - u32::from(self.prefix()?))
             .unwrap_or(0);
         Ok(Ipv4Addr::from(ip))
     }
@@ -1502,7 +1533,8 @@ impl ToIpv4Netmask for Ipv4Addr {
                 "invalid netmask",
             ));
         }
-        Ok(ip.leading_ones() as u8)
+        u8::try_from(ip.leading_ones())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "IPv4 prefix overflow"))
     }
 }
 impl ToIpv4Netmask for String {
@@ -1524,11 +1556,19 @@ impl ToIpv4Netmask for &str {
 /// Trait for converting various types into an IPv6 netmask (prefix length).
 pub trait ToIpv6Netmask {
     /// Returns the prefix length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the netmask is invalid or non-contiguous.
     fn prefix(&self) -> io::Result<u8>;
     /// Computes the IPv6 netmask based on the prefix length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the prefix representation is invalid.
     fn netmask(&self) -> io::Result<Ipv6Addr> {
         let ip = u128::MAX
-            .checked_shl(128 - self.prefix()? as u32)
+            .checked_shl(128 - u32::from(self.prefix()?))
             .unwrap_or(0);
         Ok(Ipv6Addr::from(ip))
     }
@@ -1555,7 +1595,8 @@ impl ToIpv6Netmask for Ipv6Addr {
                 "invalid netmask",
             ));
         }
-        Ok(ip.leading_ones() as u8)
+        u8::try_from(ip.leading_ones())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "IPv6 prefix overflow"))
     }
 }
 impl ToIpv6Netmask for String {

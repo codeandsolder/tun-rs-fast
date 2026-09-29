@@ -58,17 +58,23 @@ use std::ops::Deref;
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 
-#[allow(dead_code)]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 pub(crate) const ETHER_ADDR_LEN: u8 = 6;
 
-#[allow(dead_code)]
-pub(crate) fn get_if_addrs_by_name(if_name: String) -> std::io::Result<Vec<Interface>> {
+pub(crate) fn get_if_addrs_by_name(if_name: &str) -> std::io::Result<Vec<Interface>> {
     let addrs = getifaddrs::getifaddrs()?;
     let ifs = addrs.filter(|v| v.name == if_name).collect();
     Ok(ifs)
 }
 
-/// A transparent wrapper around DeviceImpl, providing synchronous I/O operations.
+/// A transparent wrapper around `DeviceImpl`, providing synchronous I/O operations.
 ///
 /// # Examples
 ///
@@ -102,6 +108,13 @@ pub(crate) fn get_if_addrs_by_name(if_name: String) -> std::io::Result<Vec<Inter
 #[repr(transparent)]
 pub struct SyncDevice(pub(crate) DeviceImpl);
 
+#[cfg_attr(
+    unix,
+    expect(
+        unsafe_code,
+        reason = "raw-fd constructors are the explicit Unix ownership boundary"
+    )
+)]
 impl SyncDevice {
     /// Creates a `SyncDevice` from a raw file descriptor.
     ///
@@ -115,7 +128,7 @@ impl SyncDevice {
     ///
     /// # Example
     ///
-    /// On iOS using PacketTunnelProvider:
+    /// On iOS using `PacketTunnelProvider`:
     ///
     /// ```no_run
     /// # #[cfg(unix)]
@@ -138,19 +151,20 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
-    /// On Android using VpnService:
+    /// On Android using `VpnService`:
     ///
     /// ```no_run
     /// # #[cfg(unix)]
     /// # {
     /// use tun_rs::SyncDevice;
     ///
-    /// // On Android, obtain fd from VpnService.Builder.establish()
+    /// // On Android, obtain a ParcelFileDescriptor from VpnService.Builder.establish(),
+    /// // then transfer its descriptor out of Java ownership:
     /// // ParcelFileDescriptor vpnInterface = builder.establish();
-    /// // int fd = vpnInterface.getFd();
-    /// let fd = 10; // Example value - obtain from VpnService
+    /// // int fd = vpnInterface.detachFd();
+    /// let fd = 10; // Example value - obtain with detachFd()
     ///
-    /// // SAFETY: fd must be valid and open
+    /// // SAFETY: detachFd() transfers ownership to the caller; fd is valid and open.
     /// let dev = unsafe { SyncDevice::from_fd(fd)? };
     ///
     /// let mut buf = [0u8; 1500];
@@ -161,14 +175,22 @@ impl SyncDevice {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// If the platform object retains ownership (for example Android
+    /// `ParcelFileDescriptor::getFd()`), use [`BorrowedSyncDevice::borrow_raw`]
+    /// instead and keep the platform owner alive for at least as long as the Rust device.
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub unsafe fn from_fd(fd: RawFd) -> std::io::Result<Self> {
         Ok(SyncDevice(DeviceImpl::from_fd(fd)?))
     }
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
     /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
+    /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     #[cfg(unix)]
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> std::io::Result<Self> {
@@ -193,6 +215,10 @@ impl SyncDevice {
     /// # Note
     /// Blocking the current thread if no packet is available
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.recv(buf)
     }
@@ -212,6 +238,10 @@ impl SyncDevice {
     /// tun.send(b"hello").unwrap();
     /// ```
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.send(buf)
     }
@@ -220,6 +250,10 @@ impl SyncDevice {
     /// Returns the number of bytes read or an error if the operation would block.
     #[cfg(target_os = "windows")]
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn try_recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.try_recv(buf)
     }
@@ -228,6 +262,10 @@ impl SyncDevice {
     /// Returns the number of bytes written or an error if the operation would block.
     #[cfg(target_os = "windows")]
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn try_send(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.try_send(buf)
     }
@@ -235,10 +273,18 @@ impl SyncDevice {
     ///
     /// This may close the device or signal that no further operations will occur.
     #[cfg(target_os = "windows")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn shutdown(&self) -> std::io::Result<()> {
         self.0.shutdown()
     }
     #[cfg(all(unix, feature = "experimental"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn shutdown(&self) -> std::io::Result<()> {
         Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
     }
@@ -267,6 +313,10 @@ impl SyncDevice {
     ///
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv_intr(&self, buf: &mut [u8], event: &InterruptEvent) -> std::io::Result<usize> {
         self.0.read_interruptible(buf, event, None)
     }
@@ -322,6 +372,10 @@ impl SyncDevice {
     ///
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv_intr_timeout(
         &self,
         buf: &mut [u8],
@@ -339,6 +393,10 @@ impl SyncDevice {
     ///
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(all(unix, feature = "interruptible"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv_vectored_intr(
         &self,
         bufs: &mut [IoSliceMut<'_>],
@@ -398,6 +456,10 @@ impl SyncDevice {
     ///
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(all(unix, feature = "interruptible"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv_vectored_intr_timeout(
         &self,
         bufs: &mut [IoSliceMut<'_>],
@@ -407,6 +469,10 @@ impl SyncDevice {
         self.0.readv_interruptible(bufs, event, timeout)
     }
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn wait_readable_intr(&self, event: &InterruptEvent) -> std::io::Result<()> {
         self.0.wait_readable_interruptible(event, None)
     }
@@ -460,6 +526,10 @@ impl SyncDevice {
     ///
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn wait_readable_intr_timeout(
         &self,
         event: &InterruptEvent,
@@ -468,6 +538,10 @@ impl SyncDevice {
         self.0.wait_readable_interruptible(event, timeout)
     }
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn send_intr(&self, buf: &[u8], event: &InterruptEvent) -> std::io::Result<usize> {
         self.0.write_interruptible(buf, event)
     }
@@ -519,6 +593,10 @@ impl SyncDevice {
     ///
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(all(unix, feature = "interruptible"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn send_vectored_intr(
         &self,
         bufs: &[IoSlice<'_>],
@@ -574,6 +652,10 @@ impl SyncDevice {
     /// This method is only available when the `interruptible` feature is enabled.
     #[cfg(all(unix, feature = "interruptible"))]
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn wait_writable_intr(&self, event: &InterruptEvent) -> std::io::Result<()> {
         self.0.wait_writable_interruptible(event)
     }
@@ -608,6 +690,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> std::io::Result<usize> {
         self.0.recv_vectored(bufs)
     }
@@ -641,6 +727,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn send_vectored(&self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
         self.0.send_vectored(bufs)
     }
@@ -669,6 +759,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn is_nonblocking(&self) -> std::io::Result<bool> {
         self.0.is_nonblocking()
     }
@@ -706,6 +800,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
@@ -713,7 +811,7 @@ impl SyncDevice {
     /// Creates a new queue for multi-queue TUN/TAP devices on Linux.
     ///
     /// # Prerequisites
-    /// - The `IFF_MULTI_QUEUE` flag must be enabled (via `.multi_queue(true)` in DeviceBuilder).
+    /// - The `IFF_MULTI_QUEUE` flag must be enabled (via `.multi_queue(true)` in `DeviceBuilder`).
     /// - The system must support network interface multi-queue functionality.
     ///
     /// # Description
@@ -731,7 +829,7 @@ impl SyncDevice {
     /// let dev = DeviceBuilder::new()
     ///     .ipv4("10.0.0.1", 24, None)
     ///     .with(|builder| {
-    ///         builder.multi_queue(true) // Enable multi-queue support
+    ///         builder.multi_queue(true); // Enable multi-queue support
     ///     })
     ///     .build_sync()?;
     ///
@@ -758,6 +856,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn try_clone(&self) -> std::io::Result<SyncDevice> {
         let device_impl = self.0.try_clone()?;
         Ok(SyncDevice(device_impl))
@@ -766,6 +868,10 @@ impl SyncDevice {
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 impl SyncDevice {
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn send_multiple_intr<B: ExpandBuffer>(
         &self,
         gro_table: &mut GROTable,
@@ -778,6 +884,10 @@ impl SyncDevice {
         })
     }
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub fn recv_multiple_intr<B: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
         original_buffer: &mut [u8],
@@ -800,12 +910,16 @@ impl Deref for SyncDevice {
 }
 
 #[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "required by the standard raw-fd ownership-transfer trait"
+)]
 impl FromRawFd for SyncDevice {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        SyncDevice::from_fd(fd).expect(
-            "Failed to create device from file descriptor. \
-             The provided fd must be a valid, open file descriptor for a TUN/TAP device.",
-        )
+        match SyncDevice::from_fd(fd) {
+            Ok(device) => device,
+            Err(_) => std::process::abort(),
+        }
     }
 }
 #[cfg(unix)]
@@ -815,6 +929,10 @@ impl AsRawFd for SyncDevice {
     }
 }
 #[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "BorrowedFd construction is tied to the lifetime of &self"
+)]
 impl AsFd for SyncDevice {
     fn as_fd(&self) -> BorrowedFd<'_> {
         unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
@@ -840,14 +958,22 @@ impl Deref for BorrowedSyncDevice<'_> {
     }
 }
 #[cfg(unix)]
+#[expect(
+    unsafe_code,
+    reason = "this impl is the explicit borrowed raw-fd lifetime boundary"
+)]
 impl BorrowedSyncDevice<'_> {
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
     /// Unlike [`SyncDevice::from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
+    /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error reported by the underlying platform device operation.
     pub unsafe fn borrow_raw(fd: RawFd) -> std::io::Result<Self> {
-        #[allow(unused_unsafe)]
+        // SAFETY: forwarded unchanged from this function's documented contract.
         unsafe {
             Ok(Self {
                 dev: SyncDevice::borrow_raw(fd)?,

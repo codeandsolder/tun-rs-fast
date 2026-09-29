@@ -230,13 +230,19 @@ impl TapDevice {
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        let guard = self.read_io_overlapped.lock().unwrap();
+        let guard = self
+            .read_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let event = guard.overlapped_event();
         drop(guard);
         event.wait_interruptible(interrupt_event, timeout)
     }
     pub fn wait_readable(&self) -> io::Result<()> {
-        let guard = self.read_io_overlapped.lock().unwrap();
+        let guard = self
+            .read_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let event_handle = guard.overlapped_event();
         drop(guard);
         event_handle.wait()
@@ -248,7 +254,7 @@ impl TapDevice {
         };
         guard.try_read(buf)
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub fn try_read_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let Ok(mut guard) = self.read_io_overlapped.try_lock() else {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
@@ -272,22 +278,32 @@ impl TapDevice {
         }
     }
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        let mut guard = self.write_io_overlapped.lock().unwrap();
+        let mut guard = self
+            .write_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.write(buf)
     }
 
-    #[allow(dead_code)]
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub(crate) fn write_interruptible(
         &self,
         buf: &[u8],
         interrupt_event: &OwnedHandle,
     ) -> io::Result<usize> {
-        let mut guard = self.write_io_overlapped.lock().unwrap();
+        let mut guard = self
+            .write_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.write_interruptible(buf, interrupt_event)
     }
 }
 
-#[allow(non_snake_case)]
+#[expect(non_snake_case, reason = "callback name mirrors the Windows TAP API")]
 #[inline]
 const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {
     (DeviceType << 16) | (Access << 14) | (Function << 2) | Method

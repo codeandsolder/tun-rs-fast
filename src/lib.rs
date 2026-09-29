@@ -9,7 +9,7 @@ features like offload (TSO/GSO) on Linux and multi-queue support.
 
 ## Features
 
-- **Multi-platform Support**: Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, Android, iOS, tvOS, and OpenHarmony
+- **Multi-platform Support**: Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, Android, iOS, tvOS, and `OpenHarmony`
 - **TUN and TAP Modes**: Support for both Layer 3 (TUN) and Layer 2 (TAP) interfaces
 - **Multiple IP Addresses**: Configure multiple IPv4 and IPv6 addresses on a single interface
 - **Async Runtime Integration**: Optional integration with Tokio or async-io/async-std
@@ -18,7 +18,7 @@ features like offload (TSO/GSO) on Linux and multi-queue support.
   - Multi-queue support for parallel packet processing
   - Generic Receive Offload (GRO) for packet coalescing
 - **Platform Consistency**: Uniform packet format across platforms (optional packet information header)
-- **Mobile Support**: Direct file descriptor support for iOS (PacketTunnelProvider) and Android (VpnService)
+- **Mobile Support**: Direct file descriptor support for iOS (`PacketTunnelProvider`) and Android (`VpnService`)
 
 ## Device Types
 
@@ -239,7 +239,7 @@ mod platform;
 /// protocol information header before each packet. This constant represents that header length.
 ///
 /// When `packet_information` is enabled in [`DeviceBuilder`], packets will include this header.
-/// The header typically contains the protocol family (e.g., AF_INET for IPv4, AF_INET6 for IPv6).
+/// The header typically contains the protocol family (e.g., `AF_INET` for IPv4, `AF_INET6` for IPv6).
 ///
 /// # Example
 ///

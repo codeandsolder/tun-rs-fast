@@ -9,8 +9,22 @@ repository = "https://github.com/tun-rs/tun-rs"
 keywords = ["tun", "tap", "tunnel", "VPN", "network-interface"]
 documentation = "https://docs.rs/tun-rs"
 
+[package.metadata.rust-skills2]
+generated-lint-boundaries = ["src/platform/windows/tun/wintun_raw.rs"]
+
 [lib]
 crate-type = ["staticlib", "cdylib", "lib"]
+
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+pedantic = "deny"
 
 [dependencies]
 ahash = "0.8"

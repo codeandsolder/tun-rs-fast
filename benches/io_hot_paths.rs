@@ -3,6 +3,20 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::hint::black_box;
 use tun_rs::async_framed::{BytesCodec, Decoder, Encoder};
 
+fn benchmark_result<T, E>(result: Result<T, E>) -> T {
+    match result {
+        Ok(value) => value,
+        Err(_) => std::process::abort(),
+    }
+}
+
+fn benchmark_option<T>(value: Option<T>) -> T {
+    match value {
+        Some(value) => value,
+        None => std::process::abort(),
+    }
+}
+
 fn bench_framed_codec(c: &mut Criterion) {
     let payload = Bytes::from(vec![0x42; 1500]);
 
@@ -10,16 +24,16 @@ fn bench_framed_codec(c: &mut Criterion) {
         b.iter(|| {
             let mut codec = BytesCodec::new();
             let mut buf = BytesMut::with_capacity(black_box(payload.len()));
-            codec.encode(black_box(payload.clone()), &mut buf).unwrap();
-            let frame = codec.decode_eof(&mut buf).unwrap().unwrap();
+            benchmark_result(codec.encode(black_box(payload.clone()), &mut buf));
+            let frame = benchmark_option(benchmark_result(codec.decode_eof(&mut buf)));
             black_box(frame);
-        })
+        });
     });
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 mod linux_offload {
-    use super::*;
+    use super::{benchmark_result, black_box, Criterion};
     use criterion::BatchSize;
     use tun_rs::{
         checksum, checksum_no_fold, gso_split, GROTable, VirtioNetHdr, VIRTIO_NET_HDR_GSO_TCPV4,
@@ -41,7 +55,8 @@ mod linux_offload {
         let mut pkt = vec![0u8; total_len];
 
         pkt[0] = 0x45;
-        pkt[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        let total_len = benchmark_result(u16::try_from(total_len));
+        pkt[2..4].copy_from_slice(&total_len.to_be_bytes());
         pkt[4..6].copy_from_slice(&0x1234u16.to_be_bytes());
         pkt[6] = 0x40;
         pkt[8] = 64;
@@ -58,7 +73,7 @@ mod linux_offload {
         pkt[IPH_LEN + 14..IPH_LEN + 16].copy_from_slice(&4096u16.to_be_bytes());
 
         for (idx, byte) in pkt[IPH_LEN + TCPH_LEN..].iter_mut().enumerate() {
-            *byte = idx as u8;
+            *byte = benchmark_result(u8::try_from(idx % 256));
         }
 
         let ip_checksum = !checksum(&pkt[..IPH_LEN], 0);
@@ -68,7 +83,7 @@ mod linux_offload {
             &pkt[12..16],
             &pkt[16..20],
             6,
-            (TCPH_LEN + payload_len) as u16,
+            benchmark_result(u16::try_from(TCPH_LEN + payload_len)),
         );
         let tcp_checksum = !checksum(&pkt[IPH_LEN..], pseudo);
         pkt[IPH_LEN + 16..IPH_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
@@ -87,15 +102,15 @@ mod linux_offload {
     pub fn bench(c: &mut Criterion) {
         let checksum_payload = vec![0x5a; 64 * 1024];
         c.bench_function("linux_checksum_64k", |b| {
-            b.iter(|| checksum(black_box(checksum_payload.as_slice()), black_box(0)))
+            b.iter(|| checksum(black_box(checksum_payload.as_slice()), black_box(0)));
         });
 
         let gso_input = make_ipv4_tcp_packet(1, 8192);
         let gso_hdr = VirtioNetHdr {
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
-            hdr_len: (IPH_LEN + TCPH_LEN) as u16,
+            hdr_len: benchmark_result(u16::try_from(IPH_LEN + TCPH_LEN)),
             gso_size: 1440,
-            csum_start: IPH_LEN as u16,
+            csum_start: benchmark_result(u16::try_from(IPH_LEN)),
             csum_offset: 16,
             ..Default::default()
         };
@@ -116,12 +131,11 @@ mod linux_offload {
                         black_box(&mut sizes),
                         black_box(VIRTIO_NET_HDR_LEN),
                         black_box(false),
-                    )
-                    .unwrap();
-                    black_box(segments);
+                    );
+                    black_box(benchmark_result(segments));
                 },
                 BatchSize::SmallInput,
-            )
+            );
         });
 
         let gro_templates = (0..32)
@@ -141,13 +155,15 @@ mod linux_offload {
                     (GROTable::new(), bufs)
                 },
                 |(mut table, mut bufs)| {
-                    table
-                        .apply_gro(black_box(&mut bufs), black_box(VIRTIO_NET_HDR_LEN), false)
-                        .unwrap();
+                    benchmark_result(table.apply_gro(
+                        black_box(&mut bufs),
+                        black_box(VIRTIO_NET_HDR_LEN),
+                        false,
+                    ));
                     black_box(bufs);
                 },
                 BatchSize::SmallInput,
-            )
+            );
         });
     }
 }

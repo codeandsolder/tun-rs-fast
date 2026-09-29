@@ -1,16 +1,15 @@
-#[allow(unused_imports)]
-use bytes::BytesMut;
-#[allow(unused_imports)]
-use std::net::Ipv4Addr;
-#[allow(unused_imports)]
-use std::sync::Arc;
-#[allow(unused_imports)]
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-use tun_rs::{AsyncDevice, DeviceBuilder, SyncDevice};
-#[allow(unused_imports)]
+use bytes::BytesMut;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+use std::net::Ipv4Addr;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+use std::sync::Arc;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+use tun_rs::DeviceBuilder;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use tun_rs::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
-mod protocol_handle;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+pub mod protocol_handle;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -53,5 +52,8 @@ async fn main() -> std::io::Result<()> {
 
 #[cfg(not(all(target_os = "linux", not(target_env = "ohos")),))]
 fn main() -> std::io::Result<()> {
-    unimplemented!()
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "ping_offload requires Linux TUN offload support",
+    ))
 }

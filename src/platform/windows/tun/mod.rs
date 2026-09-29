@@ -53,7 +53,11 @@ struct WinTunSession {
 }
 impl Drop for WinTunAdapter {
     fn drop(&mut self) {
-        let session = self.session.write().unwrap().take();
+        let session = self
+            .session
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         drop(session);
         unsafe {
             self.win_tun.WintunCloseAdapter(self.handle);
@@ -89,7 +93,9 @@ impl State {
         self.state.store(true, Ordering::Relaxed);
     }
     fn lock(&self) -> MutexGuard<'_, ()> {
-        self.lock.lock().unwrap()
+        self.lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 impl WinTunAdapter {
@@ -103,14 +109,21 @@ impl WinTunAdapter {
             self.state.enable();
             return Err(e);
         }
-        _ = self.session.write().unwrap().take();
+        _ = self
+            .session
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         ffi::reset_event(self.event.as_raw_handle())
     }
 
     fn enable(&self) -> io::Result<()> {
         let _guard = self.state.lock();
         if self.state.is_disabled() {
-            let mut session = self.session.write().unwrap();
+            let mut session = self
+                .session
+                .write()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             unsafe {
                 let session_handle = self
                     .win_tun
@@ -145,36 +158,51 @@ impl WinTunAdapter {
         ))
     }
     fn send(&self, buf: &[u8], event: Option<&OwnedHandle>) -> io::Result<usize> {
-        let guard = self.session.read().unwrap();
+        let guard = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = guard.as_ref() {
             return session.send(buf, &self.state, event);
         }
         Err(io::Error::other("The interface has been disabled"))
     }
     fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let guard = self.session.read().unwrap();
+        let guard = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = guard.as_ref() {
             return session.recv(&self.event, buf);
         }
         Err(io::Error::other("The interface has been disabled"))
     }
     fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
-        let guard = self.session.read().unwrap();
+        let guard = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = guard.as_ref() {
             return session.try_send(buf);
         }
         Err(io::Error::other("The interface has been disabled"))
     }
     fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        let guard = self.session.read().unwrap();
+        let guard = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = guard.as_ref() {
             return session.try_recv(buf);
         }
         Err(io::Error::other("The interface has been disabled"))
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
-        let guard = self.session.read().unwrap();
+        let guard = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = guard.as_ref() {
             return session.try_recv_uninit(buf);
         }
@@ -185,7 +213,10 @@ impl WinTunAdapter {
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        let guard = self.session.read().unwrap();
+        let guard = self
+            .session
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(session) = guard.as_ref() {
             return session.wait_readable_interruptible(&self.event, interrupt_event, timeout);
         }
@@ -287,7 +318,7 @@ impl WinTunSession {
     fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.try_recv_raw(buf.as_mut_ptr(), buf.len())
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.try_recv_raw(buf.as_mut_ptr(), buf.len())
     }
@@ -538,12 +569,20 @@ impl TunDevice {
         self.win_tun_adapter.send(buf, None)
     }
 
-    #[allow(dead_code)]
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     #[inline]
     pub(crate) fn send_interruptible(&self, buf: &[u8], event: &OwnedHandle) -> io::Result<usize> {
         self.win_tun_adapter.send(buf, Some(event))
     }
-    #[allow(dead_code)]
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     #[inline]
     pub(crate) fn wait_readable_interruptible(
         &self,
@@ -566,7 +605,7 @@ impl TunDevice {
         self.win_tun_adapter.try_recv(buf)
     }
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.win_tun_adapter.try_recv_uninit(buf)
     }
