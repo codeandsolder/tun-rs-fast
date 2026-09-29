@@ -16,7 +16,7 @@ use windows_sys::core::GUID;
 use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
 pub(crate) const GUID_NETWORK_ADAPTER: GUID = GUID {
-    data1: 0x4d36e972,
+    data1: 0x4d36_e972,
     data2: 0xe325,
     data3: 0x11ce,
     data4: [0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18],

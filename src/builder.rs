@@ -1256,7 +1256,7 @@ impl DeviceBuilder {
         self.enabled = None;
         self
     }
-    pub(crate) const fn build_config(&mut self) -> DeviceConfig {
+    pub(crate) fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),
             #[cfg(windows)]

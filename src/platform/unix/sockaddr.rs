@@ -157,6 +157,8 @@ fn test_conversion() -> std::io::Result<()> {
     let old = std::net::SocketAddr::new([127, 0, 0, 1].into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
     #[cfg(target_endian = "big")]
+    // SAFETY: rs_addr_to_sockaddr initialized the IPv4 union member selected by
+    // the test before these field reads.
     unsafe {
         assert_eq!(0x7f00_0001, addr.addr4.sin_addr.s_addr);
         assert_eq!(0x0208, addr.addr4.sin_port);

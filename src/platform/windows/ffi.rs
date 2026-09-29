@@ -453,7 +453,7 @@ pub fn destroy_driver_info_list(
 pub fn get_driver_info_detail(
     devinfo: HDEVINFO,
     devinfo_data: &SP_DEVINFO_DATA,
-    drvinfo_data: &SP_DRVINFO_DATA_V2_W,
+    driver_data: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<SP_DRVINFO_DETAIL_DATA_W2> {
     let mut drvinfo_detail: SP_DRVINFO_DETAIL_DATA_W2 = unsafe { mem::zeroed() };
     drvinfo_detail.cbSize = mem::size_of::<SP_DRVINFO_DETAIL_DATA_W>() as _;
@@ -462,7 +462,7 @@ pub fn get_driver_info_detail(
         SetupDiGetDriverInfoDetailW(
             devinfo,
             devinfo_data as *const _ as _,
-            drvinfo_data as *const _ as _,
+            driver_data as *const _ as _,
             &mut drvinfo_detail as *mut _ as _,
             mem::size_of_val(&drvinfo_detail) as _,
             ptr::null_mut(),
@@ -476,13 +476,13 @@ pub fn get_driver_info_detail(
 pub fn set_selected_driver(
     devinfo: HDEVINFO,
     devinfo_data: &SP_DEVINFO_DATA,
-    drvinfo_data: &SP_DRVINFO_DATA_V2_W,
+    driver_data: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<()> {
     match unsafe {
         SetupDiSetSelectedDriverW(
             devinfo,
             devinfo_data as *const _ as _,
-            drvinfo_data as *const _ as _,
+            driver_data as *const _ as _,
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -565,20 +565,20 @@ pub fn enum_driver_info(
     driver_type: u32,
     member_index: u32,
 ) -> Option<io::Result<SP_DRVINFO_DATA_V2_W>> {
-    let mut drvinfo_data: SP_DRVINFO_DATA_V2_W = unsafe { mem::zeroed() };
-    drvinfo_data.cbSize = mem::size_of_val(&drvinfo_data) as _;
+    let mut driver_data: SP_DRVINFO_DATA_V2_W = unsafe { mem::zeroed() };
+    driver_data.cbSize = mem::size_of_val(&driver_data) as _;
     match unsafe {
         SetupDiEnumDriverInfoW(
             devinfo,
             devinfo_data as *const _ as _,
             driver_type,
             member_index,
-            &mut drvinfo_data,
+            &mut driver_data,
         )
     } {
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
         0 => Some(Err(io::Error::last_os_error())),
-        _ => Some(Ok(drvinfo_data)),
+        _ => Some(Ok(driver_data)),
     }
 }
 

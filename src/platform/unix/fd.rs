@@ -142,6 +142,8 @@ impl Fd {
         }
         let iov_count = libc::c_int::try_from(bufs.len())
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: bufs is a live contiguous iovec slice whose length was checked
+        // against the platform limit; readv only borrows it for this syscall.
         let amount = unsafe { libc::readv(self.as_raw_fd(), bufs.as_ptr(), iov_count) };
         if amount < 0 {
             return Err(io::Error::last_os_error());
