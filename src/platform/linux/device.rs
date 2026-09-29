@@ -1247,7 +1247,7 @@ impl DeviceImpl {
     /// dev.add_address_v4("10.0.1.1", 24)?;
     ///
     /// // Later, remove it
-    /// dev.remove_address("10.0.1.1".parse::<IpAddr>().unwrap())?;
+    /// dev.remove_address(IpAddr::V4(std::net::Ipv4Addr::new(10, 0, 1, 1)))?;
     /// println!("Removed address 10.0.1.1");
     /// # }
     /// # Ok::<(), std::io::Error>(())

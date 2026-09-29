@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the TAP backend owns Windows handles and explicitly asserts thread-safety for overlapped I/O"
+)]
+
 use crate::platform::windows::tap::overlapped::{ReadOverlapped, WriteOverlapped};
 use crate::platform::windows::{ffi, netsh};
 use bytes::buf::UninitSlice;
@@ -19,8 +24,14 @@ pub struct TapDevice {
     write_io_overlapped: Mutex<WriteOverlapped>,
 }
 pub(crate) const READ_BUFFER_SIZE: usize = 14 + 65536;
+// SAFETY: TapDevice owns its Windows handles, and the only mutable overlapped-I/O
+// state is behind per-direction Mutexes. Moving the wrapper between threads does
+// not move the boxed OVERLAPPED storage or invalidate its event/file handles.
 unsafe impl Send for TapDevice {}
 
+// SAFETY: all shared mutable access to the read/write OVERLAPPED state is
+// serialized by the corresponding Mutex; the remaining fields are immutable
+// owned handles/metadata whose Windows operations are safe to invoke cross-thread.
 unsafe impl Sync for TapDevice {}
 
 impl Drop for TapInterface {

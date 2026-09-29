@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "macOS async raw-fd constructors are the explicit descriptor ownership boundary"
+)]
+
 use crate::async_device::unix;
 use crate::{DeviceImpl, SyncDevice};
 use bytes::buf::UninitSlice;
@@ -70,7 +75,9 @@ impl AsyncModel {
 }
 impl FromRawFd for AsyncDevice {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        match AsyncDevice::from_fd(fd) {
+        // SAFETY: FromRawFd transfers exclusive ownership of a valid open
+        // descriptor to this value; from_fd consumes the same ownership contract.
+        match unsafe { Self::from_fd(fd) } {
             Ok(device) => device,
             Err(_) => std::process::abort(),
         }
@@ -94,20 +101,40 @@ impl AsyncDevice {
         AsyncDevice::new_dev(device.0)
     }
 
+    /// Constructs an async device from an owned raw file descriptor.
+    ///
     /// # Safety
-    /// This method is safe if the provided fd is valid
-    /// Construct a AsyncDevice from an existing file descriptor
-    pub unsafe fn from_fd(fd: RawFd) -> io::Result<AsyncDevice> {
-        AsyncDevice::new_dev(DeviceImpl::from_fd(fd)?)
+    ///
+    /// `fd` must be a valid, open TUN/TAP descriptor whose ownership is
+    /// transferred to the returned device. After calling this function, the
+    /// caller must not close `fd` or continue using it as an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor cannot be wrapped or registered with
+    /// the selected async backend.
+    pub unsafe fn from_fd(fd: RawFd) -> io::Result<Self> {
+        // SAFETY: this function's documented contract transfers ownership of a
+        // valid open descriptor directly into DeviceImpl.
+        unsafe { Self::new_dev(DeviceImpl::from_fd(fd)?) }
     }
 
+    /// Borrows an existing raw file descriptor without taking ownership.
+    ///
     /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.\
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
+    ///
+    /// `fd` must be a valid, open TUN/TAP descriptor and must remain open for
+    /// the entire lifetime of the returned device. The external owner must not
+    /// close or otherwise invalidate it while borrowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the borrowed descriptor cannot be wrapped or
+    /// registered with the selected async backend.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        AsyncDevice::new_dev(DeviceImpl::borrow_raw(fd)?)
+        // SAFETY: this function's contract guarantees that fd remains live
+        // externally while DeviceImpl records it as borrowed.
+        unsafe { Self::new_dev(DeviceImpl::borrow_raw(fd)?) }
     }
     pub fn into_fd(self) -> io::Result<RawFd> {
         match self.async_model {

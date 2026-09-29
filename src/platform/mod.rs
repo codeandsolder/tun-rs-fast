@@ -217,10 +217,10 @@ impl SyncDevice {
     /// let mut tun = DeviceBuilder::new()
     ///     .name("my-tun")
     ///     .ipv4(Ipv4Addr::new(10, 0, 0, 1), 24, None)
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// let mut buf = [0u8; 1500];
-    /// tun.recv(&mut buf).unwrap();
+    /// tun.recv(&mut buf)?;
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     /// # Note
     /// Blocking the current thread if no packet is available
@@ -243,9 +243,9 @@ impl SyncDevice {
     /// let mut tun = DeviceBuilder::new()
     ///     .name("my-tun")
     ///     .ipv4(Ipv4Addr::new(10, 0, 0, 1), 24, None)
-    ///     .build_sync()
-    ///     .unwrap();
-    /// tun.send(b"hello").unwrap();
+    ///     .build_sync()?;
+    /// tun.send(b"hello")?;
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     #[inline]
     ///

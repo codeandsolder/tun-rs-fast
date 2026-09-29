@@ -67,8 +67,9 @@ let dev = DeviceBuilder::new()
             .wintun_log(true)          // Enable Wintun logging
             .description("My VPN");     // Set device description
     })
-    .build_sync().unwrap();
+    .build_sync()?;
 # }
+# Ok::<(), std::io::Error>(())
 ```
 
 ### macOS Specific
@@ -104,15 +105,16 @@ let tap = DeviceBuilder::new()
     .name("tap0")
     .layer(Layer::L2)
     .mac_addr([0x00, 0x11, 0x22, 0x33, 0x44, 0x55])
-    .build_sync().unwrap();
+    .build_sync()?;
 
 // TUN interface (Layer 3, default)
 let tun = DeviceBuilder::new()
     .name("tun0")
     .layer(Layer::L3)
     .ipv4("10.0.0.1", 24, None)
-    .build_sync().unwrap();
+    .build_sync()?;
 # }
+# Ok::<(), std::io::Error>(())
 ```
 
 ## Multiple IP Addresses
@@ -201,9 +203,9 @@ use crate::platform::{DeviceImpl, SyncDevice};
 ///     .name("tap0")
 ///     .layer(Layer::L2)
 ///     .mac_addr([0x00, 0x11, 0x22, 0x33, 0x44, 0x55])
-///     .build_sync()
-///     .unwrap();
+///     .build_sync()?;
 /// # }
+/// # Ok::<(), std::io::Error>(())
 /// ```
 ///
 /// Creating a TUN (L3) interface (default):
@@ -490,9 +492,9 @@ impl DeviceBuilderGuard<'_> {
     ///     .with(|builder| {
     ///         builder.metric(10); // Set lower metric for higher priority
     ///     })
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// # }
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
     /// # Platform
@@ -781,9 +783,9 @@ impl DeviceBuilderGuard<'_> {
     ///     .with(|builder| {
     ///         builder.reuse_dev(false); // Error if tap0 already exists
     ///     })
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// # }
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
     /// # Platform
@@ -818,9 +820,9 @@ impl DeviceBuilderGuard<'_> {
     ///     .with(|builder| {
     ///         builder.persist(true); // Keep device after program exits
     ///     })
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// # }
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
     /// # Platform
@@ -1389,7 +1391,8 @@ impl DeviceBuilder {
     /// let builder = builder.associate_route(false);
     /// #[cfg(windows)]
     /// let builder = builder.wintun_log(false);
-    /// let dev = builder.build_sync().unwrap();
+    /// let dev = builder.build_sync()?;
+    /// # Ok::<(), std::io::Error>(())
     /// ````
     /// This is tedious and breaks the calling chain.
     ///
@@ -1401,7 +1404,8 @@ impl DeviceBuilder {
     ///    opt.wintun_log(false);
     ///    #[cfg(target_os = "macos")]
     ///    opt.associate_route(false).packet_information(false);
-    /// }).build_sync().unwrap();
+    /// }).build_sync()?;
+    /// # Ok::<(), std::io::Error>(())
     /// ````
     pub fn with<F: FnMut(&mut DeviceBuilderGuard)>(mut self, mut f: F) -> Self {
         let mut borrow = DeviceBuilderGuard(&mut self);

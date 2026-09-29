@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the Wintun backend operates on opaque Wintun handles and Win32 wait APIs"
+)]
+
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,7 +49,13 @@ struct WinTunAdapter {
     session: RwLock<Option<WinTunSession>>,
     delete_driver: bool,
 }
+// SAFETY: Wintun documents packet receive/release and allocate/send operations
+// as thread-safe. Adapter/session lifecycle mutation is serialized by the State
+// mutex and session RwLock, and the opaque handles remain owned by this adapter.
 unsafe impl Send for WinTunAdapter {}
+// SAFETY: concurrent safe methods either use Wintun's documented thread-safe
+// packet APIs or synchronize lifecycle changes through State/session locks; no
+// safe method exposes the raw adapter/session pointers for unsynchronized use.
 unsafe impl Sync for WinTunAdapter {}
 struct WinTunSession {
     win_tun: Arc<wintun_raw::wintun>,
