@@ -617,6 +617,6 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        dns::clear_dns_servers(self.if_index_impl()?, &self.luid_impl(), is_ipv4)
+        dns::clear_dns_servers(self.if_index_impl(), &self.luid_impl(), is_ipv4)
     }
 }

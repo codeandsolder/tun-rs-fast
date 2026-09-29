@@ -11,7 +11,13 @@ use bytes::BytesMut;
 use std::io;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::Arc;
-use windows_sys::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
+#[cfg(any(
+    feature = "interruptible",
+    feature = "async_tokio",
+    feature = "async_io"
+))]
+use windows_sys::Win32::System::Threading::WaitForMultipleObjects;
+use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::IO::OVERLAPPED;
 pub(crate) struct ReadOverlapped {
     read_buffer: BytesMut,
@@ -61,6 +67,9 @@ impl ReadOverlapped {
                         "receive buffer too small",
                     ));
                 }
+                // SAFETY: len <= dst_len above; read_buffer contains at least len
+                // initialized bytes from the completed ReadFile operation, and dst
+                // is caller-provided writable storage for dst_len bytes.
                 unsafe {
                     std::ptr::copy_nonoverlapping(self.read_buffer.as_ptr(), dst, len);
                 }
@@ -74,11 +83,6 @@ impl ReadOverlapped {
             }
         }
     }
-    #[cfg(any(
-        feature = "interruptible",
-        feature = "async_tokio",
-        feature = "async_io"
-    ))]
     pub fn overlapped_event(&self) -> OverlappedEvent {
         OverlappedEvent {
             event: self.inner.event_handle.clone(),
@@ -189,6 +193,11 @@ impl WriteOverlapped {
         self.finish_pending_blocking();
         Ok(())
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn overlapped_event(&self) -> OverlappedEvent {
         OverlappedEvent {
             event: self.inner.event_handle.clone(),
@@ -251,15 +260,18 @@ impl OverlappedEvent {
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
         let handles = [self.event.as_raw_handle(), interrupt_event.as_raw_handle()];
+        const MAX_FINITE_WAIT_MS: u32 = INFINITE - 1;
+        let timeout_ms = timeout.map_or(INFINITE, |duration| {
+            let millis = duration.as_millis().min(u128::from(MAX_FINITE_WAIT_MS));
+            match u32::try_from(millis) {
+                Ok(value) => value,
+                Err(_) => MAX_FINITE_WAIT_MS,
+            }
+        });
+        // SAFETY: handles is a live two-element array of valid wait handles;
+        // WaitForMultipleObjects borrows it synchronously and count matches.
         unsafe {
-            let wait_ret = WaitForMultipleObjects(
-                2,
-                handles.as_ptr(),
-                0,
-                timeout
-                    .map(|t| t.as_millis().min(INFINITE as _) as _)
-                    .unwrap_or(INFINITE),
-            );
+            let wait_ret = WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms);
             match wait_ret {
                 windows_sys::Win32::Foundation::WAIT_OBJECT_0 => Ok(()),
                 windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
