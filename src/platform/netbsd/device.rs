@@ -5,7 +5,11 @@
 
 use crate::{
     builder::{DeviceConfig, Layer},
-    platform::netbsd::sys::*,
+    platform::netbsd::sys::{
+        ifaliasreq, ifreq, in6_aliasreq, in6_ifreq, siocaifaddr, siocaifaddr_in6, siocdifaddr,
+        siocdifaddr_in6, siocgifflags, siocgifmtu, siocifcreate, siocifdestroy, siocsifflags,
+        siocsifmtu, siocsifphyaddr, sioctunsifhead, tapgifname, IN6_IFF_NODAD,
+    },
     platform::{
         unix::{sockaddr_union, Fd, Tun},
         ETHER_ADDR_LEN,
@@ -14,15 +18,15 @@ use crate::{
 };
 
 use crate::platform::unix::device::{copy_device_name, ctl, ctl_v6};
-use libc::{self, c_char, c_short, AF_LINK, IFF_RUNNING, IFF_UP, IFNAMSIZ, O_RDWR};
+use libc::{self, c_short, AF_LINK, IFF_RUNNING, IFF_UP, IFNAMSIZ, O_RDWR};
 use nix::sys::socket::{LinkAddr, SockaddrLike};
 use std::io::ErrorKind;
 use std::os::fd::{FromRawFd, IntoRawFd, RawFd};
 use std::os::unix::fs::MetadataExt;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::{io, mem, net::IpAddr, os::unix::io::AsRawFd, ptr, sync::RwLock};
+use std::{io, mem, net::IpAddr, os::unix::io::AsRawFd, sync::RwLock};
 
-/// A TUN device using the TUN/TAP Linux driver.
+/// A TUN device using the NetBSD TUN/TAP driver.
 pub struct DeviceImpl {
     name: String,
     pub(crate) tun: Tun,
@@ -41,10 +45,11 @@ impl Drop for DeviceImpl {
         if !self.tun.fd.should_drop_cleanup() {
             return;
         }
+        // SAFETY: req and the control descriptor remain live for the
+        // synchronous destroy ioctl.
         unsafe {
-            // Try to destroy the interface before the fd is closed by Fd::drop.
             if let (Ok(ctl), Ok(req)) = (ctl(), self.request()) {
-                _ = siocifdestroy(ctl.as_raw_fd(), &req);
+                _ = siocifdestroy(ctl.as_raw_fd(), &raw const req);
             }
         }
     }
@@ -90,7 +95,7 @@ impl DeviceImpl {
         })
     }
     fn check_name(layer: Layer, dev_name: &str) -> io::Result<()> {
-        if dev_name.len() > IFNAMSIZ {
+        if dev_name.len() >= IFNAMSIZ {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 "device name too long",
@@ -100,15 +105,22 @@ impl DeviceImpl {
             Layer::L2 => "tap",
             Layer::L3 => "tun",
         };
-        if !dev_name.starts_with(device_prefix) {
+        if dev_name.starts_with(device_prefix) {
+            Ok(())
+        } else {
             Err(io::Error::new(
                 ErrorKind::InvalidInput,
                 format!("device name must start with {device_prefix}"),
             ))
-        } else {
-            Ok(())
         }
     }
+    fn open_device_path(device_path: &str) -> io::Result<Fd> {
+        // SAFETY: all callers construct device_path with a trailing NUL byte and
+        // the string remains live for the duration of open.
+        let raw_fd = unsafe { libc::open(device_path.as_ptr().cast(), O_RDWR | libc::O_CLOEXEC) };
+        Fd::new(raw_fd)
+    }
+
     fn create_tap(dev_name: Option<String>) -> io::Result<(Fd, String)> {
         let device_prefix = "tap";
         if let Some(dev_name) = dev_name {
@@ -127,12 +139,12 @@ impl DeviceImpl {
             Ok((fd, dev_name))
         } else {
             let device_path = format!("/dev/{device_prefix}\0");
-            let fd =
-                unsafe { libc::open(device_path.as_ptr() as *const _, O_RDWR | libc::O_CLOEXEC) };
-            let fd = Fd::new(fd)?;
+            let fd = Self::open_device_path(&device_path)?;
+            // SAFETY: req is writable request storage and tapgifname
+            // initializes its interface-name field before it is read.
             unsafe {
                 let mut req: ifreq = mem::zeroed();
-                if let Err(err) = tapgifname(fd.as_raw_fd(), &mut req) {
+                if let Err(err) = tapgifname(fd.as_raw_fd(), &raw mut req) {
                     return Err(io::Error::from(err));
                 }
                 let cstr = std::ffi::CStr::from_ptr(req.ifr_name.as_ptr());
@@ -170,15 +182,11 @@ impl DeviceImpl {
         }
     }
     fn open_and_makedev_dev(dev_name: &str, device_path: &str) -> io::Result<Fd> {
-        let fd = unsafe { libc::open(device_path.as_ptr() as *const _, O_RDWR | libc::O_CLOEXEC) };
-        match Fd::new(fd) {
+        match Self::open_device_path(device_path) {
             Ok(fd) => Ok(fd),
             Err(ref e) if e.kind() == ErrorKind::NotFound => {
                 DeviceImpl::makedev_dev(dev_name)?;
-                let fd = unsafe {
-                    libc::open(device_path.as_ptr() as *const _, O_RDWR | libc::O_CLOEXEC)
-                };
-                Ok(Fd::new(fd)?)
+                Self::open_device_path(device_path)
             }
             Err(e) => Err(e),
         }
@@ -201,29 +209,23 @@ impl DeviceImpl {
         }
     }
     fn create_dev(name: &str) -> io::Result<()> {
+        // SAFETY: ifreq is a C POD request object and zero is its initial state.
+        let mut req: ifreq = unsafe { mem::zeroed() };
+        copy_device_name(name, &mut req.ifr_name)?;
+        // SAFETY: req is live and fully initialized for the synchronous ioctl.
         unsafe {
-            let mut req: ifreq = mem::zeroed();
-            ptr::copy_nonoverlapping(
-                name.as_ptr() as *const c_char,
-                req.ifr_name.as_mut_ptr(),
-                name.len(),
-            );
-            if let Err(err) = siocifcreate(ctl()?.as_raw_fd(), &req) {
-                return Err(io::Error::from(err));
-            }
+            siocifcreate(ctl()?.as_raw_fd(), &raw const req).map_err(io::Error::from)?;
         }
         Ok(())
     }
     fn exists(dev_name: &str) -> io::Result<bool> {
+        // SAFETY: ifreq is a C POD request object and zero is its initial state.
+        let mut req: ifreq = unsafe { mem::zeroed() };
+        copy_device_name(dev_name, &mut req.ifr_name)?;
+        let ctl = ctl()?;
+        // SAFETY: req is live writable storage for the synchronous flags ioctl.
         unsafe {
-            let mut req: ifreq = mem::zeroed();
-            ptr::copy_nonoverlapping(
-                dev_name.as_ptr() as *const c_char,
-                req.ifr_name.as_mut_ptr(),
-                dev_name.len(),
-            );
-            let ctl = ctl()?;
-            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &mut req) {
+            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &raw mut req) {
                 if err == nix::errno::Errno::ENXIO {
                     return Ok(false);
                 }
@@ -251,15 +253,17 @@ impl DeviceImpl {
     }
 
     fn enable_tunsifhead_impl(device_fd: &Fd) -> std::io::Result<()> {
+        // SAFETY: the ioctl borrows the live descriptor and integer argument
+        // only for the duration of the call.
         unsafe {
-            if let Err(err) = sioctunsifhead(device_fd.as_raw_fd(), &1 as *const _) {
+            if let Err(err) = sioctunsifhead(device_fd.as_raw_fd(), std::ptr::from_ref(&1)) {
                 return Err(io::Error::from(err));
             }
         }
         Ok(())
     }
 
-    fn calc_dest_addr(&self, addr: IpAddr, netmask: IpAddr) -> io::Result<IpAddr> {
+    fn calc_dest_addr(addr: IpAddr, netmask: IpAddr) -> io::Result<IpAddr> {
         let prefix_len = ipnet::ip_mask_to_prefix(netmask)
             .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
         Ok(ipnet::IpNet::new(addr, prefix_len)
@@ -275,17 +279,15 @@ impl DeviceImpl {
         dest: Option<IpAddr>,
         associate_route: bool,
     ) -> io::Result<()> {
+        // SAFETY: request structs are live C-layout objects; each sockaddr union
+        // member is initialized from the matching IP family before its ioctl.
         unsafe {
             match (addr, mask) {
                 (IpAddr::V4(addr), IpAddr::V4(mask)) => {
                     let ctl = ctl()?;
                     let mut req: ifaliasreq = mem::zeroed();
                     let tun_name = self.name_impl()?;
-                    ptr::copy_nonoverlapping(
-                        tun_name.as_ptr() as *const c_char,
-                        req.ifra_name.as_mut_ptr(),
-                        tun_name.len(),
-                    );
+                    copy_device_name(&tun_name, &mut req.ifra_name)?;
 
                     req.ifra_addr = crate::platform::unix::sockaddr_union::from((addr, 0)).addr;
                     if let Some(dest) = dest {
@@ -294,7 +296,7 @@ impl DeviceImpl {
                     }
                     req.ifra_mask = crate::platform::unix::sockaddr_union::from((mask, 0)).addr;
 
-                    if let Err(err) = siocaifaddr(ctl.as_raw_fd(), &req) {
+                    if let Err(err) = siocaifaddr(ctl.as_raw_fd(), &raw const req) {
                         return Err(io::Error::from(err));
                     }
                     if let Err(e) = self.add_route(addr.into(), mask.into(), associate_route) {
@@ -304,17 +306,13 @@ impl DeviceImpl {
                 (IpAddr::V6(addr), IpAddr::V6(mask)) => {
                     let tun_name = self.name_impl()?;
                     let mut req: in6_aliasreq = mem::zeroed();
-                    ptr::copy_nonoverlapping(
-                        tun_name.as_ptr() as *const c_char,
-                        req.ifra_name.as_mut_ptr(),
-                        tun_name.len(),
-                    );
+                    copy_device_name(&tun_name, &mut req.ifra_name)?;
                     req.ifra_addr = sockaddr_union::from((addr, 0)).addr6;
                     req.ifra_prefixmask = sockaddr_union::from((mask, 0)).addr6;
-                    req.ifra_lifetime.ia6t_vltime = 0xffffffff_u32;
-                    req.ifra_lifetime.ia6t_pltime = 0xffffffff_u32;
+                    req.ifra_lifetime.ia6t_vltime = 0xffff_ffff_u32;
+                    req.ifra_lifetime.ia6t_pltime = 0xffff_ffff_u32;
                     // req.ifra_flags = IN6_IFF_NODAD;
-                    if let Err(err) = siocaifaddr_in6(ctl_v6()?.as_raw_fd(), &req) {
+                    if let Err(err) = siocaifaddr_in6(ctl_v6()?.as_raw_fd(), &raw const req) {
                         return Err(io::Error::from(err));
                     }
                 }
@@ -327,19 +325,20 @@ impl DeviceImpl {
     }
 
     /// Prepare a new request.
-    unsafe fn request(&self) -> io::Result<ifreq> {
-        let mut req: ifreq = mem::zeroed();
+    fn request(&self) -> io::Result<ifreq> {
+        // SAFETY: ifreq is a C POD request object and zero is its initial state.
+        let mut req: ifreq = unsafe { mem::zeroed() };
         let tun_name = self.name_impl()?;
         copy_device_name(&tun_name, &mut req.ifr_name)?;
         Ok(req)
     }
 
-    /// # Safety
-    unsafe fn request_v6(&self) -> io::Result<in6_ifreq> {
+    fn request_v6(&self) -> io::Result<in6_ifreq> {
         let tun_name = self.name_impl()?;
-        let mut req: in6_ifreq = mem::zeroed();
+        // SAFETY: in6_ifreq is a C POD request object and zero is its initial state.
+        let mut req: in6_ifreq = unsafe { mem::zeroed() };
         copy_device_name(&tun_name, &mut req.ifra_name)?;
-        req.ifr_ifru.ifru_flags = IN6_IFF_NODAD as _;
+        req.ifr_ifru.ifru_flags = IN6_IFF_NODAD;
         Ok(req)
     }
 
@@ -357,19 +356,27 @@ impl DeviceImpl {
     }
 
     /// Retrieves the name of the network interface.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "shared platform interface exposes interface-name lookup as fallible"
+    )]
     pub(crate) fn name_impl(&self) -> io::Result<String> {
         Ok(self.name.clone())
     }
     fn name_of_fd(tun: RawFd) -> io::Result<String> {
+        // SAFETY: req is writable request storage; tapgifname initializes the
+        // name field before CStr reads it.
         unsafe {
             let mut req: ifreq = mem::zeroed();
-            if tapgifname(tun, &mut req).is_ok() {
+            if tapgifname(tun, &raw mut req).is_ok() {
                 let cstr = std::ffi::CStr::from_ptr(req.ifr_name.as_ptr());
                 let dev_name = cstr.to_string_lossy().to_string();
                 // tap
                 return Ok(dev_name);
             }
         }
+        // SAFETY: tun is borrowed here only to query metadata; forget below
+        // prevents this temporary File from taking ownership at drop.
         let file = unsafe { std::fs::File::from_raw_fd(tun) };
         let metadata = file.metadata()?;
         let rdev = metadata.rdev();
@@ -379,10 +386,12 @@ impl DeviceImpl {
     }
 
     fn remove_all_address_v4(&self) -> io::Result<()> {
+        // SAFETY: req_v4 is a live request and the delete ioctl only borrows it
+        // synchronously while removing IPv4 aliases.
         unsafe {
             let req_v4 = self.request()?;
             loop {
-                if let Err(err) = siocdifaddr(ctl()?.as_raw_fd(), &req_v4) {
+                if let Err(err) = siocdifaddr(ctl()?.as_raw_fd(), &raw const req_v4) {
                     if err == nix::errno::Errno::EADDRNOTAVAIL {
                         break;
                     }
@@ -397,6 +406,9 @@ impl DeviceImpl {
 // Public User Interface
 impl DeviceImpl {
     /// Retrieves the name of the network interface.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the interface name cannot be retrieved.
     pub fn name(&self) -> io::Result<String> {
         let _guard = self
             .op_lock
@@ -424,26 +436,39 @@ impl DeviceImpl {
         self.associate_route.load(Ordering::Relaxed)
     }
     /// Enables or disables the network interface.
+    ///
+    /// # Errors
+    /// Returns an I/O error if interface flags cannot be queried or updated.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
+        let up_running = c_short::try_from(IFF_UP | IFF_RUNNING).map_err(|_| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                "NetBSD interface flags exceed c_short",
+            )
+        })?;
+        let up = c_short::try_from(IFF_UP)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidData, "NetBSD IFF_UP exceeds c_short"))?;
         let _guard = self
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: the first ioctl initializes the flags union member and the
+        // second consumes the same live request synchronously.
         unsafe {
             let mut req = self.request()?;
             let ctl = ctl()?;
 
-            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &mut req) {
+            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &raw mut req) {
                 return Err(io::Error::from(err));
             }
 
             if value {
-                req.ifr_ifru.ifru_flags |= (IFF_UP | IFF_RUNNING) as c_short;
+                req.ifr_ifru.ifru_flags |= up_running;
             } else {
-                req.ifr_ifru.ifru_flags &= !(IFF_UP as c_short);
+                req.ifr_ifru.ifru_flags &= !up;
             }
 
-            if let Err(err) = siocsifflags(ctl.as_raw_fd(), &req) {
+            if let Err(err) = siocsifflags(ctl.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
 
@@ -451,20 +476,19 @@ impl DeviceImpl {
         }
     }
     /// Retrieves the current MTU (Maximum Transmission Unit) for the interface.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the MTU cannot be queried or represented by the public type.
     pub fn mtu(&self) -> io::Result<u16> {
         let _guard = self
             .op_lock
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: req is live and the ioctl initializes the MTU union member
+        // before it is read below.
         unsafe {
-            let mut req: ifreq = mem::zeroed();
-            let tun_name = self.name_impl()?;
-            ptr::copy_nonoverlapping(
-                tun_name.as_ptr() as *const c_char,
-                req.ifr_name.as_mut_ptr(),
-                tun_name.len(),
-            );
-            if let Err(err) = siocgifmtu(ctl()?.as_raw_fd(), &mut req) {
+            let mut req = self.request()?;
+            if let Err(err) = siocgifmtu(ctl()?.as_raw_fd(), &raw mut req) {
                 return Err(io::Error::from(err));
             }
 
@@ -475,22 +499,21 @@ impl DeviceImpl {
     /// Sets the MTU (Maximum Transmission Unit) for the interface.
     /// # Note
     /// The specified value must be less than or equal to `1500`; it's a limitation of NetBSD.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the MTU cannot be applied.
     pub fn set_mtu(&self, value: u16) -> io::Result<()> {
         let _guard = self
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: writing the MTU member selects the intended union variant
+        // before the synchronous ioctl reads it.
         unsafe {
-            let mut req: ifreq = mem::zeroed();
-            let tun_name = self.name_impl()?;
-            ptr::copy_nonoverlapping(
-                tun_name.as_ptr() as *const c_char,
-                req.ifr_name.as_mut_ptr(),
-                tun_name.len(),
-            );
-            req.ifr_ifru.ifru_mtu = value as _;
+            let mut req = self.request()?;
+            req.ifr_ifru.ifru_mtu = i32::from(value);
 
-            if let Err(err) = siocsifmtu(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifmtu(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -498,6 +521,13 @@ impl DeviceImpl {
     }
     /// Sets the IPv4 network address, netmask, and an optional destination address.
     /// Remove all previous set IPv4 addresses and set the specified address.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public signature matches the cross-platform API and accepts owned conversion inputs"
+    )]
+    ///
+    /// # Errors
+    /// Returns an error for invalid IPv4 input or failed address or route configuration.
     pub fn set_network_address<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -511,12 +541,12 @@ impl DeviceImpl {
         let associate_route = self.associate_route.load(Ordering::Relaxed);
         let addr = address.ipv4()?.into();
         let netmask = netmask.netmask()?.into();
-        let default_dest = self.calc_dest_addr(addr, netmask)?;
+        let default_dest = Self::calc_dest_addr(addr, netmask)?;
         let dest = destination
-            .map(|d| d.ipv4())
+            .as_ref()
+            .map(ToIpv4Address::ipv4)
             .transpose()?
-            .map(|v| v.into())
-            .unwrap_or(default_dest);
+            .map_or(default_dest, std::convert::Into::into);
         self.remove_all_address_v4()?;
         self.add_address(addr, netmask, Some(dest), associate_route)?;
         Ok(())
@@ -554,6 +584,13 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// NetBSD only. Requires root privileges.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public signature matches the cross-platform API and accepts owned conversion inputs"
+    )]
+    ///
+    /// # Errors
+    /// Returns an error for invalid IPv4 input or failed address or route configuration.
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -566,29 +603,34 @@ impl DeviceImpl {
         let associate_route = self.associate_route.load(Ordering::Relaxed);
         let addr = address.ipv4()?.into();
         let netmask = netmask.netmask()?.into();
-        let dest = self.calc_dest_addr(addr, netmask)?;
+        let dest = Self::calc_dest_addr(addr, netmask)?;
         self.add_address(addr, netmask, Some(dest), associate_route)?;
         Ok(())
     }
     /// Removes an IP address from the interface.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the requested address cannot be removed.
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
         let _guard = self
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // SAFETY: each request union member is initialized from the matching
+        // address family before its synchronous delete ioctl.
         unsafe {
             match addr {
                 IpAddr::V4(addr) => {
                     let mut req_v4 = self.request()?;
                     req_v4.ifr_ifru.ifru_addr = sockaddr_union::from((addr, 0)).addr;
-                    if let Err(err) = siocdifaddr(ctl()?.as_raw_fd(), &req_v4) {
+                    if let Err(err) = siocdifaddr(ctl()?.as_raw_fd(), &raw const req_v4) {
                         return Err(io::Error::from(err));
                     }
                 }
                 IpAddr::V6(addr) => {
                     let mut req_v6 = self.request_v6()?;
                     req_v6.ifr_ifru.ifru_addr = sockaddr_union::from((addr, 0)).addr6;
-                    if let Err(err) = siocdifaddr_in6(ctl_v6()?.as_raw_fd(), &req_v6) {
+                    if let Err(err) = siocdifaddr_in6(ctl_v6()?.as_raw_fd(), &raw const req_v6) {
                         return Err(io::Error::from(err));
                     }
                 }
@@ -627,6 +669,13 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// NetBSD only. Requires root privileges.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public signature matches the cross-platform API and accepts owned conversion inputs"
+    )]
+    ///
+    /// # Errors
+    /// Returns an error for invalid IPv6 input or failed interface configuration.
     pub fn add_address_v6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         &self,
         addr: IPv6,
@@ -646,24 +695,31 @@ impl DeviceImpl {
     /// This function constructs an interface request and copies the provided MAC address
     /// into the hardware address field. It then applies the change via a system call.
     /// This operation is typically supported only for TAP devices.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the MAC address cannot be applied.
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
         let _guard = self
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let af_link = u8::try_from(AF_LINK).map_err(|_| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                "AF_LINK does not fit sockaddr family",
+            )
+        })?;
+        // SAFETY: ifaliasreq is a C POD request object and zero is its initial
+        // state; its sockaddr member is fully initialized before the ioctl.
         unsafe {
             let mut req: ifaliasreq = mem::zeroed();
             let tun_name = self.name_impl()?;
-            ptr::copy_nonoverlapping(
-                tun_name.as_ptr() as *const c_char,
-                req.ifra_name.as_mut_ptr(),
-                tun_name.len(),
-            );
+            copy_device_name(&tun_name, &mut req.ifra_name)?;
             req.ifra_addr.sa_len = ETHER_ADDR_LEN;
-            req.ifra_addr.sa_family = AF_LINK as u8;
+            req.ifra_addr.sa_family = af_link;
             req.ifra_addr.sa_data[0..ETHER_ADDR_LEN as usize]
-                .copy_from_slice(eth_addr.map(|c| c as _).as_slice());
-            if let Err(err) = siocsifphyaddr(ctl()?.as_raw_fd(), &req) {
+                .copy_from_slice(eth_addr.map(u8::cast_signed).as_slice());
+            if let Err(err) = siocsifphyaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -673,6 +729,9 @@ impl DeviceImpl {
     ///
     /// This function queries the MAC address by the interface name using a helper function.
     /// An error is returned if the MAC address cannot be found.
+    ///
+    /// # Errors
+    /// Returns an I/O error if interface enumeration fails or no MAC address is found.
     pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
         let _guard = self
             .op_lock
@@ -688,8 +747,10 @@ impl DeviceImpl {
                     // So, casting from `SockaddrStorage` to its variant thereof is safe.
                     // The `if` condition ensures that the dereferencing of the resulting pointer gets a valid value of `LinkAddr`.
                     // However, it is preferred to use `as_link_addr` once `nix` fixes it.
+                    // SAFETY: the family check above guarantees this storage
+                    // contains the LinkAddr variant before the pointer is dereferenced.
                     unsafe {
-                        let link_ptr = &address as *const _ as *const LinkAddr;
+                        let link_ptr = std::ptr::from_ref(&address).cast::<LinkAddr>();
                         if let Some(mac) = (*link_ptr).addr() {
                             return Ok(mac);
                         }
@@ -699,9 +760,12 @@ impl DeviceImpl {
         }
         Err(std::io::Error::other("Unable to get Mac address"))
     }
-    /// In Layer3(i.e. TUN mode), we need to put the tun interface into "multi_af" mode, which will prepend the address
+    /// In Layer3 (i.e. TUN mode), the interface must use `multi_af` mode, which prepends the address
     /// family to all packets (same as FreeBSD).
     /// If this is not enabled, the kernel silently drops all IPv6 packets on output and gets confused on input.
+    ///
+    /// # Errors
+    /// Returns an I/O error if multi-address-family mode cannot be enabled.
     pub fn enable_tunsifhead(&self) -> io::Result<()> {
         let _guard = self
             .op_lock
@@ -746,7 +810,7 @@ impl DeviceImpl {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Ok(name) = self.name_impl() {
             if name.starts_with("tun") {
-                self.tun.set_ignore_packet_info(ign)
+                self.tun.set_ignore_packet_info(ign);
             }
         }
     }
