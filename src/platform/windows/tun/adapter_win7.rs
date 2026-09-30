@@ -58,6 +58,10 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                 unsafe {
                     let mut ptype = mem::zeroed();
                     let mut buf: [u8; mem::size_of::<OwningProcess>()] = mem::zeroed();
+                    let buffer_len = match u32::try_from(buf.len()) {
+                        Ok(len) => len,
+                        Err(_) => return false,
+                    };
 
                     let ok = SetupDiGetDevicePropertyW(
                         dev_info,
@@ -65,8 +69,7 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                         &DEVPKEY_Wintun_OwningProcess,
                         &mut ptype,
                         buf.as_mut_ptr(),
-                        u32::try_from(buf.len())
-                            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
+                        buffer_len,
                         ptr::null_mut(),
                         0,
                     );
