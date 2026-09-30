@@ -562,7 +562,7 @@ impl DeviceImpl {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
             Driver::Tun(_tun) => Err(io::Error::from(io::ErrorKind::Unsupported)),
-            Driver::Tap(tap) => tap.set_mac(&eth_addr),
+            Driver::Tap(_tap) => TapDevice::set_mac(eth_addr),
         }
     }
     /// Retrieves the MAC address of the device.
@@ -631,7 +631,7 @@ impl DeviceImpl {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
-            Driver::Tun(tun) => tun.version(),
+            Driver::Tun(tun) => Ok(tun.version()),
             Driver::Tap(tap) => tap.get_version().map(|v| {
                 v.iter()
                     .map(std::string::ToString::to_string)
@@ -649,7 +649,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        dns::set_dns_servers(self.if_index_impl(), &self.luid_impl(), dns_servers)
+        dns::set_dns_servers(self.if_index_impl(), self.luid_impl(), dns_servers)
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
     /// `is_ipv4`: true to clear IPv4 DNS, false to clear IPv6 DNS
@@ -660,6 +660,6 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        dns::clear_dns_servers(self.if_index_impl(), &self.luid_impl(), is_ipv4)
+        dns::clear_dns_servers(self.if_index_impl(), self.luid_impl(), is_ipv4)
     }
 }

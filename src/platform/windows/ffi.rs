@@ -61,7 +61,6 @@ use windows_sys::{
     },
 };
 
-#[expect(non_camel_case_types, reason = "name mirrors the Windows API ABI")]
 #[expect(non_snake_case, reason = "name mirrors the Windows API ABI")]
 #[repr(C)]
 #[derive(Clone, Copy)]

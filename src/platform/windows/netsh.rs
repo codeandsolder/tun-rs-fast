@@ -16,13 +16,13 @@ pub fn exe_cmd(cmd: &str) -> io::Result<()> {
         .arg("/C")
         .arg(cmd)
         .output()?;
-    output(cmd, out)
+    output(cmd, &out)
 }
 fn gbk_to_utf8(bytes: &[u8]) -> String {
     let (msg, _, _) = GBK.decode(bytes);
     msg.to_string()
 }
-fn output(cmd: &str, out: Output) -> io::Result<()> {
+fn output(cmd: &str, out: &Output) -> io::Result<()> {
     if !out.status.success() {
         let msg = if !out.stderr.is_empty() {
             match std::str::from_utf8(&out.stderr) {
@@ -87,7 +87,9 @@ pub fn set_dns_servers(index: u32, dns_servers: &[IpAddr]) -> io::Result<()> {
     set_primary_dns(index, dns_servers[0])?;
 
     for (i, &addr) in dns_servers.iter().skip(1).enumerate() {
-        add_secondary_dns(index, addr, (i + 2) as u32)?;
+        let index_pos = u32::try_from(i + 2)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many DNS servers"))?;
+        add_secondary_dns(index, addr, index_pos)?;
     }
 
     Ok(())

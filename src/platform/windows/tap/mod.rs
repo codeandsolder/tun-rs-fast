@@ -83,28 +83,24 @@ impl TapDevice {
                 ));
             }
 
-            match ffi::luid_to_guid(&luid) {
-                Err(_) => {
-                    std::thread::sleep(time::Duration::from_millis(20));
-                    continue;
-                }
-                Ok(guid) => {
-                    if let Some(mac) = mac.take() {
-                        let guid = ffi::string_from_guid(&guid)?;
-                        iface::set_adapter_mac_by_guid(&guid, mac)?;
-                        std::thread::sleep(time::Duration::from_millis(20));
-                        iface::enable_adapter(component_id, &luid, false)?;
-                        std::thread::sleep(time::Duration::from_millis(20));
-                        iface::enable_adapter(component_id, &luid, true)?;
-                    }
-                    let handle = iface::open_interface(&luid)?;
-                    if get_version(handle.as_raw_handle()).is_err() {
-                        std::thread::sleep(time::Duration::from_millis(200));
-                        continue;
-                    }
-                    break handle;
-                }
+            let Ok(guid) = ffi::luid_to_guid(&luid) else {
+                std::thread::sleep(time::Duration::from_millis(20));
+                continue;
             };
+            if let Some(mac) = mac.take() {
+                let guid = ffi::string_from_guid(&guid)?;
+                iface::set_adapter_mac_by_guid(&guid, mac)?;
+                std::thread::sleep(time::Duration::from_millis(20));
+                iface::enable_adapter(component_id, &luid, false)?;
+                std::thread::sleep(time::Duration::from_millis(20));
+                iface::enable_adapter(component_id, &luid, true)?;
+            }
+            let handle = iface::open_interface(&luid)?;
+            if get_version(handle.as_raw_handle()).is_err() {
+                std::thread::sleep(time::Duration::from_millis(200));
+                continue;
+            }
+            break handle;
         };
 
         let index = match ffi::luid_to_index(&luid) {
@@ -180,8 +176,8 @@ impl TapDevice {
         )
         .map(|()| mac)
     }
-    pub fn set_mac(&self, _mac: &[u8; 6]) -> io::Result<()> {
-        Err(io::Error::from(io::ErrorKind::Unsupported))?
+    pub fn set_mac(_mac: [u8; 6]) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
     /// Retrieve the version of the driver

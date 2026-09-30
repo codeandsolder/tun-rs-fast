@@ -102,7 +102,7 @@ impl WriteOverlapped {
         })
     }
     pub fn try_write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if !self.finish_pending_nonblocking()? {
+        if !self.finish_pending_nonblocking() {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
         }
         self.submit(buf)
@@ -148,21 +148,21 @@ impl WriteOverlapped {
             }
         }
     }
-    fn finish_pending_nonblocking(&mut self) -> io::Result<bool> {
+    fn finish_pending_nonblocking(&mut self) -> bool {
         let inner = &mut self.inner;
         if inner.no_pending_io {
-            return Ok(true);
+            return true;
         }
         match ffi::try_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped) {
             Ok(_) => {
                 inner.no_pending_io = true;
-                Ok(true)
+                true
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
             Err(e) => {
                 inner.no_pending_io = true;
                 log::warn!("previous TAP write completed with error: {e}");
-                Ok(true)
+                true
             }
         }
     }
