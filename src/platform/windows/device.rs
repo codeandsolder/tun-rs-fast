@@ -16,7 +16,7 @@ use windows_sys::core::GUID;
 use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
 pub(crate) const GUID_NETWORK_ADAPTER: GUID = GUID {
-    data1: 0x4d36e972,
+    data1: 0x4d36_e972,
     data2: 0xe325,
     data3: 0x11ce,
     data4: [0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18],
@@ -35,6 +35,9 @@ pub struct DeviceImpl {
 
 impl DeviceImpl {
     /// Create a new `Device` for the given `Configuration`.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn new(config: DeviceConfig) -> io::Result<Self> {
         let layer = config.layer.unwrap_or(Layer::L3);
         let mut count = 0;
@@ -140,6 +143,9 @@ impl DeviceImpl {
         feature = "async_tokio",
         feature = "async_io"
     ))]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn wait_readable_interruptible(
         &self,
         event: &crate::platform::windows::InterruptEvent,
@@ -151,6 +157,9 @@ impl DeviceImpl {
         }
     }
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn read_interruptible(
         &self,
         buf: &mut [u8],
@@ -171,12 +180,18 @@ impl DeviceImpl {
         }
     }
     /// Recv a packet from tun device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.read(buf),
             Driver::Tun(tun) => tun.recv(buf),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read(buf),
@@ -184,6 +199,9 @@ impl DeviceImpl {
         }
     }
     #[cfg(feature = "async_framed")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read_uninit(buf),
@@ -192,6 +210,9 @@ impl DeviceImpl {
     }
 
     /// Send a packet to tun device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.write(buf),
@@ -203,6 +224,9 @@ impl DeviceImpl {
         feature = "async_tokio",
         feature = "async_io"
     ))]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn write_interruptible(
         &self,
         buf: &[u8],
@@ -213,12 +237,18 @@ impl DeviceImpl {
             Driver::Tun(tun) => tun.send_interruptible(buf, &event.handle),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_write(buf),
             Driver::Tun(tun) => tun.try_send(buf),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn shutdown(&self) -> io::Result<()> {
         match &self.driver {
             Driver::Tun(tun) => tun.shutdown(),
@@ -254,6 +284,9 @@ impl DeviceImpl {
     /// Retrieves the name of the device.
     ///
     /// Calls the appropriate method on the underlying driver (TUN or TAP) to obtain the device name.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn name(&self) -> io::Result<String> {
         let _guard = self
             .lock
@@ -265,6 +298,9 @@ impl DeviceImpl {
     ///
     /// This method first checks if the current name is different from the desired one. If it is,
     /// it uses the `netsh` command to update the interface name.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_name(&self, value: &str) -> io::Result<()> {
         let _guard = self
             .lock
@@ -279,6 +315,9 @@ impl DeviceImpl {
     /// Retrieves the interface index (`if_index`) of the device.
     ///
     /// This is used for various network configuration commands.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn if_index(&self) -> io::Result<u32> {
         let _guard = self
             .lock
@@ -289,6 +328,9 @@ impl DeviceImpl {
     /// Retrieves the interface LUID (locally unique identifier) of the device.
     ///
     /// This is used for various network configuration APIs.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn if_luid(&self) -> io::Result<NET_LUID_LH> {
         let _guard = self
             .lock
@@ -300,6 +342,9 @@ impl DeviceImpl {
     ///
     /// For a TUN device, disabling is not supported and will return an error.
     /// For a TAP device, this calls the appropriate method to set the device status.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
         let _guard = self
             .lock
@@ -313,6 +358,9 @@ impl DeviceImpl {
     /// Retrieves all IP addresses associated with this device.
     ///
     /// Filters the adapter addresses by matching the device's interface index.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn addresses(&self) -> io::Result<Vec<IpAddr>> {
         let _guard = self
             .lock
@@ -328,6 +376,9 @@ impl DeviceImpl {
     }
     /// Sets the IPv4 network address, netmask, and an optional destination address.
     /// Remove all previous set IPv4 addresses and set the specified address.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_network_address<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -382,6 +433,9 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -398,6 +452,9 @@ impl DeviceImpl {
             .map_err(io::Error::from)
     }
     /// Removes the specified IP address from the device.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
         let _guard = self
             .lock
@@ -436,6 +493,9 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn add_address_v6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         &self,
         addr: IPv6,
@@ -455,6 +515,9 @@ impl DeviceImpl {
     /// Retrieves the MTU for the device (IPv4).
     ///
     /// This method uses a Windows-specific FFI function to query the MTU by interface index.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn mtu(&self) -> io::Result<u16> {
         let _guard = self
             .lock
@@ -467,6 +530,9 @@ impl DeviceImpl {
     /// Retrieves the MTU for the device (IPv6).
     ///
     /// This method uses a Windows-specific FFI function to query the IPv6 MTU by interface index.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn mtu_v6(&self) -> io::Result<u16> {
         let _guard = self
             .lock
@@ -477,6 +543,9 @@ impl DeviceImpl {
         Ok(mtu as _)
     }
     /// Sets the MTU for the device (IPv4).
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_mtu(&self, mtu: u16) -> io::Result<()> {
         let _guard = self
             .lock
@@ -485,6 +554,9 @@ impl DeviceImpl {
         super::ffi::set_interface_mtu(self.if_index_impl()?, mtu.into(), true)
     }
     /// Sets the MTU for the device (IPv6).
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_mtu_v6(&self, mtu: u16) -> io::Result<()> {
         let _guard = self
             .lock
@@ -498,6 +570,9 @@ impl DeviceImpl {
     ///
     /// #Note:
     /// set a MAC address is only supported when creating a TUN/TAP device.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
         let _guard = self
             .lock
@@ -511,6 +586,9 @@ impl DeviceImpl {
     /// Retrieves the MAC address of the device.
     ///
     /// This operation is only supported for TAP devices.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
         let _guard = self
             .lock
@@ -551,6 +629,9 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_metric(&self, metric: u16) -> io::Result<()> {
         let _guard = self
             .lock
@@ -562,6 +643,9 @@ impl DeviceImpl {
     ///
     /// For TUN devices, this directly queries the driver version.
     /// For TAP devices, the version is composed of several components joined by dots.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn version(&self) -> io::Result<String> {
         let _guard = self
             .lock
@@ -579,6 +663,9 @@ impl DeviceImpl {
     }
     /// Set DNS servers for the current device (supports primary and secondary DNS)
     /// `dns_servers`: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn set_dns_servers(&self, dns_servers: &[IpAddr]) -> io::Result<()> {
         let _guard = self
             .lock
@@ -588,6 +675,9 @@ impl DeviceImpl {
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
     /// `is_ipv4`: true to clear IPv4 DNS, false to clear IPv6 DNS
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn clear_dns_servers(&self, is_ipv4: bool) -> io::Result<()> {
         let _guard = self
             .lock

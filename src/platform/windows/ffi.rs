@@ -876,10 +876,18 @@ mod wait_tests {
     use std::os::windows::io::AsRawHandle;
 
     #[test]
-    fn netio_status_conversion_uses_the_returned_error_code() {
+    fn netio_status_conversion_uses_the_returned_error_code() -> io::Result<()> {
         let code = windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
-        let error = win_result(code).expect_err("nonzero NETIO status unexpectedly succeeded");
-        assert_eq!(error.raw_os_error(), Some(code as i32));
+        let error = match win_result(code) {
+            Ok(()) => {
+                return Err(io::Error::other(
+                    "nonzero NETIO status unexpectedly succeeded",
+                ))
+            }
+            Err(error) => error,
+        };
+        assert_eq!(error.raw_os_error(), Some(code.cast_signed()));
+        Ok(())
     }
 
     #[test]

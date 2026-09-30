@@ -3,7 +3,7 @@
     reason = "the Wintun logger callback crosses a C ABI pointer boundary"
 )]
 
-use log::*;
+use log::{error, info, warn};
 
 use crate::platform::windows::tun::wintun_raw;
 use widestring::U16CStr;

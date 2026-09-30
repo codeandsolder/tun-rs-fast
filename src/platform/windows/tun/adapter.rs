@@ -32,7 +32,7 @@ use windows_sys::{
 )]
 pub const DEVPKEY_Wintun_Name: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID {
-        data1: 0x3361c968,
+        data1: 0x3361_c968,
         data2: 0x2f2e,
         data3: 0x4660,
         data4: [0xb4, 0x7e, 0x69, 0x9c, 0xdc, 0x4c, 0x32, 0xb9],
@@ -46,7 +46,7 @@ pub const DEVPKEY_Wintun_Name: DEVPROPKEY = DEVPROPKEY {
 )]
 pub const DEVPKEY_Wintun_OwningProcess: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID {
-        data1: 0x3361c968,
+        data1: 0x3361_c968,
         data2: 0x2f2e,
         data3: 0x4660,
         data4: [0xb4, 0x7e, 0x69, 0x9c, 0xdc, 0x4c, 0x32, 0xb9],
