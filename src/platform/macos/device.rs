@@ -438,8 +438,8 @@ impl DeviceImpl {
                 .map_err(|e| io::Error::new(ErrorKind::InvalidInput, e))?;
             let mask = network_addr.netmask();
             req.ifra_prefixmask = sockaddr_union::from((mask, 0)).addr6;
-            req.in6_addrlifetime.ia6t_vltime = 0xffffffff_u32;
-            req.in6_addrlifetime.ia6t_pltime = 0xffffffff_u32;
+            req.in6_addrlifetime.ia6t_vltime = 0xffff_ffff_u32;
+            req.in6_addrlifetime.ia6t_pltime = 0xffff_ffff_u32;
             req.ifra_flags = IN6_IFF_NODAD;
             if let Err(err) = siocaifaddr_in6(ctl_v6()?.as_raw_fd(), &req) {
                 return Err(io::Error::from(err));

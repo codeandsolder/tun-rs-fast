@@ -40,6 +40,7 @@ link https://www.zerotier.com/blog/how-zerotier-eliminated-kernel-extensions-on-
 use crate::builder::DeviceConfig;
 use crate::platform::macos::sys::siocifcreate;
 use crate::platform::unix::Fd;
+#[cfg(any(feature = "async_tokio", feature = "async_io"))]
 use bytes::buf::UninitSlice;
 use bytes::BytesMut;
 use libc::{ifreq, IFNAMSIZ};
@@ -52,7 +53,7 @@ use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
 use std::sync::Mutex;
 
 const FETH: &str = "feth";
-const BUFFER_LEN: usize = 131072;
+const BUFFER_LEN: usize = 131_072;
 const BPF_HDR_SIZE: usize = std::mem::size_of::<libc::bpf_hdr>();
 
 #[inline]
@@ -259,6 +260,7 @@ impl Tap {
         buf[..buffer.len()].copy_from_slice(&buffer);
         Ok(buffer.len())
     }
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
     pub fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let mut guard = self
             .buffer
@@ -453,9 +455,8 @@ fn open_bpf() -> io::Result<Fd> {
             Err(e) => {
                 if e.raw_os_error() == Some(libc::EBUSY) {
                     continue;
-                } else {
-                    return Err(e);
                 }
+                return Err(e);
             }
         }
     }

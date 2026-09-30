@@ -13,6 +13,7 @@ use crate::platform::unix::device::ctl;
 use crate::platform::unix::Tun;
 use crate::platform::ETHER_ADDR_LEN;
 use crate::Layer;
+#[cfg(any(feature = "async_tokio", feature = "async_io"))]
 use bytes::buf::UninitSlice;
 use libc::{
     c_char, c_uint, sockaddr, socklen_t, AF_SYSTEM, AF_SYS_CONTROL, IFNAMSIZ, PF_SYSTEM,
@@ -181,6 +182,7 @@ impl TunTap {
             TunTap::Tap(tap) => tap.recv(buf),
         }
     }
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
     #[inline]
     pub fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         match &self {
