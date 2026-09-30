@@ -73,12 +73,7 @@ const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
 /// `min(size, size_of::<sockaddr_union>())` bytes. The pointer must be derived from
 /// the complete backing C object being overwritten, not from a narrower Rust reference
 /// to one of its fields. The destination must not overlap the local source value.
-#[cfg(any(
-    target_os = "linux",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
     src_addr: T,
     src_port: u16,

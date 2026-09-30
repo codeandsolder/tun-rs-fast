@@ -8,12 +8,7 @@ mod sockaddr;
 ))]
 pub(crate) use sockaddr::sockaddr_union;
 
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub(crate) use sockaddr::ipaddr_to_sockaddr;
 
 mod fd;
