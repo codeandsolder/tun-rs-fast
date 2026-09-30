@@ -327,8 +327,12 @@ impl WinTunSession {
         })?;
         let win_tun = &self.win_tun;
         let handle = self.handle;
+        // SAFETY: handle is the live session owned by self and packet_size is
+        // the checked u32 representation of the source slice length.
         let bytes_ptr = unsafe { win_tun.WintunAllocateSendPacket(handle, packet_size) };
         if bytes_ptr.is_null() {
+            // SAFETY: GetLastError has no pointer or lifetime preconditions and
+            // must be read immediately after the failed Wintun call.
             match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::WriteZero)),
                 ERROR_BUFFER_OVERFLOW => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
@@ -336,7 +340,11 @@ impl WinTunSession {
                 e => Err(io::Error::from_raw_os_error(e.cast_signed())),
             }
         } else {
+            // SAFETY: Wintun allocated bytes_ptr for exactly buf.len() writable
+            // bytes above; the source slice is initialized and non-overlapping.
             unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), bytes_ptr, buf.len()) };
+            // SAFETY: bytes_ptr is the outstanding send allocation returned for
+            // this live session and is handed back exactly once.
             unsafe { win_tun.WintunSendPacket(handle, bytes_ptr) };
             Ok(buf.len())
         }
