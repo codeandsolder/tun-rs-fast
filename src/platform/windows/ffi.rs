@@ -107,13 +107,15 @@ fn usize_to_i32(value: usize, what: &'static str) -> io::Result<i32> {
 }
 
 pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
-    let mut string = vec![0; 39];
+    let mut string = [0u16; 39];
     let capacity = usize_to_i32(string.len(), "GUID string buffer length")?;
 
     // SAFETY: guid is a live GUID and string owns capacity writable UTF-16
     // code units for the duration of this synchronous conversion.
     match unsafe { StringFromGUID2(guid, string.as_mut_ptr(), capacity) } {
-        0 => Err(io::Error::last_os_error()),
+        0 => Err(io::Error::other(
+            "StringFromGUID2 reported an insufficient GUID string buffer",
+        )),
         _ => Ok(decode_utf16(&string)),
     }
 }
@@ -124,19 +126,17 @@ pub fn alias_to_luid(alias: &str) -> io::Result<NET_LUID_LH> {
     // valid initialization state before the API fills the output.
     let mut luid = unsafe { mem::zeroed() };
     // SAFETY: alias is NUL-terminated and live; luid is writable output storage.
-    match unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &raw mut luid) } {
-        0 => Ok(luid),
-        _err => Err(io::Error::last_os_error()),
-    }
+    let status = unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &raw mut luid) };
+    win_result(status)?;
+    Ok(luid)
 }
 
 pub fn luid_to_index(luid: &NET_LUID_LH) -> io::Result<u32> {
     let mut index = 0;
     // SAFETY: luid is a live input value and index is writable output storage.
-    match unsafe { ConvertInterfaceLuidToIndex(luid, &raw mut index) } {
-        0 => Ok(index),
-        _err => Err(io::Error::last_os_error()),
-    }
+    let status = unsafe { ConvertInterfaceLuidToIndex(luid, &raw mut index) };
+    win_result(status)?;
+    Ok(index)
 }
 
 pub fn luid_to_guid(luid: &NET_LUID_LH) -> io::Result<GUID> {
@@ -144,21 +144,19 @@ pub fn luid_to_guid(luid: &NET_LUID_LH) -> io::Result<GUID> {
     // before the conversion API overwrites the output.
     let mut guid = unsafe { mem::zeroed() };
     // SAFETY: luid is live and guid is writable for the synchronous call.
-    match unsafe { ConvertInterfaceLuidToGuid(luid, &raw mut guid) } {
-        0 => Ok(guid),
-        _err => Err(io::Error::last_os_error()),
-    }
+    let status = unsafe { ConvertInterfaceLuidToGuid(luid, &raw mut guid) };
+    win_result(status)?;
+    Ok(guid)
 }
 
 pub fn luid_to_alias(luid: &NET_LUID_LH) -> io::Result<String> {
     // IF_MAX_STRING_SIZE + 1
-    let mut alias = vec![0; 257];
+    let mut alias = [0u16; 257];
     // SAFETY: luid is live and alias provides the documented
     // IF_MAX_STRING_SIZE + 1 writable UTF-16 code units.
-    match unsafe { ConvertInterfaceLuidToAlias(luid, alias.as_mut_ptr(), alias.len()) } {
-        0 => Ok(decode_utf16(&alias)),
-        _err => Err(io::Error::last_os_error()),
-    }
+    let status = unsafe { ConvertInterfaceLuidToAlias(luid, alias.as_mut_ptr(), alias.len()) };
+    win_result(status)?;
+    Ok(decode_utf16(&alias))
 }
 pub fn reset_event(handle: RawHandle) -> io::Result<()> {
     // SAFETY: callers supply a live event handle owned elsewhere; ResetEvent does

@@ -63,9 +63,9 @@ let handle = thread::spawn(move || {
 thread::sleep(std::time::Duration::from_secs(1));
 event.trigger()?;
 
-let _ = handle
+handle
     .join()
-    .map_err(|_| std::io::Error::other("reader thread panicked"))??;
+    .map_err(|_| std::io::Error::other("reader thread panicked"))?;
 # }
 # Ok::<(), std::io::Error>(())
 ```
