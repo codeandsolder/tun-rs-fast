@@ -96,7 +96,7 @@ impl TapDevice {
                     }
                     break handle;
                 }
-            };
+            }
         };
 
         let index = match ffi::luid_to_index(&luid) {

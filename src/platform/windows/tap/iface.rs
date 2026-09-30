@@ -81,10 +81,9 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
             continue;
         }
 
-        let drvinfo_detail = match ffi::get_driver_info_detail(devinfo, &devinfo_data, &driver_info)
-        {
-            Ok(drvinfo_detail) => drvinfo_detail,
-            _ => continue,
+        let Ok(drvinfo_detail) = ffi::get_driver_info_detail(devinfo, &devinfo_data, &driver_info)
+        else {
+            continue;
         };
 
         let hardware_id = decode_utf16(&drvinfo_detail.HardwareID);

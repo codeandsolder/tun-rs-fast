@@ -616,8 +616,8 @@ impl TunDevice {
     pub fn shutdown(&self) -> io::Result<()> {
         self.win_tun_adapter.disable()
     }
-    pub fn version(&self) -> io::Result<String> {
-        Ok(self.win_tun_adapter.version())
+    pub fn version(&self) -> String {
+        self.win_tun_adapter.version()
     }
     pub fn enabled(&self, value: bool) -> io::Result<()> {
         if value {

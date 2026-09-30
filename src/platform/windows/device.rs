@@ -676,7 +676,7 @@ impl DeviceImpl {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
-            Driver::Tun(tun) => tun.version(),
+            Driver::Tun(tun) => Ok(tun.version()),
             Driver::Tap(tap) => tap.get_version().map(|v| {
                 v.iter()
                     .map(std::string::ToString::to_string)
