@@ -1036,8 +1036,8 @@ impl DeviceImpl {
     }
     /// Enables or disables the network interface.
     ///
-    /// If `value` is true, the interface is enabled by setting the `IFF_UP` and `IFF_RUNNING` flags.
-    /// If false, the `IFF_UP` flag is cleared. The change is applied using a system call.
+    /// If `value` is true, the interface is administratively enabled by setting `IFF_UP`.
+    /// If false, `IFF_UP` is cleared. Kernel-owned operational flags such as `IFF_RUNNING` are preserved.
     ///
     /// # Errors
     ///
@@ -1057,7 +1057,7 @@ impl DeviceImpl {
             }
 
             if value {
-                req.ifr_ifru.ifru_flags |= IFF_UP_SHORT | IFF_RUNNING_SHORT;
+                req.ifr_ifru.ifru_flags |= IFF_UP_SHORT;
             } else {
                 req.ifr_ifru.ifru_flags &= !IFF_UP_SHORT;
             }

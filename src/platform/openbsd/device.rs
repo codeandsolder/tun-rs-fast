@@ -14,7 +14,7 @@ use crate::{
 };
 
 use crate::platform::unix::device::{copy_device_name, ctl, ctl_v6};
-use libc::{self, c_char, c_short, ifreq, AF_LINK, IFF_RUNNING, IFF_UP, IFNAMSIZ, O_RDWR};
+use libc::{self, c_char, c_short, ifreq, AF_LINK, IFF_UP, IFNAMSIZ, O_RDWR};
 use std::io::ErrorKind;
 use std::os::fd::{IntoRawFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -440,6 +440,9 @@ impl DeviceImpl {
     }
     /// Enables or disables the network interface.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
+        let up = c_short::try_from(IFF_UP).map_err(|_| {
+            io::Error::new(ErrorKind::InvalidData, "OpenBSD IFF_UP exceeds c_short")
+        })?;
         let _guard = self
             .op_lock
             .write()
@@ -453,9 +456,9 @@ impl DeviceImpl {
             }
 
             if value {
-                req.ifr_ifru.ifru_flags |= (IFF_UP | IFF_RUNNING) as c_short;
+                req.ifr_ifru.ifru_flags |= up;
             } else {
-                req.ifr_ifru.ifru_flags &= !(IFF_UP as c_short);
+                req.ifr_ifru.ifru_flags &= !up;
             }
 
             if let Err(err) = siocsifflags(ctl.as_raw_fd(), &req) {

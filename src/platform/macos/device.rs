@@ -21,7 +21,7 @@ use crate::platform::macos::tuntap::TunTap;
 use crate::platform::unix::device::{ctl, ctl_v6};
 use crate::platform::unix::Tun;
 use crate::platform::ETHER_ADDR_LEN;
-use libc::{self, c_char, c_short, IFF_RUNNING, IFF_UP};
+use libc::{self, c_char, c_short, IFF_UP};
 use std::io::ErrorKind;
 use std::net::Ipv4Addr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -251,8 +251,8 @@ impl DeviceImpl {
     }
     /// Enables or disables the network interface.
     ///
-    /// If `value` is true, the interface is enabled by setting the `IFF_UP` and `IFF_RUNNING` flags.
-    /// If false, the `IFF_UP` flag is cleared. The change is applied using a system call.
+    /// If `value` is true, the interface is administratively enabled by setting `IFF_UP`.
+    /// If false, `IFF_UP` is cleared. Kernel-owned operational flags such as `IFF_RUNNING` are preserved.
     ///
     /// # Errors
     /// Returns an I/O error if interface flags cannot be queried or updated.
@@ -261,12 +261,6 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let up_running = c_short::try_from(IFF_UP | IFF_RUNNING).map_err(|_| {
-            io::Error::new(
-                ErrorKind::InvalidData,
-                "Darwin interface flags exceed c_short",
-            )
-        })?;
         let up = c_short::try_from(IFF_UP)
             .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Darwin IFF_UP exceeds c_short"))?;
         // SAFETY: req is a live ifreq owned by this function. The first ioctl
@@ -278,7 +272,7 @@ impl DeviceImpl {
             let mut req = self.request()?;
             siocgifflags(ctl.as_raw_fd(), &raw mut req).map_err(io::Error::from)?;
             if value {
-                req.ifr_ifru.ifru_flags |= up_running;
+                req.ifr_ifru.ifru_flags |= up;
             } else {
                 req.ifr_ifru.ifru_flags &= !up;
             }

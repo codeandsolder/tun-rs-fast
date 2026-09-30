@@ -18,7 +18,7 @@ use crate::{
 };
 
 use crate::platform::unix::device::{copy_device_name, ctl, ctl_v6};
-use libc::{self, c_short, AF_LINK, IFF_RUNNING, IFF_UP, IFNAMSIZ, O_RDWR};
+use libc::{self, c_short, AF_LINK, IFF_UP, IFNAMSIZ, O_RDWR};
 use nix::sys::socket::{LinkAddr, SockaddrLike};
 use std::io::ErrorKind;
 use std::os::fd::{FromRawFd, IntoRawFd, RawFd};
@@ -440,12 +440,6 @@ impl DeviceImpl {
     /// # Errors
     /// Returns an I/O error if interface flags cannot be queried or updated.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
-        let up_running = c_short::try_from(IFF_UP | IFF_RUNNING).map_err(|_| {
-            io::Error::new(
-                ErrorKind::InvalidData,
-                "NetBSD interface flags exceed c_short",
-            )
-        })?;
         let up = c_short::try_from(IFF_UP)
             .map_err(|_| io::Error::new(ErrorKind::InvalidData, "NetBSD IFF_UP exceeds c_short"))?;
         let _guard = self
@@ -463,7 +457,7 @@ impl DeviceImpl {
             }
 
             if value {
-                req.ifr_ifru.ifru_flags |= up_running;
+                req.ifr_ifru.ifru_flags |= up;
             } else {
                 req.ifr_ifru.ifru_flags &= !up;
             }
