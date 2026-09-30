@@ -922,9 +922,13 @@ pub fn set_device_state(
 
 #[cfg(test)]
 mod wait_tests {
-    use super::{create_event, set_event, wait_for_single_object, win_result};
+    use super::{
+        create_event, finite_wait_timeout_millis, set_event, wait_for_single_object, win_result,
+    };
     use std::io;
     use std::os::windows::io::AsRawHandle;
+    use std::time::Duration;
+    use windows_sys::Win32::System::Threading::INFINITE;
 
     #[test]
     fn netio_status_conversion_uses_the_returned_error_code() -> io::Result<()> {
@@ -939,6 +943,17 @@ mod wait_tests {
         };
         assert_eq!(error.raw_os_error(), Some(code.cast_signed()));
         Ok(())
+    }
+
+    #[test]
+    fn finite_wait_timeout_rounds_up_without_aliasing_infinite() {
+        assert_eq!(finite_wait_timeout_millis(Duration::ZERO), 0);
+        assert_eq!(finite_wait_timeout_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(finite_wait_timeout_millis(Duration::from_micros(1001)), 2);
+        assert_eq!(
+            finite_wait_timeout_millis(Duration::from_millis(u64::from(INFINITE))),
+            INFINITE - 1
+        );
     }
 
     #[test]
