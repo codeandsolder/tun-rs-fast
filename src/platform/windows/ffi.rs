@@ -777,18 +777,22 @@ pub fn device_io_control(
     }
 }
 
+fn get_ip_interface_table(family: u16) -> io::Result<*mut MIB_IPINTERFACE_TABLE> {
+    let mut if_table: *mut MIB_IPINTERFACE_TABLE = ptr::null_mut();
+    // SAFETY: if_table is writable pointer storage. On success Windows returns
+    // an allocation owned by the caller until FreeMibTable.
+    let status = unsafe { GetIpInterfaceTable(family, &raw mut if_table) };
+    win_result(status)?;
+    Ok(if_table)
+}
+
 pub fn get_mtu_by_index(index: u32, is_v4: bool) -> io::Result<u32> {
     // https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-getipinterfacetable#examples
-    let mut if_table: *mut MIB_IPINTERFACE_TABLE = ptr::null_mut();
+    let if_table = get_ip_interface_table(if is_v4 { AF_INET } else { AF_INET6 })?;
     let mut mtu = None;
-    // SAFETY: if_table is writable pointer storage; on success Windows returns a
-    // table allocation valid until FreeMibTable, and row reads stay within NumEntries.
+    // SAFETY: get_ip_interface_table returned a valid table allocation, which
+    // remains live until FreeMibTable below; row reads stay within NumEntries.
     unsafe {
-        if GetIpInterfaceTable(if is_v4 { AF_INET } else { AF_INET6 }, &raw mut if_table)
-            != NO_ERROR
-        {
-            return Err(io::Error::last_os_error());
-        }
         let ifaces = std::slice::from_raw_parts::<MIB_IPINTERFACE_ROW>(
             &raw const (*if_table).Table[0],
             (*if_table).NumEntries as usize,
@@ -1067,14 +1071,15 @@ pub fn set_device_state(
 #[cfg(test)]
 mod wait_tests {
     use super::{
-        create_event, create_file, finite_wait_timeout_millis, notify_change_key_value, set_event,
-        wait_for_single_object, win_result,
+        create_event, create_file, finite_wait_timeout_millis, get_ip_interface_table,
+        notify_change_key_value, set_event, wait_for_single_object, win_result,
     };
     use std::io;
     use std::os::windows::io::AsRawHandle;
     use std::time::Duration;
     use windows_sys::Win32::NetworkManagement::{
-        IpHelper::ConvertInterfaceIndexToLuid, Ndis::NET_LUID_LH,
+        IpHelper::{ConvertInterfaceIndexToLuid, FreeMibTable, GetIpInterfaceTable},
+        Ndis::NET_LUID_LH,
     };
     use windows_sys::Win32::System::{Registry::REG_NOTIFY_CHANGE_LAST_SET, Threading::INFINITE};
 
@@ -1127,6 +1132,42 @@ mod wait_tests {
         .ok_or_else(|| io::Error::other("CreateFileW failure returned a usable handle"))?;
 
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        Ok(())
+    }
+
+    #[test]
+    fn ip_interface_table_uses_returned_status_not_stale_last_error() -> io::Result<()> {
+        const STALE_LAST_ERROR: u32 = 0x1234;
+        const INVALID_FAMILY: u16 = u16::MAX;
+        let mut direct_table = std::ptr::null_mut();
+
+        // SAFETY: direct_table is writable output storage. INVALID_FAMILY is
+        // intentionally outside AF_UNSPEC/AF_INET/AF_INET6 to force a status error.
+        let direct_status = unsafe { GetIpInterfaceTable(INVALID_FAMILY, &raw mut direct_table) };
+        if direct_status == 0 {
+            // SAFETY: a successful GetIpInterfaceTable call transfers this allocation.
+            unsafe { FreeMibTable(direct_table.cast()) };
+            return Err(io::Error::other(
+                "invalid address family unexpectedly produced an interface table",
+            ));
+        }
+
+        // SAFETY: SetLastError only changes this thread's last-error slot.
+        unsafe { windows_sys::Win32::Foundation::SetLastError(STALE_LAST_ERROR) };
+        let error = get_ip_interface_table(INVALID_FAMILY)
+            .err()
+            .ok_or_else(|| io::Error::other("invalid address family unexpectedly succeeded"))?;
+
+        assert_eq!(
+            error.raw_os_error(),
+            Some(direct_status.cast_signed()),
+            "wrapper did not preserve GetIpInterfaceTable's returned status"
+        );
+        assert_ne!(
+            error.raw_os_error(),
+            Some(STALE_LAST_ERROR.cast_signed()),
+            "wrapper returned stale GetLastError instead of GetIpInterfaceTable status"
+        );
         Ok(())
     }
 
