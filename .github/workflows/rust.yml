@@ -177,6 +177,22 @@ jobs:
         if: ${{ failure() }}
         run: echo "Some of jobs failed" && false
 
+
+  shared-sccache:
+    name: Linux tests (shared sccache)
+    if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@main
+    with:
+      command: |
+        cargo +1.98.1 test --lib
+        cargo +1.98.1 test --lib --features async_tokio,async_framed,interruptible,experimental
+        cargo +1.98.1 test --lib --features async_io,async_framed,interruptible,experimental
+      rust-toolchain: "1.98.1"
+      rustflags: "-C target-cpu=x86-64-v2"
+
   build_n_test_freebsd:
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
