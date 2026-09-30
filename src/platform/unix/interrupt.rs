@@ -93,16 +93,12 @@ use std::os::fd::AsRawFd;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-fn remaining_timeout(started: Instant, timeout: Option<Duration>) -> Option<Duration> {
-    timeout.map(|limit| limit.saturating_sub(started.elapsed()))
-}
-
 fn poll_timeout_ms(timeout: Option<Duration>) -> libc::c_int {
     let Some(timeout) = timeout else {
         return -1;
     };
     let whole_millis = timeout.as_millis();
-    let has_fractional_millisecond = timeout.subsec_nanos() % 1_000_000 != 0;
+    let has_fractional_millisecond = !timeout.subsec_nanos().is_multiple_of(1_000_000);
     let rounded_up = whole_millis.saturating_add(u128::from(has_fractional_millisecond));
     libc::c_int::try_from(rounded_up).unwrap_or(libc::c_int::MAX)
 }
@@ -120,7 +116,10 @@ impl Fd {
     ) -> io::Result<usize> {
         let started = Instant::now();
         loop {
-            self.wait_readable_interruptible(event, remaining_timeout(started, timeout))?;
+            self.wait_readable_interruptible(
+                event,
+                timeout.map(|limit| limit.saturating_sub(started.elapsed())),
+            )?;
             match self.read(buf) {
                 Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
                     if timeout_expired(started, timeout) {
@@ -139,7 +138,10 @@ impl Fd {
     ) -> io::Result<usize> {
         let started = Instant::now();
         loop {
-            self.wait_readable_interruptible(event, remaining_timeout(started, timeout))?;
+            self.wait_readable_interruptible(
+                event,
+                timeout.map(|limit| limit.saturating_sub(started.elapsed())),
+            )?;
             match self.readv(bufs) {
                 Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
                     if timeout_expired(started, timeout) {
@@ -207,7 +209,8 @@ impl Fd {
             // The helper also clamps to c_int::MAX; if that shorter wait expires,
             // loop against the original Duration so a large requested timeout is
             // not silently shortened.
-            let poll_timeout = poll_timeout_ms(remaining_timeout(started, timeout));
+            let poll_timeout =
+                poll_timeout_ms(timeout.map(|limit| limit.saturating_sub(started.elapsed())));
             // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
             // the synchronous call; both descriptors are owned/borrowed live descriptors.
             let result =
@@ -321,7 +324,8 @@ impl Fd {
             for pollfd in &mut fds {
                 pollfd.revents = 0;
             }
-            let timeout_ms = poll_timeout_ms(remaining_timeout(started, timeout));
+            let timeout_ms =
+                poll_timeout_ms(timeout.map(|limit| limit.saturating_sub(started.elapsed())));
             // SAFETY: fds is a live contiguous pollfd array and poll only borrows it
             // synchronously; all descriptors remain valid for the call.
             let result =
