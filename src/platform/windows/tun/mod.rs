@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Wintun is a C ABI with raw handles, callbacks, packet pointers, and wait APIs"
+)]
+
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, Ordering};

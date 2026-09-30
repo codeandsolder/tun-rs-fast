@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows TAP interface management uses Win32 handles, unions, and SetupAPI FFI"
+)]
+
 use crate::platform::windows::device::GUID_NETWORK_ADAPTER;
 use crate::platform::windows::ffi;
 use crate::platform::windows::ffi::decode_utf16;

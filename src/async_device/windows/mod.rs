@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows async I/O copies packet bytes across raw Wintun/TAP buffers at the FFI boundary"
+)]
+
 use crate::platform::windows::{ffi, InterruptEvent};
 use crate::platform::DeviceImpl;
 use crate::SyncDevice;

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows DNS configuration dynamically loads and invokes documented Win32 APIs through raw FFI"
+)]
+
 //! Interface DNS configuration via `SetInterfaceDnsSettings`.
 //!
 //! [`SetInterfaceDnsSettings`] requires Windows 10, build 19041 (version 2004) or newer, so

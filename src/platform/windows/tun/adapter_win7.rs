@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows 7 Wintun adapter discovery uses legacy SetupAPI and process-handle FFI"
+)]
+
 use std::{mem, ptr};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetClassDevsExW, SetupDiGetDevicePropertyW,

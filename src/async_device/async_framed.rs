@@ -579,7 +579,7 @@ fn compute_buffer_size<T: Borrow<AsyncDevice>>(dev: &T) -> usize {
     let mtu = framed_buffer_size_for_mtu(4096);
 
     #[cfg(windows)]
-    let mtu_v6 = framed_buffer_size_for_mtu(_dev.borrow().mtu_v6().map_or(4096, usize::from));
+    let mtu_v6 = framed_buffer_size_for_mtu(dev.borrow().mtu_v6().map_or(4096, usize::from));
     #[cfg(not(windows))]
     let mtu_v6 = 0usize;
 
@@ -594,6 +594,8 @@ struct ReadState {
 }
 impl ReadState {
     pub(crate) fn new(recv_buffer_size: usize, device: &AsyncDevice) -> Self {
+        #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
+        let _ = device;
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         let packet_splitter = if device.tcp_gso() {
             Some(PacketSplitter::new(recv_buffer_size))
@@ -635,6 +637,8 @@ struct WriteState {
 }
 impl WriteState {
     pub(crate) fn new(send_buffer_size: usize, device: &AsyncDevice) -> Self {
+        #[cfg(not(all(target_os = "linux", not(target_env = "ohos"))))]
+        let _ = device;
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         let packet_arena = if device.tcp_gso() {
             Some(PacketArena::new())

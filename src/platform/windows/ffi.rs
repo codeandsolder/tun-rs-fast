@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "this module is the dedicated raw Win32/SetupAPI/NetIO FFI boundary"
+)]
+
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::windows::io::{FromRawHandle, OwnedHandle, RawHandle};
 use std::{io, mem, ptr};
@@ -543,7 +548,7 @@ pub fn notify_change_key_value(
             ))),
         }
     } else {
-        Err(io::Error::from_raw_os_error(status))
+        Err(io::Error::from_raw_os_error(status as i32))
     };
 
     unsafe { CloseHandle(event) };

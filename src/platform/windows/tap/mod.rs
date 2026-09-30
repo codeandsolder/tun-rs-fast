@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows TAP owns raw OS handles and declares Send/Sync for the handle-backed device after synchronization"
+)]
+
 use crate::platform::windows::tap::overlapped::{ReadOverlapped, WriteOverlapped};
 use crate::platform::windows::{ffi, netsh};
 use bytes::buf::UninitSlice;

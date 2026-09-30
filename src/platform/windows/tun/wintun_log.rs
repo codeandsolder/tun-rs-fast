@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the Wintun logger callback crosses a C ABI pointer boundary"
+)]
+
 use log::*;
 
 use crate::platform::windows::tun::wintun_raw;

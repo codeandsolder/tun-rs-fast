@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Wintun adapter discovery uses SetupAPI and Configuration Manager raw FFI"
+)]
+
 use std::{io, mem, ptr};
 
 use crate::windows::{
