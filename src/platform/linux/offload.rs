@@ -80,7 +80,7 @@ loop {
 
 ## Constants
 
-- [`VIRTIO_NET_HDR_LEN`]: Size of the virtio network header (12 bytes)
+- [`VIRTIO_NET_HDR_LEN`]: Size of the virtio network header (10 bytes)
 - [`IDEAL_BATCH_SIZE`]: Recommended batch size for packet operations (128)
 - [`VIRTIO_NET_HDR_GSO_NONE`], [`VIRTIO_NET_HDR_GSO_TCPV4`], etc.: GSO type constants
 
@@ -192,7 +192,7 @@ fn checked_u16_len(value: usize, message: &'static str) -> io::Result<u16> {
 ///
 /// # Memory Layout
 ///
-/// The structure is `#[repr(C)]` and has a fixed size of 12 bytes ([`VIRTIO_NET_HDR_LEN`]).
+/// The structure is `#[repr(C)]` and has a fixed size of 10 bytes ([`VIRTIO_NET_HDR_LEN`]).
 /// All multi-byte fields are in native endianness.
 ///
 /// # Usage
@@ -325,7 +325,7 @@ impl VirtioNetHdr {
     }
 }
 
-/// Size of the virtio network header in bytes (12 bytes).
+/// Size of the virtio network header in bytes (10 bytes).
 ///
 /// This constant represents the fixed size of the `VirtioNetHdr` structure.
 /// When offload is enabled on a TUN device, this header precedes every packet.
@@ -2254,6 +2254,40 @@ mod tests {
         Ok(pkt)
     }
 
+    fn make_ipv6_tcp_packet(seq: u32, payload_len: usize) -> TestResult<Vec<u8>> {
+        const IPH_LEN: usize = 40;
+        const TCPH_LEN: usize = 20;
+
+        let mut pkt = vec![0u8; IPH_LEN + TCPH_LEN + payload_len];
+        pkt[0] = 0x60;
+        pkt[4..6].copy_from_slice(&u16::try_from(TCPH_LEN + payload_len)?.to_be_bytes());
+        pkt[6] = IPPROTO_TCP_U8;
+        pkt[7] = 64;
+        pkt[8..24].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        pkt[24..40].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+
+        pkt[IPH_LEN..IPH_LEN + 2].copy_from_slice(&10000u16.to_be_bytes());
+        pkt[IPH_LEN + 2..IPH_LEN + 4].copy_from_slice(&10001u16.to_be_bytes());
+        pkt[IPH_LEN + 4..IPH_LEN + 8].copy_from_slice(&seq.to_be_bytes());
+        pkt[IPH_LEN + 8..IPH_LEN + 12].copy_from_slice(&1u32.to_be_bytes());
+        pkt[IPH_LEN + 12] = 5 << 4;
+        pkt[IPH_LEN + 13] = TCP_FLAG_ACK;
+        pkt[IPH_LEN + 14..IPH_LEN + 16].copy_from_slice(&4096u16.to_be_bytes());
+        for (idx, byte) in pkt[IPH_LEN + TCPH_LEN..].iter_mut().enumerate() {
+            *byte = u8::try_from(idx % 256)?;
+        }
+
+        let pseudo = pseudo_header_checksum_no_fold(
+            IPPROTO_TCP_U8,
+            &pkt[8..24],
+            &pkt[24..40],
+            u16::try_from(TCPH_LEN + payload_len)?,
+        );
+        let tcp_checksum = !checksum(&pkt[IPH_LEN..], pseudo);
+        pkt[IPH_LEN + 16..IPH_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+        Ok(pkt)
+    }
+
     #[test]
     fn miri_handle_gro_rejects_invalid_offset() -> TestResult {
         let mut table = GROTable::new();
@@ -2322,6 +2356,151 @@ mod tests {
         };
 
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        Ok(())
+    }
+
+    #[test]
+    fn gso_split_tcp_ipv4_preserves_payload_and_updates_segment_headers() -> TestResult {
+        const PAYLOAD_LEN: usize = 300;
+        const GSO_SIZE: u16 = 128;
+        const HEADER_LEN: usize = 40;
+        let mut input = make_ipv4_tcp_packet(1000, PAYLOAD_LEN)?;
+        let original_payload = input[HEADER_LEN..].to_vec();
+        let hdr = VirtioNetHdr {
+            gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
+            hdr_len: u16::try_from(HEADER_LEN)?,
+            gso_size: GSO_SIZE,
+            csum_start: 20,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let mut out = vec![vec![0u8; HEADER_LEN + usize::from(GSO_SIZE)]; 3];
+        let mut sizes = vec![0usize; 3];
+
+        let count = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)?;
+        assert_eq!(count, 3);
+        assert_eq!(sizes, [168, 168, 84]);
+
+        let mut reconstructed = Vec::with_capacity(PAYLOAD_LEN);
+        for (index, (packet, &size)) in out.iter().zip(&sizes).enumerate() {
+            let packet = &packet[..size];
+            assert_eq!(
+                usize::from(u16::from_be_bytes([packet[2], packet[3]])),
+                size
+            );
+            assert_eq!(checksum(&packet[..20], 0), u16::MAX);
+            assert_eq!(
+                u32::from_be_bytes(packet[24..28].try_into().map_err(io::Error::other)?),
+                1000 + u32::from(GSO_SIZE) * u32::try_from(index)?
+            );
+            let pseudo = pseudo_header_checksum_no_fold(
+                IPPROTO_TCP_U8,
+                &packet[12..16],
+                &packet[16..20],
+                u16::try_from(size - 20)?,
+            );
+            assert_eq!(checksum(&packet[20..], pseudo), u16::MAX);
+            reconstructed.extend_from_slice(&packet[HEADER_LEN..]);
+        }
+        assert_eq!(reconstructed, original_payload);
+        Ok(())
+    }
+
+    #[test]
+    fn gso_split_tcp_ipv6_preserves_payload_sequence_and_payload_length() -> TestResult {
+        const PAYLOAD_LEN: usize = 300;
+        const GSO_SIZE: u16 = 128;
+        const IPV6_HEADER_LEN: usize = 40;
+        const HEADER_LEN: usize = 60;
+        let mut input = make_ipv6_tcp_packet(2000, PAYLOAD_LEN)?;
+        let original_payload = input[HEADER_LEN..].to_vec();
+        let hdr = VirtioNetHdr {
+            gso_type: VIRTIO_NET_HDR_GSO_TCPV6,
+            hdr_len: u16::try_from(HEADER_LEN)?,
+            gso_size: GSO_SIZE,
+            csum_start: u16::try_from(IPV6_HEADER_LEN)?,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let mut out = vec![vec![0u8; HEADER_LEN + usize::from(GSO_SIZE)]; 3];
+        let mut sizes = vec![0usize; 3];
+
+        let count = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, true)?;
+        assert_eq!(count, 3);
+        assert_eq!(sizes, [188, 188, 104]);
+
+        let mut reconstructed = Vec::with_capacity(PAYLOAD_LEN);
+        for (index, (packet, &size)) in out.iter().zip(&sizes).enumerate() {
+            let packet = &packet[..size];
+            assert_eq!(
+                usize::from(u16::from_be_bytes([packet[4], packet[5]])),
+                size - IPV6_HEADER_LEN
+            );
+            assert_eq!(
+                u32::from_be_bytes(packet[44..48].try_into().map_err(io::Error::other)?),
+                2000 + u32::from(GSO_SIZE) * u32::try_from(index)?
+            );
+            let pseudo = pseudo_header_checksum_no_fold(
+                IPPROTO_TCP_U8,
+                &packet[8..24],
+                &packet[24..40],
+                u16::try_from(size - IPV6_HEADER_LEN)?,
+            );
+            assert_eq!(checksum(&packet[IPV6_HEADER_LEN..], pseudo), u16::MAX);
+            reconstructed.extend_from_slice(&packet[HEADER_LEN..]);
+        }
+        assert_eq!(reconstructed, original_payload);
+        Ok(())
+    }
+
+    #[test]
+    fn gso_split_udp_ipv4_preserves_payload_and_updates_datagram_lengths() -> TestResult {
+        const PAYLOAD_LEN: usize = 150;
+        const GSO_SIZE: u16 = 64;
+        const HEADER_LEN: usize = 28;
+        let gro_buf = make_gro_udp_buffer(0, PAYLOAD_LEN)?;
+        let mut input = gro_buf[VIRTIO_NET_HDR_LEN..].to_vec();
+        for (index, byte) in input[HEADER_LEN..].iter_mut().enumerate() {
+            *byte = u8::try_from(index % 251)?;
+        }
+        let original_payload = input[HEADER_LEN..].to_vec();
+        let hdr = VirtioNetHdr {
+            gso_type: VIRTIO_NET_HDR_GSO_UDP_L4,
+            hdr_len: u16::try_from(HEADER_LEN)?,
+            gso_size: GSO_SIZE,
+            csum_start: 20,
+            csum_offset: 6,
+            ..Default::default()
+        };
+        let mut out = vec![vec![0u8; HEADER_LEN + usize::from(GSO_SIZE)]; 3];
+        let mut sizes = vec![0usize; 3];
+
+        let count = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)?;
+        assert_eq!(count, 3);
+        assert_eq!(sizes, [92, 92, 50]);
+
+        let mut reconstructed = Vec::with_capacity(PAYLOAD_LEN);
+        for (packet, &size) in out.iter().zip(&sizes) {
+            let packet = &packet[..size];
+            assert_eq!(
+                usize::from(u16::from_be_bytes([packet[2], packet[3]])),
+                size
+            );
+            assert_eq!(
+                usize::from(u16::from_be_bytes([packet[24], packet[25]])),
+                size - 20
+            );
+            assert_eq!(checksum(&packet[..20], 0), u16::MAX);
+            let pseudo = pseudo_header_checksum_no_fold(
+                IPPROTO_UDP_U8,
+                &packet[12..16],
+                &packet[16..20],
+                u16::try_from(size - 20)?,
+            );
+            assert_eq!(checksum(&packet[20..], pseudo), u16::MAX);
+            reconstructed.extend_from_slice(&packet[HEADER_LEN..]);
+        }
+        assert_eq!(reconstructed, original_payload);
         Ok(())
     }
 
@@ -2402,6 +2581,74 @@ mod tests {
         buf.resize(VIRTIO_NET_HDR_LEN, 0);
         buf.extend_from_slice(&pkt);
         Ok(buf)
+    }
+
+    #[test]
+    fn virtio_header_abi_size_and_short_buffer_errors_are_stable() -> TestResult {
+        assert_eq!(VIRTIO_NET_HDR_LEN, 10);
+
+        let mut short = vec![0u8; VIRTIO_NET_HDR_LEN - 1];
+        let decode_error = VirtioNetHdr::decode(&short)
+            .err()
+            .ok_or_else(|| io::Error::other("short virtio header decoded successfully"))?;
+        assert_eq!(decode_error.kind(), io::ErrorKind::InvalidInput);
+
+        let encode_error = VirtioNetHdr::default()
+            .encode(&mut short)
+            .err()
+            .ok_or_else(|| io::Error::other("short virtio header accepted an encode"))?;
+        assert_eq!(encode_error.kind(), io::ErrorKind::InvalidInput);
+        Ok(())
+    }
+
+    #[test]
+    fn gro_candidate_classification_matches_protocol_and_feature_rules() {
+        let mut tcp4 = vec![0u8; 40];
+        tcp4[0] = 0x45;
+        tcp4[9] = IPPROTO_TCP_U8;
+        assert!(matches!(
+            packet_is_gro_candidate(&tcp4, false),
+            GroCandidateType::Tcp4GRO
+        ));
+
+        let mut udp4 = vec![0u8; 28];
+        udp4[0] = 0x45;
+        udp4[9] = IPPROTO_UDP_U8;
+        assert!(matches!(
+            packet_is_gro_candidate(&udp4, true),
+            GroCandidateType::Udp4GRO
+        ));
+        assert!(matches!(
+            packet_is_gro_candidate(&udp4, false),
+            GroCandidateType::NotGRO
+        ));
+
+        let mut tcp6 = vec![0u8; 60];
+        tcp6[0] = 0x60;
+        tcp6[6] = IPPROTO_TCP_U8;
+        assert!(matches!(
+            packet_is_gro_candidate(&tcp6, false),
+            GroCandidateType::Tcp6GRO
+        ));
+
+        let mut udp6 = vec![0u8; 48];
+        udp6[0] = 0x60;
+        udp6[6] = IPPROTO_UDP_U8;
+        assert!(matches!(
+            packet_is_gro_candidate(&udp6, true),
+            GroCandidateType::Udp6GRO
+        ));
+
+        let mut ipv4_with_options = tcp4.clone();
+        ipv4_with_options[0] = 0x46;
+        assert!(matches!(
+            packet_is_gro_candidate(&ipv4_with_options, true),
+            GroCandidateType::NotGRO
+        ));
+        assert!(matches!(
+            packet_is_gro_candidate(&[0u8; 27], true),
+            GroCandidateType::NotGRO
+        ));
     }
 
     #[test]

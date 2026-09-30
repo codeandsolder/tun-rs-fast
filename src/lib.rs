@@ -62,7 +62,7 @@ tun-rs = { version = "2", features = ["async"] }
 
 Then use async I/O:
 
-```no_run, ignore
+```no_run
 use tun_rs::DeviceBuilder;
 # #[cfg(feature = "async_tokio")]
 # #[tokio::main]

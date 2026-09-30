@@ -85,6 +85,15 @@ jobs:
           cargo +1.98.1 check --all-targets --features async_tokio,async_framed,interruptible,experimental
           cargo +1.98.1 check --all-targets --features async_io,async_framed,interruptible,experimental
 
+      - name: Async runtime exclusivity contract
+        if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
+        shell: bash
+        run: |
+          if cargo +1.98.1 check --no-default-features --features async_tokio,async_io; then
+            echo "async_tokio + async_io unexpectedly compiled" >&2
+            exit 1
+          fi
+
       - name: Strict rust-skills2 — default
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
         uses: codeandsolder/rust-skills2/.github/actions/rust-strict@main
@@ -209,6 +218,9 @@ jobs:
             cargo build --verbose --examples --tests
             cargo build --verbose --examples --tests --features async_io
             cargo build --verbose --examples --tests --features async_tokio
+            cargo test --lib
+            cargo test --lib --features async_tokio,async_framed,interruptible,experimental
+            cargo test --lib --features async_io,async_framed,interruptible,experimental
 
   build_n_test_android:
     if: startsWith(github.ref, 'refs/tags/')

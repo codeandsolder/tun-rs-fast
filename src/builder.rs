@@ -1619,3 +1619,129 @@ impl ToIpv6Netmask for &str {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DeviceBuilder, Layer, ToIpv4Address, ToIpv4Netmask, ToIpv6Address, ToIpv6Netmask};
+    use std::io;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn layer_defaults_to_l3() {
+        assert_eq!(Layer::default(), Layer::L3);
+    }
+
+    #[test]
+    fn new_builder_enables_device_by_default_and_inherit_clears_override() {
+        let builder = DeviceBuilder::new();
+        assert_eq!(builder.enabled, Some(true));
+
+        let builder = builder.enable(false);
+        assert_eq!(builder.enabled, Some(false));
+
+        let builder = builder.inherit_enable_state();
+        assert_eq!(builder.enabled, None);
+    }
+
+    #[test]
+    fn address_conversion_accepts_matching_family_and_rejects_wrong_family() -> io::Result<()> {
+        let v4 = Ipv4Addr::new(10, 26, 1, 100);
+        let v6 = Ipv6Addr::LOCALHOST;
+
+        assert_eq!(ToIpv4Address::ipv4(&v4)?, v4);
+        assert_eq!(ToIpv4Address::ipv4(&IpAddr::V4(v4))?, v4);
+        assert_eq!(ToIpv4Address::ipv4(&v4.to_string())?, v4);
+        assert_eq!(ToIpv4Address::ipv4(&v4.to_string().as_str())?, v4);
+        assert!(ToIpv4Address::ipv4(&IpAddr::V6(v6)).is_err());
+        assert!(ToIpv4Address::ipv4(&"not-an-ip").is_err());
+
+        assert_eq!(ToIpv6Address::ipv6(&v6)?, v6);
+        assert_eq!(ToIpv6Address::ipv6(&IpAddr::V6(v6))?, v6);
+        assert_eq!(ToIpv6Address::ipv6(&v6.to_string())?, v6);
+        assert_eq!(ToIpv6Address::ipv6(&v6.to_string().as_str())?, v6);
+        assert!(ToIpv6Address::ipv6(&IpAddr::V4(v4)).is_err());
+        assert!(ToIpv6Address::ipv6(&"not-an-ip").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn every_ipv4_prefix_round_trips_through_netmask() -> io::Result<()> {
+        for prefix in 0u8..=32 {
+            let mask = ToIpv4Netmask::netmask(&prefix)?;
+            assert_eq!(ToIpv4Netmask::prefix(&mask)?, prefix);
+            assert_eq!(ToIpv4Netmask::prefix(&mask.to_string().as_str())?, prefix);
+        }
+        assert!(ToIpv4Netmask::prefix(&33u8).is_err());
+        assert!(ToIpv4Netmask::prefix(&Ipv4Addr::new(255, 0, 255, 0)).is_err());
+        assert!(ToIpv4Netmask::prefix(&"not-a-mask").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn every_ipv6_prefix_round_trips_through_netmask() -> io::Result<()> {
+        for prefix in 0u8..=128 {
+            let mask = ToIpv6Netmask::netmask(&prefix)?;
+            assert_eq!(ToIpv6Netmask::prefix(&mask)?, prefix);
+            assert_eq!(ToIpv6Netmask::prefix(&mask.to_string().as_str())?, prefix);
+        }
+        assert!(ToIpv6Netmask::prefix(&129u8).is_err());
+        let non_contiguous = Ipv6Addr::new(0xffff, 0x0fff, 0, 0, 0, 0, 0, 0);
+        assert!(ToIpv6Netmask::prefix(&non_contiguous).is_err());
+        assert!(ToIpv6Netmask::prefix(&"not-a-mask").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn ipv4_configuration_is_last_write_wins() -> io::Result<()> {
+        let builder = DeviceBuilder::new()
+            .ipv4("10.0.0.1", 24, Some("10.0.0.2"))
+            .ipv4("10.1.0.1", "255.255.0.0", None::<&str>);
+        let (address, prefix, destination) = builder
+            .ipv4
+            .ok_or_else(|| io::Error::other("IPv4 configuration missing"))?;
+
+        assert_eq!(address?, Ipv4Addr::new(10, 1, 0, 1));
+        assert_eq!(prefix?, 16);
+        assert!(destination.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn ipv6_configuration_accumulates_in_call_order() -> io::Result<()> {
+        let builder = DeviceBuilder::new()
+            .ipv6("fd00::1", 64)
+            .ipv6_tuple(&[("fd00::2", 80), ("fd00::3", 96)]);
+        let entries = builder
+            .ipv6
+            .ok_or_else(|| io::Error::other("IPv6 configuration missing"))?;
+        assert_eq!(entries.len(), 3);
+
+        for ((address, prefix), (expected_address, expected_prefix)) in entries.into_iter().zip([
+            (Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1), 64),
+            (Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2), 80),
+            (Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 3), 96),
+        ]) {
+            assert_eq!(address?, expected_address);
+            assert_eq!(prefix?, expected_prefix);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn with_guard_preserves_chain_and_updates_linux_options() {
+        let builder = DeviceBuilder::new().name("tun-spec").with(|guard| {
+            guard
+                .tx_queue_len(321)
+                .offload(true)
+                .multi_queue(true)
+                .packet_information(true);
+        });
+
+        assert_eq!(builder.dev_name.as_deref(), Some("tun-spec"));
+        assert_eq!(builder.tx_queue_len, Some(321));
+        assert_eq!(builder.offload, Some(true));
+        assert_eq!(builder.multi_queue, Some(true));
+        assert_eq!(builder.packet_information, Some(true));
+    }
+}

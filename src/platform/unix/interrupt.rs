@@ -663,3 +663,127 @@ impl InterruptEvent {
         self.read_fd.as_raw_fd()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Fd, InterruptEvent};
+    use std::io;
+    use std::time::Duration;
+
+    fn pipe_pair() -> io::Result<(Fd, Fd)> {
+        let mut raw = [-1; 2];
+        // SAFETY: raw is writable storage for exactly two descriptors; successful pipe()
+        // initializes both descriptors and ownership is immediately moved into Fd wrappers.
+        if unsafe { libc::pipe(raw.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((Fd::new(raw[0])?, Fd::new(raw[1])?))
+    }
+
+    #[test]
+    fn event_state_is_edge_stable_until_reset() -> io::Result<()> {
+        let event = InterruptEvent::new()?;
+        assert!(!event.is_trigger());
+        assert_eq!(event.value(), 0);
+
+        event.trigger_value(7)?;
+        assert!(event.is_trigger());
+        assert_eq!(event.value(), 7);
+
+        // Repeated triggers before reset are deliberately idempotent and preserve
+        // the value associated with the first edge.
+        event.trigger_value(9)?;
+        assert_eq!(event.value(), 7);
+
+        event.reset()?;
+        assert!(!event.is_trigger());
+        assert_eq!(event.value(), 0);
+
+        event.trigger()?;
+        assert_eq!(event.value(), 1);
+        event.reset()?;
+        Ok(())
+    }
+
+    #[test]
+    fn event_rejects_zero_trigger_value() -> io::Result<()> {
+        let event = InterruptEvent::new()?;
+        let error = event
+            .trigger_value(0)
+            .err()
+            .ok_or_else(|| io::Error::other("zero trigger value was accepted"))?;
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!event.is_trigger());
+        Ok(())
+    }
+
+    #[test]
+    fn wait_readable_distinguishes_timeout_interrupt_and_device_readiness() -> io::Result<()> {
+        let (reader, writer) = pipe_pair()?;
+        let event = InterruptEvent::new()?;
+
+        let timeout = reader
+            .wait_readable_interruptible(&event, Some(Duration::from_millis(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("empty pipe unexpectedly became readable"))?;
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+
+        event.trigger()?;
+        let interrupted = reader
+            .wait_readable_interruptible(&event, Some(Duration::from_secs(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("triggered event did not interrupt the wait"))?;
+        assert_eq!(interrupted.kind(), io::ErrorKind::Interrupted);
+        event.reset()?;
+
+        assert_eq!(writer.write(b"x")?, 1);
+        reader.wait_readable_interruptible(&event, Some(Duration::from_secs(1)))?;
+        let mut byte = [0u8; 1];
+        assert_eq!(reader.read(&mut byte)?, 1);
+        assert_eq!(byte, [b'x']);
+        Ok(())
+    }
+
+    #[test]
+    fn read_interruptible_returns_data_and_timeout_by_contract() -> io::Result<()> {
+        let (reader, writer) = pipe_pair()?;
+        let event = InterruptEvent::new()?;
+        assert_eq!(writer.write(b"abc")?, 3);
+
+        let mut buf = [0u8; 8];
+        let read = reader.read_interruptible(&mut buf, &event, Some(Duration::from_secs(1)))?;
+        assert_eq!(read, 3);
+        assert_eq!(&buf[..read], b"abc");
+
+        let timeout = reader
+            .read_interruptible(&mut buf, &event, Some(Duration::from_millis(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("empty pipe read did not time out"))?;
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_writer_is_interruptible() -> io::Result<()> {
+        let (_reader, writer) = pipe_pair()?;
+        writer.set_nonblocking(true)?;
+        let fill = [0u8; 4096];
+        loop {
+            match writer.write(&fill) {
+                Ok(0) => return Err(io::Error::other("pipe write made no progress")),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+
+        let event = InterruptEvent::new()?;
+        event.trigger()?;
+        let error = writer
+            .wait_writable_interruptible(&event)
+            .err()
+            .ok_or_else(|| io::Error::other("full pipe ignored interrupt event"))?;
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        Ok(())
+    }
+}
