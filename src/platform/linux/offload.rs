@@ -2,7 +2,8 @@
 # Linux Offload Support Module
 
 This module provides Generic Receive Offload (GRO) and Generic Segmentation Offload (GSO)
-support for Linux TUN devices, significantly improving throughput for TCP and UDP traffic.
+support for Linux TUN devices. These mechanisms can reduce per-packet processing overhead for
+TCP and UDP traffic; the actual performance effect is workload- and host-dependent.
 
 ## Overview
 
@@ -17,18 +18,11 @@ Modern network cards and drivers use offload techniques to reduce CPU overhead:
 This module implements GRO/GSO for TUN devices using the `virtio_net` header format, compatible
 with the Linux kernel's TUN/TAP driver offload capabilities.
 
-## Performance Benefits
+## Performance Characteristics
 
-Enabling offload can provide:
-- 2-10x improvement in throughput for TCP traffic
-- Reduced CPU usage per gigabit of traffic
-- Better handling of high-bandwidth applications
-
-The actual improvement depends on:
-- Packet sizes
-- TCP window sizes
-- Network round-trip time
-- CPU capabilities
+Offload reduces the number of packet-sized operations visible to userspace and can reduce
+per-packet CPU/syscall overhead. Throughput and CPU improvement are deliberately not specified
+as fixed ratios; they depend on workload, kernel, transport state, and host capabilities.
 
 ## Usage
 
@@ -134,10 +128,16 @@ pub const VIRTIO_NET_HDR_GSO_TCPV6: u8 = 4;
 /// Available in newer Linux kernels for UDP packet segmentation.
 pub const VIRTIO_NET_HDR_GSO_UDP_L4: u8 = 5;
 
+/// Flag ORed into a TCP GSO type when Explicit Congestion Notification is active.
+///
+/// Linux masks this bit before identifying the base GSO type and maps it to
+/// `SKB_GSO_TCP_ECN`. It is not a standalone GSO type.
+pub const VIRTIO_NET_HDR_GSO_ECN: u8 = 0x80;
+
 /// Recommended batch size for packet operations with offload.
 ///
-/// This constant defines the optimal number of packets to handle per `recv_multiple`
-/// or `send_multiple` call. It balances between:
+/// This is the crate's default batch-size heuristic for `recv_multiple`/`send_multiple`,
+/// inherited from WireGuard-go rather than a Linux ABI requirement. It balances:
 /// - Amortizing system call overhead
 /// - Keeping latency reasonable
 /// - Memory usage for packet buffers
@@ -165,6 +165,7 @@ const TCP_FLAGS_OFFSET: usize = 13;
 const TCP_FLAG_FIN: u8 = 0x01;
 const TCP_FLAG_PSH: u8 = 0x08;
 const TCP_FLAG_ACK: u8 = 0x10;
+const TCP_FLAG_CWR: u8 = 0x80;
 
 #[expect(
     clippy::cast_possible_truncation,
@@ -175,7 +176,7 @@ const IPPROTO_TCP_U8: u8 = IPPROTO_TCP as u8;
     clippy::cast_possible_truncation,
     reason = "libc IPPROTO_TCP and IPPROTO_UDP are ABI constants 6 and 17"
 )]
-const IPPROTO_UDP_U8: u8 = IPPROTO_UDP as u8;
+pub(super) const IPPROTO_UDP_U8: u8 = IPPROTO_UDP as u8;
 
 fn checked_u16_len(value: usize, message: &'static str) -> io::Result<u16> {
     u16::try_from(value).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, message))
@@ -192,8 +193,12 @@ fn checked_u16_len(value: usize, message: &'static str) -> io::Result<u16> {
 ///
 /// # Memory Layout
 ///
-/// The structure is `#[repr(C)]` and has a fixed size of 10 bytes ([`VIRTIO_NET_HDR_LEN`]).
-/// All multi-byte fields are in native endianness.
+/// The legacy Linux `struct virtio_net_hdr` represented here is 10 bytes
+/// ([`VIRTIO_NET_HDR_LEN`]). The crate's TUN path leaves the cross-endian
+/// `TUNSETVNETLE`/`TUNSETVNETBE` modes unset, so the kernel uses legacy host
+/// endianness and these helpers encode/decode multi-byte fields with native endianness.
+/// They must not be used unchanged for a TUN file descriptor explicitly configured for
+/// cross-endian vnet headers.
 ///
 /// # Usage
 ///
@@ -327,8 +332,9 @@ impl VirtioNetHdr {
 
 /// Size of the virtio network header in bytes (10 bytes).
 ///
-/// This constant represents the fixed size of the `VirtioNetHdr` structure.
-/// When offload is enabled on a TUN device, this header precedes every packet.
+/// This constant is the size of the legacy `VirtioNetHdr` represented by this crate.
+/// Linux TUN initializes its vnet-header size to this legacy structure size; Linux also
+/// exposes ioctls for larger/newer header layouts, which this type does not model.
 ///
 /// # Example
 ///
@@ -1534,9 +1540,8 @@ fn udp_gro<B: ExpandBuffer>(
 ///
 /// # Performance
 ///
-/// - Coalescing reduces the number of packets passed to the application
-/// - Typical coalescing ratios: 5-20 packets into 1 for bulk TCP transfers
-/// - Most effective for sequential TCP traffic with large receive windows
+/// - Coalescing reduces the number of packets passed to the application.
+/// - Effectiveness depends on flow continuity, packet sizes, and transport state.
 ///
 /// # See Also
 ///
@@ -1598,16 +1603,39 @@ pub fn handle_gro<B: ExpandBuffer>(
     Ok(())
 }
 
+pub(super) fn gso_transport_protocol(gso_type: u8, is_v6: bool) -> io::Result<u8> {
+    let has_ecn = gso_type & VIRTIO_NET_HDR_GSO_ECN != 0;
+    let base_type = gso_type & !VIRTIO_NET_HDR_GSO_ECN;
+    match base_type {
+        VIRTIO_NET_HDR_GSO_TCPV4 if !is_v6 => Ok(IPPROTO_TCP_U8),
+        VIRTIO_NET_HDR_GSO_TCPV6 if is_v6 => Ok(IPPROTO_TCP_U8),
+        VIRTIO_NET_HDR_GSO_UDP_L4 if !has_ecn => Ok(IPPROTO_UDP_U8),
+        VIRTIO_NET_HDR_GSO_TCPV4 | VIRTIO_NET_HDR_GSO_TCPV6 => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "virtio GSO type does not match IP version",
+        )),
+        VIRTIO_NET_HDR_GSO_UDP_L4 => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "VIRTIO_NET_HDR_GSO_ECN is only valid for TCP GSO",
+        )),
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("unsupported virtio GSO type: {gso_type}"),
+        )),
+    }
+}
+
 /// Split a GSO (Generic Segmentation Offload) packet into multiple smaller packets.
 ///
-/// When sending data with offload enabled, the application can provide large packets
-/// that will be automatically segmented. This function performs the opposite operation:
-/// splitting a large GSO packet into MTU-sized segments for transmission.
+/// Splits a large packet described by virtio GSO metadata into ordinary protocol-correct
+/// packets whose payload chunks are at most `hdr.gso_size`. This is the userspace
+/// segmentation step used when reading a GSO packet from a Linux TUN device.
 ///
 /// # Arguments
 ///
-/// * `input` - The input buffer containing the large GSO packet (with virtio header).
-/// * `hdr` - The virtio network header describing the GSO packet.
+/// * `input` - The IP packet bytes **after** the virtio header. The caller decodes/removes
+///   the virtio header separately and passes its metadata as `hdr`.
+/// * `hdr` - The already-decoded virtio network header describing `input`.
 /// * `out_bufs` - Output buffers where segmented packets will be written.
 /// * `sizes` - Output array where the size of each segmented packet will be written.
 /// * `out_offset` - Offset in output buffers where packet data should start.
@@ -1620,9 +1648,9 @@ pub fn handle_gro<B: ExpandBuffer>(
 ///
 /// # How GSO Splitting Works
 ///
-/// For a large TCP packet with GSO enabled:
-/// 1. The packet headers are parsed (IP + TCP)
-/// 2. The payload is split into segments of size `hdr.gso_size`
+/// For a large TCP packet with GSO metadata:
+/// 1. The packet headers are validated (IP + TCP)
+/// 2. The payload is split into chunks of at most `hdr.gso_size`
 /// 3. New packets are created with copied headers and updated fields:
 ///    - IP length field
 ///    - IP checksum (for IPv4)
@@ -1664,13 +1692,9 @@ pub fn handle_gro<B: ExpandBuffer>(
 ///
 /// # Performance
 ///
-/// GSO allows sending fewer, larger packets to the kernel, which then performs
-/// efficient segmentation. This reduces:
-/// - Number of system calls
-/// - Per-packet processing overhead in the application
-/// - Context switches
-///
-/// Typical performance improvement: 2-5x for bulk transfers.
+/// GSO allows userspace to process larger packets that are split into protocol-correct
+/// segments before delivery. This can reduce userspace per-packet work; no fixed throughput
+/// or CPU improvement is part of this API's correctness contract.
 ///
 /// # Errors
 ///
@@ -1705,6 +1729,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
             "virtioNetHdr.gsoSize must be non-zero",
         ));
     }
+    let protocol = gso_transport_protocol(hdr.gso_type, is_v6)?;
     if hdr.hdr_len < hdr.csum_start {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1745,8 +1770,13 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
         (IPV4_SRC_ADDR_OFFSET, 4)
     };
 
-    let transport_csum_at = (hdr.csum_start + hdr.csum_offset) as usize;
-    if transport_csum_at + 1 >= input.len() {
+    let transport_csum_at = usize::from(hdr.csum_start)
+        .checked_add(usize::from(hdr.csum_offset))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "checksum offset overflow"))?;
+    if transport_csum_at
+        .checked_add(2)
+        .is_none_or(|end| end > input.len())
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "checksum offset exceeds input length",
@@ -1755,29 +1785,25 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
     input[transport_csum_at] = 0;
     input[transport_csum_at + 1] = 0; // clear TCP/UDP checksum
 
-    let (first_tcp_seq_num, protocol) =
-        if hdr.gso_type == VIRTIO_NET_HDR_GSO_TCPV4 || hdr.gso_type == VIRTIO_NET_HDR_GSO_TCPV6 {
-            if (hdr.hdr_len as usize) < hdr.csum_start as usize + 20
-                || hdr.csum_start as usize + TCP_FLAGS_OFFSET + 1 > input.len()
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "TCP header is too short",
-                ));
-            }
-            (
-                BigEndian::read_u32(&input[hdr.csum_start as usize + 4..]),
-                IPPROTO_TCP_U8,
-            )
-        } else {
-            if (hdr.hdr_len as usize) < hdr.csum_start as usize + UDP_H_LEN {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "UDP header is too short",
-                ));
-            }
-            (0, IPPROTO_UDP_U8)
-        };
+    let first_tcp_seq_num = if protocol == IPPROTO_TCP_U8 {
+        if (hdr.hdr_len as usize) < hdr.csum_start as usize + 20
+            || hdr.csum_start as usize + TCP_FLAGS_OFFSET + 1 > input.len()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "TCP header is too short",
+            ));
+        }
+        BigEndian::read_u32(&input[hdr.csum_start as usize + 4..])
+    } else {
+        if (hdr.hdr_len as usize) < hdr.csum_start as usize + UDP_H_LEN {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "UDP header is too short",
+            ));
+        }
+        0
+    };
 
     if src_addr_offset + 2 * addr_len > input.len() {
         return Err(io::Error::new(
@@ -1907,8 +1933,14 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 &mut out[(hdr.csum_start + 4) as usize..(hdr.csum_start + 8) as usize],
                 tcp_seq,
             );
+            let tcp_flags = &mut out[hdr.csum_start as usize + TCP_FLAGS_OFFSET];
+            if i > 0 {
+                // Linux TCP GSO keeps legacy CWR only on the first segment.
+                *tcp_flags &= !TCP_FLAG_CWR;
+            }
             if next_segment_end != input.len() {
-                out[hdr.csum_start as usize + TCP_FLAGS_OFFSET] &= !(TCP_FLAG_FIN | TCP_FLAG_PSH);
+                // FIN and PSH belong only to the final segment.
+                *tcp_flags &= !(TCP_FLAG_FIN | TCP_FLAG_PSH);
             }
         } else {
             let udp_len = checked_u16_len(
@@ -1961,8 +1993,14 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
 ///
 /// This is used when [`VIRTIO_NET_HDR_F_NEEDS_CSUM`] flag is set but [`VIRTIO_NET_HDR_GSO_NONE`]
 /// is the GSO type.
+///
+/// # Panics
+///
+/// Panics if `csum_start + csum_offset` does not identify two bytes within `in_buf`,
+/// or if `csum_start` lies beyond the end of `in_buf`. High-level device receive paths
+/// validate these offsets before calling this low-level helper.
 pub fn gso_none_checksum(in_buf: &mut [u8], csum_start: u16, csum_offset: u16) {
-    let csum_at = (csum_start + csum_offset) as usize;
+    let csum_at = usize::from(csum_start) + usize::from(csum_offset);
     // The initial value at the checksum offset should be summed with the
     // checksum we compute. This is typically the pseudo-header checksum.
     let initial = BigEndian::read_u16(&in_buf[csum_at..]);
@@ -2033,10 +2071,6 @@ pub fn gso_none_checksum(in_buf: &mut [u8], csum_start: u16, csum_offset: u16) {
 /// - Memory pools to reduce allocations
 /// - Per-flow coalescing state
 ///
-/// Typical coalescing ratios:
-/// - TCP bulk transfers: 5-20 packets coalesced into 1
-/// - UDP: 2-5 packets coalesced into 1
-/// - Interactive traffic: minimal coalescing (preserves latency)
 ///
 /// # Thread Safety
 ///
@@ -2454,6 +2488,73 @@ mod tests {
     }
 
     #[test]
+    fn gso_split_tcp_ecn_matches_linux_segment_flag_semantics() -> TestResult {
+        const PAYLOAD_LEN: usize = 300;
+        const GSO_SIZE: u16 = 128;
+        const HEADER_LEN: usize = 40;
+        let mut input = make_ipv4_tcp_packet(1000, PAYLOAD_LEN)?;
+        input[20 + TCP_FLAGS_OFFSET] = TCP_FLAG_ACK | TCP_FLAG_CWR | TCP_FLAG_FIN | TCP_FLAG_PSH;
+        let hdr = VirtioNetHdr {
+            gso_type: VIRTIO_NET_HDR_GSO_TCPV4 | VIRTIO_NET_HDR_GSO_ECN,
+            hdr_len: u16::try_from(HEADER_LEN)?,
+            gso_size: GSO_SIZE,
+            csum_start: 20,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let mut out = vec![vec![0u8; HEADER_LEN + usize::from(GSO_SIZE)]; 3];
+        let mut sizes = vec![0usize; 3];
+
+        assert_eq!(
+            gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)?,
+            3
+        );
+        let first_flags = out[0][20 + TCP_FLAGS_OFFSET];
+        let middle_flags = out[1][20 + TCP_FLAGS_OFFSET];
+        let last_flags = out[2][20 + TCP_FLAGS_OFFSET];
+        assert_eq!(first_flags & TCP_FLAG_CWR, TCP_FLAG_CWR);
+        assert_eq!(first_flags & (TCP_FLAG_FIN | TCP_FLAG_PSH), 0);
+        assert_eq!(
+            middle_flags & (TCP_FLAG_CWR | TCP_FLAG_FIN | TCP_FLAG_PSH),
+            0
+        );
+        assert_eq!(last_flags & TCP_FLAG_CWR, 0);
+        assert_eq!(
+            last_flags & (TCP_FLAG_FIN | TCP_FLAG_PSH),
+            TCP_FLAG_FIN | TCP_FLAG_PSH
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn gso_split_rejects_invalid_gso_type_combinations() -> TestResult {
+        let mut input = make_ipv4_tcp_packet(1, 128)?;
+        let template = VirtioNetHdr {
+            hdr_len: 40,
+            gso_size: 64,
+            csum_start: 20,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let mut out = vec![vec![0u8; 128]; 2];
+        let mut sizes = vec![0usize; 2];
+
+        for gso_type in [
+            VIRTIO_NET_HDR_GSO_TCPV6,
+            VIRTIO_NET_HDR_GSO_UDP_L4 | VIRTIO_NET_HDR_GSO_ECN,
+            3, // VIRTIO_NET_HDR_GSO_UDP/UFO is intentionally unsupported.
+            0x7f,
+        ] {
+            let hdr = VirtioNetHdr {
+                gso_type,
+                ..template
+            };
+            assert!(gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn gso_split_udp_ipv4_preserves_payload_and_updates_datagram_lengths() -> TestResult {
         const PAYLOAD_LEN: usize = 150;
         const GSO_SIZE: u16 = 64;
@@ -2501,6 +2602,27 @@ mod tests {
             reconstructed.extend_from_slice(&packet[HEADER_LEN..]);
         }
         assert_eq!(reconstructed, original_payload);
+        Ok(())
+    }
+
+    #[test]
+    fn gso_split_rejects_checksum_offset_overflow_instead_of_panicking() -> TestResult {
+        let mut input = vec![0u8; usize::from(u16::MAX)];
+        input[0] = 0x45;
+        let hdr = VirtioNetHdr {
+            gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
+            hdr_len: u16::MAX,
+            gso_size: 1,
+            csum_start: u16::MAX - 1,
+            csum_offset: 16,
+            ..Default::default()
+        };
+        let mut out = vec![vec![0u8; 65_535]; 1];
+        let mut sizes = vec![0usize; 1];
+        let error = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)
+            .err()
+            .ok_or_else(|| io::Error::other("overflowing checksum offset was accepted"))?;
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
         Ok(())
     }
 

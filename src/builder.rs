@@ -170,7 +170,9 @@ use crate::platform::{DeviceImpl, SyncDevice};
 /// - Applications requiring MAC-level control
 /// - Creating virtual switches
 ///
-/// TAP mode requires setting a MAC address and can work with protocols like ARP.
+/// TAP mode carries link-layer protocols such as ARP. A caller may configure the
+/// interface MAC address on platforms that expose that operation, but supplying one
+/// through `DeviceBuilder` is not a general requirement for creating a TAP device.
 ///
 /// **Platform availability**: Windows, Linux, FreeBSD, macOS, OpenBSD, NetBSD
 ///
@@ -183,8 +185,7 @@ use crate::platform::{DeviceImpl, SyncDevice};
 /// - Point-to-point connections
 /// - Routing between networks
 ///
-/// TUN mode is simpler and more efficient than TAP when Ethernet-level features
-/// are not needed.
+/// TUN mode avoids Ethernet framing when link-layer features are not needed.
 ///
 /// **Platform availability**: All platforms
 ///
@@ -232,7 +233,7 @@ pub enum Layer {
     /// Data Link Layer (Ethernet frames with MAC addresses).
     ///
     /// TAP mode operates at Layer 2, handling complete Ethernet frames.
-    /// Requires a MAC address to be configured.
+    /// MAC-address configuration is optional and platform-dependent.
     ///
     /// Available on: Windows, Linux, FreeBSD, macOS, OpenBSD, NetBSD
     #[cfg(any(
@@ -834,7 +835,6 @@ impl DeviceBuilderGuard<'_> {
 }
 /// This is a unified constructor of a device for various platforms. The specification of every API can be found by looking at
 /// the documentation of the concrete platform.
-#[derive(Default)]
 #[must_use]
 pub struct DeviceBuilder {
     dev_name: Option<String>,
@@ -901,10 +901,75 @@ pub struct DeviceBuilder {
     multi_queue: Option<bool>,
 }
 
+impl Default for DeviceBuilder {
+    fn default() -> Self {
+        Self {
+            dev_name: None,
+            #[cfg(windows)]
+            description: None,
+            #[cfg(target_os = "macos")]
+            peer_feth: None,
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd"
+            ))]
+            associate_route: None,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "netbsd"))]
+            reuse_dev: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            persist: None,
+            enabled: Some(true),
+            mtu: None,
+            #[cfg(windows)]
+            mtu_v6: None,
+            ipv4: None,
+            ipv6: None,
+            layer: None,
+            #[cfg(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "macos",
+                target_os = "netbsd"
+            ))]
+            mac_addr: None,
+            #[cfg(windows)]
+            device_guid: None,
+            #[cfg(windows)]
+            wintun_log: None,
+            #[cfg(windows)]
+            wintun_file: None,
+            #[cfg(windows)]
+            ring_capacity: None,
+            #[cfg(windows)]
+            metric: None,
+            #[cfg(windows)]
+            delete_driver: None,
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd"
+            ))]
+            packet_information: None,
+            #[cfg(target_os = "linux")]
+            tx_queue_len: None,
+            #[cfg(target_os = "linux")]
+            offload: None,
+            #[cfg(target_os = "linux")]
+            multi_queue: None,
+        }
+    }
+}
+
 impl DeviceBuilder {
-    /// Creates a new `DeviceBuilder` instance with default settings.
+    /// Creates a new `DeviceBuilder` instance with the same settings as [`Default`].
     pub fn new() -> Self {
-        Self::default().enable(true)
+        Self::default()
     }
     /// Sets the device name.
     pub fn name<S: Into<String>>(mut self, dev_name: S) -> Self {
@@ -1632,7 +1697,8 @@ mod tests {
     }
 
     #[test]
-    fn new_builder_enables_device_by_default_and_inherit_clears_override() {
+    fn new_and_default_enable_device_and_inherit_clears_override() {
+        assert_eq!(DeviceBuilder::default().enabled, Some(true));
         let builder = DeviceBuilder::new();
         assert_eq!(builder.enabled, Some(true));
 

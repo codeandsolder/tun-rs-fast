@@ -4,9 +4,8 @@
 )]
 
 use crate::platform::linux::offload::{
-    gso_none_checksum, gso_split, handle_gro, VirtioNetHdr, VIRTIO_NET_HDR_F_NEEDS_CSUM,
-    VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_GSO_TCPV4, VIRTIO_NET_HDR_GSO_TCPV6,
-    VIRTIO_NET_HDR_GSO_UDP_L4, VIRTIO_NET_HDR_LEN,
+    gso_none_checksum, gso_split, gso_transport_protocol, handle_gro, VirtioNetHdr, IPPROTO_UDP_U8,
+    VIRTIO_NET_HDR_F_NEEDS_CSUM, VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_LEN,
 };
 use crate::platform::unix::device::{ctl, ctl_v6};
 use crate::platform::{ExpandBuffer, GROTable};
@@ -450,11 +449,11 @@ impl DeviceImpl {
             }
         }
     }
-    /// Sends multiple packets in a batch with GRO (Generic Receive Offload) coalescing.
+    /// Processes multiple outbound packets with GRO-style coalescing before writing them.
     ///
-    /// This method allows efficient transmission of multiple packets by batching them together
-    /// and applying GRO optimizations. When offload is enabled, packets may be coalesced
-    /// to reduce system call overhead and improve throughput.
+    /// With vnet offload enabled, compatible packets may be coalesced into fewer GSO writes.
+    /// Without vnet offload, this method still iterates the supplied packet slice and writes
+    /// each packet individually; it is not a promise of a single batched syscall.
     ///
     /// # Arguments
     ///
@@ -493,7 +492,7 @@ impl DeviceImpl {
     ///
     /// let mut bufs = vec![packet1, packet2];
     ///
-    /// // Send all packets in one batch
+    /// // Process/send all supplied packets
     /// let bytes_sent = dev.send_multiple(&mut gro_table, &mut bufs, offset)?;
     /// println!("Sent {} bytes across {} packets", bytes_sent, bufs.len());
     /// # }
@@ -506,9 +505,9 @@ impl DeviceImpl {
     ///
     /// # Performance Notes
     ///
-    /// - Use `IDEAL_BATCH_SIZE` for optimal batch size (typically 128 packets)
-    /// - Reuse the same `GROTable` instance across calls to avoid allocations
-    /// - Enable offload via `.offload(true)` in `DeviceBuilder` for best performance
+    /// - `IDEAL_BATCH_SIZE` is the crate's default heuristic, not a kernel-required optimum.
+    /// - Reuse the same `GROTable` instance across calls to amortize its internal allocations.
+    /// - Actual throughput/CPU effects are workload- and kernel-dependent.
     ///
     /// # Errors
     ///
@@ -580,19 +579,19 @@ impl DeviceImpl {
         err?;
         Ok(total)
     }
-    /// Receives multiple packets in a batch with GSO (Generic Segmentation Offload) splitting.
+    /// Receives one TUN read and expands GSO metadata into one or more ordinary packets.
     ///
-    /// When offload is enabled, this method can receive large GSO packets from the TUN device
-    /// and automatically split them into MTU-sized segments, significantly improving receive
-    /// performance for high-bandwidth traffic.
+    /// With vnet offload enabled, one large GSO packet can be split into output packets whose
+    /// payload chunks are bounded by the kernel-provided `gso_size`. Without vnet offload,
+    /// one call returns one packet.
     ///
     /// # Arguments
     ///
     /// * `original_buffer` - A mutable buffer to store the raw received data, including the
     ///   virtio network header and the potentially large GSO packet. Recommended size is
     ///   `VIRTIO_NET_HDR_LEN + 65535` bytes.
-    /// * `bufs` - A mutable slice of buffers to store the segmented packets. Each buffer will
-    ///   receive one MTU-sized packet after GSO splitting.
+    /// * `bufs` - A mutable slice of buffers for the resulting ordinary packets. Each populated
+    ///   buffer receives one segment produced from the GSO packet.
     /// * `sizes` - A mutable slice to store the actual size of each packet in `bufs`.
     ///   Must have the same length as `bufs`.
     /// * `offset` - The byte offset within each output buffer where packet data should be written.
@@ -645,9 +644,9 @@ impl DeviceImpl {
     ///
     /// # Performance Notes
     ///
-    /// - Use `IDEAL_BATCH_SIZE` (128) for the number of output buffers
-    /// - A single `recv_multiple` call may return multiple MTU-sized packets from one large GSO packet
-    /// - The performance benefit is most noticeable with TCP traffic using large send/receive windows
+    /// - `IDEAL_BATCH_SIZE` (128) is a project heuristic for output-buffer provisioning.
+    /// - A single `recv_multiple` call may return multiple packets from one GSO packet.
+    /// - No fixed performance gain is part of the API contract.
     ///
     /// # Errors
     ///
@@ -724,6 +723,12 @@ impl DeviceImpl {
         sizes: &mut [usize],
         offset: usize,
     ) -> io::Result<usize> {
+        if bufs.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "at least one output buffer is required",
+            ));
+        }
         if sizes.len() < bufs.len() {
             return Err(io::Error::other("sizes must be at least as long as bufs"));
         }
@@ -746,7 +751,22 @@ impl DeviceImpl {
             if hdr.flags & VIRTIO_NET_HDR_F_NEEDS_CSUM != 0 {
                 // This means CHECKSUM_PARTIAL in skb context. We are responsible
                 // for computing the checksum starting at hdr.csumStart and placing
-                // at hdr.csumOffset.
+                // at hdr.csumOffset. Validate the kernel-supplied offsets before
+                // passing them to the low-level checksum helper.
+                let csum_start = usize::from(hdr.csum_start);
+                let csum_at = usize::from(hdr.csum_start)
+                    .checked_add(usize::from(hdr.csum_offset))
+                    .ok_or_else(|| {
+                        io::Error::new(io::ErrorKind::InvalidInput, "checksum offset overflow")
+                    })?;
+                if csum_start > input.len()
+                    || csum_at.checked_add(2).is_none_or(|end| end > input.len())
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "checksum offset exceeds packet length",
+                    ));
+                }
                 gso_none_checksum(input, hdr.csum_start, hdr.csum_offset);
             }
             if bufs[0].as_ref()[offset..].len() < len {
@@ -765,47 +785,32 @@ impl DeviceImpl {
                 "virtioNetHdr.gsoSize must be non-zero",
             ));
         }
-        if hdr.gso_type != VIRTIO_NET_HDR_GSO_TCPV4
-            && hdr.gso_type != VIRTIO_NET_HDR_GSO_TCPV6
-            && hdr.gso_type != VIRTIO_NET_HDR_GSO_UDP_L4
-        {
-            Err(io::Error::other(format!(
-                "unsupported virtio GSO type: {}",
-                hdr.gso_type
-            )))?;
-        }
-        let ip_version = input[0] >> 4;
-        match ip_version {
-            4 => {
-                if hdr.gso_type != VIRTIO_NET_HDR_GSO_TCPV4
-                    && hdr.gso_type != VIRTIO_NET_HDR_GSO_UDP_L4
-                {
-                    Err(io::Error::other(format!(
-                        "ip header version: 4, GSO type: {}",
-                        hdr.gso_type
-                    )))?;
-                }
+        let Some(first_byte) = input.first() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "GSO packet is empty",
+            ));
+        };
+        let ip_version = first_byte >> 4;
+        let is_v6 = match ip_version {
+            4 => false,
+            6 => true,
+            ip_version => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("invalid ip header version: {ip_version}"),
+                ));
             }
-            6 => {
-                if hdr.gso_type != VIRTIO_NET_HDR_GSO_TCPV6
-                    && hdr.gso_type != VIRTIO_NET_HDR_GSO_UDP_L4
-                {
-                    Err(io::Error::other(format!(
-                        "ip header version: 6, GSO type: {}",
-                        hdr.gso_type
-                    )))?;
-                }
-            }
-            ip_version => Err(io::Error::other(format!(
-                "invalid ip header version: {ip_version}"
-            )))?,
-        }
+        };
+        let transport_protocol = gso_transport_protocol(hdr.gso_type, is_v6)?;
         // Don't trust hdr.hdrLen from the kernel as it can be equal to the length
         // of the entire first packet when the kernel is handling it as part of a
         // FORWARD path. Instead, parse the transport header length and add it onto
         // csumStart, which is synonymous for IP header length.
-        if hdr.gso_type == VIRTIO_NET_HDR_GSO_UDP_L4 {
-            hdr.hdr_len = hdr.csum_start + 8;
+        if transport_protocol == IPPROTO_UDP_U8 {
+            hdr.hdr_len = hdr.csum_start.checked_add(8).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "UDP header length overflow")
+            })?;
         } else {
             if len <= hdr.csum_start as usize + 12 {
                 Err(io::Error::other("packet is too short"))?;
@@ -818,7 +823,9 @@ impl DeviceImpl {
                     "tcp header len is invalid: {tcp_h_len}"
                 )))?;
             }
-            hdr.hdr_len = hdr.csum_start + tcp_h_len;
+            hdr.hdr_len = hdr.csum_start.checked_add(tcp_h_len).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "TCP header length overflow")
+            })?;
         }
         if len < hdr.hdr_len as usize {
             Err(io::Error::other(format!(
@@ -832,14 +839,24 @@ impl DeviceImpl {
                 hdr.hdr_len, hdr.csum_start
             )))?;
         }
-        let c_sum_at = (hdr.csum_start + hdr.csum_offset) as usize;
-        if c_sum_at + 1 >= len {
-            Err(io::Error::other(format!(
-                "end of checksum offset ({}) exceeds packet length ({len})",
-                c_sum_at + 1,
-            )))?;
+        let c_sum_at = usize::from(hdr.csum_start)
+            .checked_add(usize::from(hdr.csum_offset))
+            .ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "checksum offset overflow")
+            })?;
+        let c_sum_end = c_sum_at
+            .checked_add(2)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "checksum end overflow"))?;
+        if c_sum_end > len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "end of checksum offset ({}) exceeds packet length ({len})",
+                    c_sum_end - 1
+                ),
+            ));
         }
-        gso_split(input, hdr, bufs, sizes, offset, ip_version == 6)
+        gso_split(input, hdr, bufs, sizes, offset, is_v6)
     }
     ///
     /// # Errors

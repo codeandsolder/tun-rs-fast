@@ -636,6 +636,21 @@ fn borrowed_sync_device_does_not_take_fd_ownership() -> TestResult {
     Ok(())
 }
 
+#[cfg(target_os = "netbsd")]
+#[test]
+fn netbsd_tun_mtu_matches_kernel_limits() -> TestResult {
+    let device = DeviceBuilder::new().build_sync()?;
+
+    device.set_mtu(576)?;
+    assert_eq!(device.mtu()?, 576);
+    assert!(device.set_mtu(575).is_err());
+
+    device.set_mtu(1500)?;
+    assert_eq!(device.mtu()?, 1500);
+    assert!(device.set_mtu(1501).is_err());
+    Ok(())
+}
+
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[test]
 fn linux_multiqueue_clone_preserves_device_identity() -> TestResult {

@@ -232,7 +232,9 @@ where
 
     /// Sets the size of the read buffer in bytes.
     ///
-    /// Must be at least as large as the MTU to ensure complete packet reception.
+    /// Values below the minimum packet buffer derived from the device MTU are clamped
+    /// to that minimum. The initial minimum also includes Layer-2/QinQ headroom so TAP
+    /// frames are not truncated merely because their Ethernet headers sit outside the MTU.
     pub const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.r_state.set_read_buffer_size(read_buffer_size);
     }
@@ -388,7 +390,8 @@ where
     }
     /// Sets the size of the read buffer in bytes.
     ///
-    /// Must be at least as large as the MTU to ensure complete packet reception.
+    /// Values below the minimum packet buffer derived from the device MTU are clamped
+    /// to that minimum. The initial minimum also includes Layer-2/QinQ headroom.
     pub const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.state.set_read_buffer_size(read_buffer_size);
     }
@@ -584,6 +587,7 @@ fn compute_buffer_size<T: Borrow<AsyncDevice>>(dev: &T) -> usize {
 }
 struct ReadState {
     recv_buffer_size: usize,
+    min_recv_buffer_size: usize,
     rd: BytesMut,
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     packet_splitter: Option<PacketSplitter>,
@@ -599,6 +603,7 @@ impl ReadState {
 
         Self {
             recv_buffer_size,
+            min_recv_buffer_size: recv_buffer_size,
             rd: BytesMut::with_capacity(recv_buffer_size),
             #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
             packet_splitter,
@@ -610,10 +615,15 @@ impl ReadState {
     }
 
     pub(crate) const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
-        self.recv_buffer_size = read_buffer_size;
+        let effective_size = if read_buffer_size < self.min_recv_buffer_size {
+            self.min_recv_buffer_size
+        } else {
+            read_buffer_size
+        };
+        self.recv_buffer_size = effective_size;
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if let Some(packet_splitter) = &mut self.packet_splitter {
-            packet_splitter.set_recv_buffer_size(read_buffer_size);
+            packet_splitter.set_recv_buffer_size(effective_size);
         }
     }
 }
@@ -1071,15 +1081,20 @@ mod tests {
     }
 
     #[test]
-    fn read_buffer_size_setter_tracks_exact_requested_size() {
+    fn read_buffer_size_setter_respects_packet_minimum_and_allows_safe_resize() {
         let mut state = ReadState {
             recv_buffer_size: 1500,
+            min_recv_buffer_size: 1500,
             rd: BytesMut::new(),
             #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
             packet_splitter: None,
         };
+        state.set_read_buffer_size(1200);
+        assert_eq!(state.read_buffer_size(), 1500);
         state.set_read_buffer_size(9000);
         assert_eq!(state.read_buffer_size(), 9000);
+        state.set_read_buffer_size(2000);
+        assert_eq!(state.read_buffer_size(), 2000);
     }
 
     #[test]

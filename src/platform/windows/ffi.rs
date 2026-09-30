@@ -88,7 +88,10 @@ pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
     let mut string = vec![0; 39];
 
     match unsafe { StringFromGUID2(guid, string.as_mut_ptr(), string.len() as _) } {
-        0 => Err(io::Error::last_os_error()),
+        0 => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "StringFromGUID2 output buffer was too small",
+        )),
         _ => Ok(decode_utf16(&string)),
     }
 }
@@ -96,35 +99,27 @@ pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
 pub fn alias_to_luid(alias: &str) -> io::Result<NET_LUID_LH> {
     let alias = encode_utf16(alias);
     let mut luid = unsafe { mem::zeroed() };
-    match unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &mut luid) } {
-        0 => Ok(luid),
-        _err => Err(io::Error::last_os_error()),
-    }
+    win_result(unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &mut luid) })?;
+    Ok(luid)
 }
 
 pub fn luid_to_index(luid: &NET_LUID_LH) -> io::Result<u32> {
     let mut index = 0;
-    match unsafe { ConvertInterfaceLuidToIndex(luid, &mut index) } {
-        0 => Ok(index),
-        _err => Err(io::Error::last_os_error()),
-    }
+    win_result(unsafe { ConvertInterfaceLuidToIndex(luid, &mut index) })?;
+    Ok(index)
 }
 
 pub fn luid_to_guid(luid: &NET_LUID_LH) -> io::Result<GUID> {
     let mut guid = unsafe { mem::zeroed() };
-    match unsafe { ConvertInterfaceLuidToGuid(luid, &mut guid) } {
-        0 => Ok(guid),
-        _err => Err(io::Error::last_os_error()),
-    }
+    win_result(unsafe { ConvertInterfaceLuidToGuid(luid, &mut guid) })?;
+    Ok(guid)
 }
 
 pub fn luid_to_alias(luid: &NET_LUID_LH) -> io::Result<String> {
     // IF_MAX_STRING_SIZE + 1
     let mut alias = vec![0; 257];
-    match unsafe { ConvertInterfaceLuidToAlias(luid, alias.as_mut_ptr(), alias.len()) } {
-        0 => Ok(decode_utf16(&alias)),
-        _err => Err(io::Error::last_os_error()),
-    }
+    win_result(unsafe { ConvertInterfaceLuidToAlias(luid, alias.as_mut_ptr(), alias.len()) })?;
+    Ok(decode_utf16(&alias))
 }
 pub fn reset_event(handle: RawHandle) -> io::Result<()> {
     unsafe {
@@ -529,25 +524,27 @@ pub fn notify_change_key_value(
     notify_filter: u32,
     milliseconds: u32,
 ) -> io::Result<()> {
-    const INVALID_HANDLE_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE as _;
+    let event = unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
 
-    let event = match unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null()) } {
-        INVALID_HANDLE_VALUE => Err(io::Error::last_os_error()),
-        event => Ok(event),
-    }?;
-
-    let result =
-        match unsafe { RegNotifyChangeKeyValue(key, watch_subtree, notify_filter, event, TRUE) } {
-            0 => match unsafe { WaitForSingleObject(event, milliseconds) } {
-                0 => Ok(()),
-                0x102 => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Registry timed out",
-                )),
-                _ => Err(io::Error::last_os_error()),
-            },
-            _err => Err(io::Error::last_os_error()),
-        };
+    let status = unsafe { RegNotifyChangeKeyValue(key, watch_subtree, notify_filter, event, TRUE) };
+    let result = if status == 0 {
+        match unsafe { WaitForSingleObject(event, milliseconds) } {
+            WAIT_OBJECT_0 => Ok(()),
+            WAIT_TIMEOUT => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Registry timed out",
+            )),
+            WAIT_FAILED => Err(io::Error::last_os_error()),
+            value => Err(io::Error::other(format!(
+                "WaitForSingleObject returned unexpected status {value:#x}"
+            ))),
+        }
+    } else {
+        Err(io::Error::from_raw_os_error(status))
+    };
 
     unsafe { CloseHandle(event) };
 
@@ -620,9 +617,8 @@ pub fn get_mtu_by_index(index: u32, is_v4: bool) -> io::Result<u32> {
     let mut if_table: *mut MIB_IPINTERFACE_TABLE = ptr::null_mut();
     let mut mtu = None;
     unsafe {
-        if GetIpInterfaceTable(if is_v4 { AF_INET } else { AF_INET6 }, &mut if_table) != NO_ERROR {
-            return Err(io::Error::last_os_error());
-        }
+        let status = GetIpInterfaceTable(if is_v4 { AF_INET } else { AF_INET6 }, &mut if_table);
+        win_result(status)?;
         let ifaces = std::slice::from_raw_parts::<MIB_IPINTERFACE_ROW>(
             &(*if_table).Table[0],
             (*if_table).NumEntries as usize,
@@ -866,9 +862,18 @@ pub fn set_device_state(
 
 #[cfg(test)]
 mod wait_tests {
-    use super::{create_event, set_event, wait_for_single_object};
+    use super::{create_event, set_event, wait_for_single_object, win_result};
     use std::io;
     use std::os::windows::io::AsRawHandle;
+
+    #[test]
+    fn netio_status_conversion_uses_the_returned_error_code() {
+        let code = windows_sys::Win32::Foundation::ERROR_INVALID_PARAMETER;
+        let error = win_result(code)
+            .err()
+            .expect("nonzero NETIO status unexpectedly succeeded");
+        assert_eq!(error.raw_os_error(), Some(code as i32));
+    }
 
     #[test]
     fn unsignalled_event_reports_timeout() -> io::Result<()> {
