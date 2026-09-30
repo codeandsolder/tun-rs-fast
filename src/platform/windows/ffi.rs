@@ -55,7 +55,7 @@ use windows_sys::{
         System::{
             Com::StringFromGUID2,
             Registry::{RegNotifyChangeKeyValue, HKEY},
-            Threading::{CreateEventW, WaitForSingleObject},
+            Threading::{CreateEventW, WaitForSingleObject, INFINITE},
             IO::DeviceIoControl,
         },
     },
