@@ -1319,6 +1319,13 @@ impl DeviceBuilder {
         self.enabled = None;
         self
     }
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the shared builder path cannot be const on Windows because MAC formatting allocates a String"
+        )
+    )]
     pub(crate) fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),

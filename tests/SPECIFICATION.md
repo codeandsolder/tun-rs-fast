@@ -53,11 +53,11 @@ These are not claims about an RFC or kernel ABI. They are project API decisions 
 | Address/netmask + builder policy | `builder::tests` | Every Linux PR; native release platforms |
 | Public examples/signatures | doctests, default/Tokio/async-io | Every Linux PR |
 | Framing/codec/buffer contracts | `async_device::async_framed::tests` | Tokio + async-io matrices |
-| POSIX fd ownership, vectored I/O, interrupt/timeout semantics | `platform::unix::{fd,interrupt}::tests` | Unix feature matrices |
+| POSIX fd ownership, vectored I/O, deterministic interrupt/timeout semantics | `platform::unix::{fd,interrupt}::tests` using pipes/event fds rather than assuming a live TUN stays idle | Unix feature matrices |
 | Sockaddr conversion/provenance | unit tests + targeted Miri | Every Linux PR |
 | Linux virtio/GRO/GSO algorithms | `platform::linux::offload::tests` | Every Linux PR |
 | Sync/Tokio/async-io IPv4+IPv6 packet reception | privileged `tests/test_dev.rs` | Every Linux PR |
-| Raw-fd ownership, nonblocking, multiqueue, interrupt wrapper behavior | `tests/test_dev.rs` | Every Linux PR / applicable native release targets |
+| Raw-fd ownership, nonblocking, multiqueue, interrupt wrapper forwarding | `tests/test_dev.rs` | Every Linux PR / applicable native release targets |
 | Persistent offload reset | dedicated privileged ignored-test invocation | Every Linux PR |
 | Windows/macOS native behavior | `build_n_test` matrix | Release tags |
 | FreeBSD pure library behavior | native FreeBSD VM unit matrices | Release tags |

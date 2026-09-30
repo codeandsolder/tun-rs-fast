@@ -694,7 +694,7 @@ fn linux_multiqueue_clone_preserves_device_identity() -> TestResult {
     )
 ))]
 #[test]
-fn sync_interruptible_wait_distinguishes_interrupt_and_timeout() -> TestResult {
+fn sync_interruptible_receive_forwards_interrupt() -> TestResult {
     use tun_rs::InterruptEvent;
 
     let device = DeviceBuilder::new().build_sync()?;
@@ -709,12 +709,6 @@ fn sync_interruptible_wait_distinguishes_interrupt_and_timeout() -> TestResult {
     assert_eq!(interrupted.kind(), std::io::ErrorKind::Interrupted);
     assert_eq!(event.value(), 42);
 
-    event.reset()?;
-    let timed_out = device
-        .recv_intr_timeout(&mut buf, &event, Some(Duration::from_millis(1)))
-        .err()
-        .ok_or_else(|| std::io::Error::other("idle receive did not time out"))?;
-    assert_eq!(timed_out.kind(), std::io::ErrorKind::TimedOut);
     Ok(())
 }
 
