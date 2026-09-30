@@ -39,11 +39,11 @@ fn net_luid(if_type: u64, net_luid_index: u64) -> NET_LUID_LH {
     }
 }
 
-/// Create a new interface and returns its NET_LUID
+/// Create a new interface and returns its `NET_LUID`
 pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
     let devinfo = ffi::create_device_info_list(&GUID_NETWORK_ADAPTER)?;
 
-    let _guard = guard((), |_| {
+    let _guard = guard((), |()| {
         let _ = ffi::destroy_device_info_list(devinfo);
     });
 
@@ -62,7 +62,7 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
 
     ffi::build_driver_info_list(devinfo, &mut devinfo_data, SPDIT_COMPATDRIVER)?;
 
-    let _guard = guard((), |_| {
+    let _guard = guard((), |()| {
         let _ = ffi::destroy_driver_info_list(devinfo, &devinfo_data, SPDIT_COMPATDRIVER);
     });
 
@@ -104,7 +104,7 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
         return Err(io::Error::new(io::ErrorKind::NotFound, "No driver found"));
     }
 
-    let uninstaller = guard((), |_| {
+    let uninstaller = guard((), |()| {
         let _ = ffi::call_class_installer(devinfo, &devinfo_data, DIF_REMOVE);
     });
 
@@ -124,14 +124,14 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
         KEY_QUERY_VALUE | KEY_NOTIFY,
     )?;
 
-    let key = winreg::RegKey::predef(key as _);
+    let key = winreg::RegKey::predef(key.cast());
 
     while key.get_value::<u32, &str>("*IfType").is_err() {
-        ffi::notify_change_key_value(key.raw_handle() as _, TRUE, REG_NOTIFY_CHANGE_NAME, 2000)?;
+        ffi::notify_change_key_value(key.raw_handle().cast(), TRUE, REG_NOTIFY_CHANGE_NAME, 2000)?;
     }
 
     while key.get_value::<u32, &str>("NetLuidIndex").is_err() {
-        ffi::notify_change_key_value(key.raw_handle() as _, TRUE, REG_NOTIFY_CHANGE_NAME, 2000)?;
+        ffi::notify_change_key_value(key.raw_handle().cast(), TRUE, REG_NOTIFY_CHANGE_NAME, 2000)?;
     }
 
     let if_type: u32 = key.get_value("*IfType")?;
@@ -140,14 +140,14 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
     // Defuse the uninstaller
     ScopeGuard::into_inner(uninstaller);
 
-    Ok(net_luid(if_type as _, luid_index as _))
+    Ok(net_luid(if_type.into(), luid_index.into()))
 }
 
 /// Check if the given interface exists and is a valid network device
 pub fn check_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()> {
     let devinfo = ffi::get_class_devs(&GUID_NETWORK_ADAPTER, DIGCF_PRESENT)?;
 
-    let _guard = guard((), |_| {
+    let _guard = guard((), |()| {
         let _ = ffi::destroy_device_info_list(devinfo);
     });
 
@@ -178,7 +178,7 @@ pub fn check_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()>
             DIREG_DRV,
             KEY_QUERY_VALUE | KEY_NOTIFY,
         ) {
-            Ok(key) => winreg::RegKey::predef(key as _),
+            Ok(key) => winreg::RegKey::predef(key.cast()),
             Err(_) => continue,
         };
 
@@ -192,7 +192,7 @@ pub fn check_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()>
             Err(_) => continue,
         };
 
-        let luid2 = net_luid(if_type as _, luid_index as _);
+        let luid2 = net_luid(if_type.into(), luid_index.into());
 
         if unsafe { luid.Value != luid2.Value } {
             continue;
@@ -209,7 +209,7 @@ pub fn check_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()>
 pub fn delete_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()> {
     let devinfo = ffi::get_class_devs(&GUID_NETWORK_ADAPTER, DIGCF_PRESENT)?;
 
-    let _guard = guard((), |_| {
+    let _guard = guard((), |()| {
         let _ = ffi::destroy_device_info_list(devinfo);
     });
 
@@ -243,7 +243,7 @@ pub fn delete_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()
         if key.is_err() {
             continue;
         }
-        let key = winreg::RegKey::predef(key? as _);
+        let key = winreg::RegKey::predef(key?.cast());
 
         let if_type: u32 = match key.get_value("*IfType") {
             Ok(if_type) => if_type,
@@ -255,7 +255,7 @@ pub fn delete_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()
             Err(_) => continue,
         };
 
-        let luid2 = net_luid(if_type as _, luid_index as _);
+        let luid2 = net_luid(if_type.into(), luid_index.into());
 
         if unsafe { luid.Value != luid2.Value } {
             continue;
@@ -314,11 +314,11 @@ pub fn set_adapter_mac_by_guid(adapter_guid: &str, new_mac: &str) -> io::Result<
 
     Ok(())
 }
-/// Enables or disables the adapter via SetupAPI (`DIF_PROPERTYCHANGE`).
+/// Enables or disables the adapter via `SetupAPI` (`DIF_PROPERTYCHANGE`).
 pub fn enable_adapter(component_id: &str, luid: &NET_LUID_LH, val: bool) -> io::Result<()> {
     let devinfo = ffi::get_class_devs(&GUID_NETWORK_ADAPTER, DIGCF_PRESENT)?;
 
-    let _guard = guard((), |_| {
+    let _guard = guard((), |()| {
         let _ = ffi::destroy_device_info_list(devinfo);
     });
 
@@ -352,7 +352,7 @@ pub fn enable_adapter(component_id: &str, luid: &NET_LUID_LH, val: bool) -> io::
         if key.is_err() {
             continue;
         }
-        let key = winreg::RegKey::predef(key? as _);
+        let key = winreg::RegKey::predef(key?.cast());
 
         let if_type: u32 = match key.get_value("*IfType") {
             Ok(if_type) => if_type,
@@ -364,7 +364,7 @@ pub fn enable_adapter(component_id: &str, luid: &NET_LUID_LH, val: bool) -> io::
             Err(_) => continue,
         };
 
-        let luid2 = net_luid(if_type as _, luid_index as _);
+        let luid2 = net_luid(if_type.into(), luid_index.into());
 
         if unsafe { luid.Value != luid2.Value } {
             continue;

@@ -634,14 +634,14 @@ impl DeviceImpl {
             Driver::Tun(tun) => tun.version(),
             Driver::Tap(tap) => tap.get_version().map(|v| {
                 v.iter()
-                    .map(|v| v.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<String>>()
                     .join(".")
             }),
         }
     }
     /// Set DNS servers for the current device (supports primary and secondary DNS)
-    /// dns_servers: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
+    /// `dns_servers`: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
     /// # Errors
     /// Returns an I/O error if Windows DNS configuration fails.
     pub fn set_dns_servers(&self, dns_servers: &[IpAddr]) -> io::Result<()> {
@@ -652,7 +652,7 @@ impl DeviceImpl {
         dns::set_dns_servers(self.if_index_impl(), &self.luid_impl(), dns_servers)
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
-    /// is_ipv4: true to clear IPv4 DNS, false to clear IPv6 DNS
+    /// `is_ipv4`: true to clear IPv4 DNS, false to clear IPv6 DNS
     /// # Errors
     /// Returns an I/O error if clearing Windows DNS configuration fails.
     pub fn clear_dns_servers(&self, is_ipv4: bool) -> io::Result<()> {

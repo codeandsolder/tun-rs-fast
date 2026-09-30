@@ -65,9 +65,9 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
 
                     let ok = SetupDiGetDevicePropertyW(
                         dev_info,
-                        &devinfo_data,
+                        &raw const devinfo_data,
                         &DEVPKEY_Wintun_OwningProcess,
-                        &mut ptype,
+                        &raw mut ptype,
                         buf.as_mut_ptr(),
                         buffer_len,
                         ptr::null_mut(),
@@ -78,7 +78,7 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                         // SAFETY: buf is [u8] (alignment 1) but OwningProcess requires alignment 4.
                         // Use read_unaligned to avoid UB from misaligned access.
                         let owning_process =
-                            std::ptr::read_unaligned(buf.as_ptr() as *const OwningProcess);
+                            std::ptr::read_unaligned(buf.as_ptr().cast::<OwningProcess>());
                         !process_is_stale(&owning_process)
                     } {
                         continue;
@@ -118,10 +118,10 @@ fn process_is_stale(owning_process: &OwningProcess) -> bool {
     let ret = unsafe {
         GetProcessTimes(
             process,
-            &mut creation_time,
-            &mut unused,
-            &mut unused,
-            &mut unused,
+            &raw mut creation_time,
+            &raw mut unused,
+            &raw mut unused,
+            &raw mut unused,
         )
     };
     _ = unsafe { CloseHandle(process) };

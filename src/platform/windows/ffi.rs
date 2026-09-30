@@ -65,7 +65,7 @@ use windows_sys::{
 #[expect(non_snake_case, reason = "name mirrors the Windows API ABI")]
 #[repr(C)]
 #[derive(Clone, Copy)]
-/// Custom type to handle variable size SP_DRVINFO_DETAIL_DATA_W
+/// Custom type to handle variable size `SP_DRVINFO_DETAIL_DATA_W`
 pub struct SP_DRVINFO_DETAIL_DATA_W2 {
     pub cbSize: u32,
     pub InfDate: FILETIME,
@@ -101,7 +101,7 @@ pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
 pub fn alias_to_luid(alias: &str) -> io::Result<NET_LUID_LH> {
     let alias = encode_utf16(alias);
     let mut luid = unsafe { mem::zeroed() };
-    match unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &mut luid) } {
+    match unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &raw mut luid) } {
         0 => Ok(luid),
         _err => Err(io::Error::last_os_error()),
     }
@@ -109,7 +109,7 @@ pub fn alias_to_luid(alias: &str) -> io::Result<NET_LUID_LH> {
 
 pub fn luid_to_index(luid: &NET_LUID_LH) -> io::Result<u32> {
     let mut index = 0;
-    match unsafe { ConvertInterfaceLuidToIndex(luid, &mut index) } {
+    match unsafe { ConvertInterfaceLuidToIndex(luid, &raw mut index) } {
         0 => Ok(index),
         _err => Err(io::Error::last_os_error()),
     }
@@ -117,7 +117,7 @@ pub fn luid_to_index(luid: &NET_LUID_LH) -> io::Result<u32> {
 
 pub fn luid_to_guid(luid: &NET_LUID_LH) -> io::Result<GUID> {
     let mut guid = unsafe { mem::zeroed() };
-    match unsafe { ConvertInterfaceLuidToGuid(luid, &mut guid) } {
+    match unsafe { ConvertInterfaceLuidToGuid(luid, &raw mut guid) } {
         0 => Ok(guid),
         _err => Err(io::Error::last_os_error()),
     }
@@ -161,7 +161,7 @@ pub fn create_event() -> io::Result<OwnedHandle> {
     unsafe {
         let read_event_handle = CreateEventW(ptr::null_mut(), 1, 0, ptr::null_mut());
         if read_event_handle.is_null() {
-            Err(io::Error::last_os_error())?
+            Err(io::Error::last_os_error())?;
         }
         Ok(OwnedHandle::from_raw_handle(read_event_handle))
     }
@@ -217,9 +217,9 @@ pub fn try_read_file(
     unsafe {
         if 0 == ReadFile(
             handle,
-            buffer.as_mut_ptr() as _,
+            buffer.as_mut_ptr().cast(),
             buffer.len() as _,
-            &mut ret,
+            &raw mut ret,
             io_overlapped,
         ) {
             Err(error_map())
@@ -238,9 +238,9 @@ pub fn try_write_file(
     unsafe {
         if 0 == WriteFile(
             handle,
-            buffer.as_ptr() as _,
+            buffer.as_ptr().cast(),
             buffer.len() as _,
-            &mut ret,
+            &raw mut ret,
             io_overlapped,
         ) {
             Err(error_map())
@@ -261,7 +261,7 @@ fn error_map() -> io::Error {
 pub fn try_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
     let mut ret = 0;
     unsafe {
-        if 0 == GetOverlappedResult(handle, io_overlapped, &mut ret, 0) {
+        if 0 == GetOverlappedResult(handle, io_overlapped, &raw mut ret, 0) {
             let err = io::Error::last_os_error();
             if err.raw_os_error().unwrap_or(0) == ERROR_IO_INCOMPLETE as i32 {
                 Err(io::Error::from(io::ErrorKind::WouldBlock))
@@ -283,7 +283,7 @@ pub fn cancel_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::R
 pub fn wait_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
     let mut ret = 0;
     unsafe {
-        if 0 == GetOverlappedResult(handle, io_overlapped, &mut ret, 1) {
+        if 0 == GetOverlappedResult(handle, io_overlapped, &raw mut ret, 1) {
             Err(io::Error::last_os_error())
         } else {
             Ok(ret)
@@ -346,7 +346,7 @@ pub fn create_device_info(
             device_description.as_ptr(),
             ptr::null_mut(),
             creation_flags,
-            &mut devinfo_data,
+            &raw mut devinfo_data,
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -355,7 +355,7 @@ pub fn create_device_info(
 }
 
 pub fn set_selected_device(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io::Result<()> {
-    match unsafe { SetupDiSetSelectedDevice(devinfo, devinfo_data as *const _ as _) } {
+    match unsafe { SetupDiSetSelectedDevice(devinfo, std::ptr::from_ref(devinfo_data).cast()) } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
     }
@@ -371,9 +371,9 @@ pub fn set_device_registry_property(
     match unsafe {
         SetupDiSetDeviceRegistryPropertyW(
             devinfo,
-            devinfo_data as *const _ as _,
+            std::ptr::from_ref(devinfo_data).cast_mut(),
             property,
-            value.as_ptr() as _,
+            value.as_ptr().cast(),
             (value.len() * 2) as _,
         )
     } {
@@ -392,12 +392,12 @@ pub fn get_device_registry_property(
     unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             devinfo,
-            devinfo_data as *const _ as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             property,
             ptr::null_mut(),
             ptr::null_mut(),
             0,
-            &mut required_size,
+            &raw mut required_size,
         );
     }
 
@@ -412,10 +412,10 @@ pub fn get_device_registry_property(
     match unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             devinfo,
-            devinfo_data as *const _ as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             property,
             ptr::null_mut(),
-            value.as_mut_ptr() as _,
+            value.as_mut_ptr().cast(),
             required_size,
             ptr::null_mut(),
         )
@@ -430,8 +430,13 @@ pub fn build_driver_info_list(
     devinfo_data: &mut SP_DEVINFO_DATA,
     driver_type: u32,
 ) -> io::Result<()> {
-    match unsafe { SetupDiBuildDriverInfoList(devinfo, devinfo_data as *const _ as _, driver_type) }
-    {
+    match unsafe {
+        SetupDiBuildDriverInfoList(
+            devinfo,
+            std::ptr::from_ref(devinfo_data).cast_mut(),
+            driver_type,
+        )
+    } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
     }
@@ -443,7 +448,11 @@ pub fn destroy_driver_info_list(
     driver_type: u32,
 ) -> io::Result<()> {
     match unsafe {
-        SetupDiDestroyDriverInfoList(devinfo, devinfo_data as *const _ as _, driver_type)
+        SetupDiDestroyDriverInfoList(
+            devinfo,
+            std::ptr::from_ref(devinfo_data).cast(),
+            driver_type,
+        )
     } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
@@ -461,9 +470,9 @@ pub fn get_driver_info_detail(
     match unsafe {
         SetupDiGetDriverInfoDetailW(
             devinfo,
-            devinfo_data as *const _ as _,
-            driver_data as *const _ as _,
-            &mut drvinfo_detail as *mut _ as _,
+            std::ptr::from_ref(devinfo_data).cast(),
+            std::ptr::from_ref(driver_data).cast(),
+            (&raw mut drvinfo_detail).cast(),
             mem::size_of_val(&drvinfo_detail) as _,
             ptr::null_mut(),
         )
@@ -481,8 +490,8 @@ pub fn set_selected_driver(
     match unsafe {
         SetupDiSetSelectedDriverW(
             devinfo,
-            devinfo_data as *const _ as _,
-            driver_data as *const _ as _,
+            std::ptr::from_ref(devinfo_data).cast_mut(),
+            std::ptr::from_ref(driver_data).cast_mut(),
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -496,7 +505,11 @@ pub fn call_class_installer(
     install_function: u32,
 ) -> io::Result<()> {
     match unsafe {
-        SetupDiCallClassInstaller(install_function, devinfo, devinfo_data as *const _ as _)
+        SetupDiCallClassInstaller(
+            install_function,
+            devinfo,
+            std::ptr::from_ref(devinfo_data).cast(),
+        )
     } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
@@ -511,12 +524,12 @@ pub fn open_dev_reg_key(
     key_type: u32,
     sam_desired: u32,
 ) -> io::Result<HKEY> {
-    const INVALID_KEY_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE as _;
+    const INVALID_KEY_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE.cast();
 
     match unsafe {
         SetupDiOpenDevRegKey(
             devinfo,
-            devinfo_data as *const _ as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             scope,
             hw_profile,
             key_type,
@@ -534,7 +547,7 @@ pub fn notify_change_key_value(
     notify_filter: u32,
     milliseconds: u32,
 ) -> io::Result<()> {
-    const INVALID_HANDLE_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE as _;
+    const INVALID_HANDLE_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE.cast();
 
     let event = match unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null()) } {
         INVALID_HANDLE_VALUE => Err(io::Error::last_os_error()),
@@ -570,10 +583,10 @@ pub fn enum_driver_info(
     match unsafe {
         SetupDiEnumDriverInfoW(
             devinfo,
-            devinfo_data as *const _ as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             driver_type,
             member_index,
-            &mut driver_data,
+            &raw mut driver_data,
         )
     } {
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
@@ -589,7 +602,7 @@ pub fn enum_device_info(
     let mut devinfo_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
     devinfo_data.cbSize = mem::size_of_val(&devinfo_data) as _;
 
-    match unsafe { SetupDiEnumDeviceInfo(devinfo, member_index, &mut devinfo_data) } {
+    match unsafe { SetupDiEnumDeviceInfo(devinfo, member_index, &raw mut devinfo_data) } {
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
         0 => Some(Err(io::Error::last_os_error())),
         _ => Some(Ok(devinfo_data)),
@@ -607,11 +620,11 @@ pub fn device_io_control(
         DeviceIoControl(
             handle,
             io_control_code,
-            in_buffer as *const _ as _,
+            std::ptr::from_ref(in_buffer).cast(),
             mem::size_of_val(in_buffer) as _,
-            out_buffer as *mut _ as _,
+            std::ptr::from_mut(out_buffer).cast(),
             mem::size_of_val(out_buffer) as _,
-            &mut junk,
+            &raw mut junk,
             ptr::null_mut(),
         )
     } {
@@ -625,11 +638,13 @@ pub fn get_mtu_by_index(index: u32, is_v4: bool) -> io::Result<u32> {
     let mut if_table: *mut MIB_IPINTERFACE_TABLE = ptr::null_mut();
     let mut mtu = None;
     unsafe {
-        if GetIpInterfaceTable(if is_v4 { AF_INET } else { AF_INET6 }, &mut if_table) != NO_ERROR {
+        if GetIpInterfaceTable(if is_v4 { AF_INET } else { AF_INET6 }, &raw mut if_table)
+            != NO_ERROR
+        {
             return Err(io::Error::last_os_error());
         }
         let ifaces = std::slice::from_raw_parts::<MIB_IPINTERFACE_ROW>(
-            &(*if_table).Table[0],
+            &raw const (*if_table).Table[0],
             (*if_table).NumEntries as usize,
         );
         for x in ifaces {
@@ -680,14 +695,14 @@ pub fn set_interface_metric(index: u32, metric: u32) -> io::Result<()> {
             InterfaceIndex: index,
             ..Default::default()
         };
-        win_result(unsafe { GetIpInterfaceEntry(&mut row) })?;
+        win_result(unsafe { GetIpInterfaceEntry(&raw mut row) })?;
 
         row.Metric = metric;
         row.UseAutomaticMetric = false;
         // `GetIpInterfaceEntry` may return a `SitePrefixLength` that
         // `SetIpInterfaceEntry` rejects when writing the row back.
         row.SitePrefixLength = 0;
-        win_result(unsafe { SetIpInterfaceEntry(&mut row) })?;
+        win_result(unsafe { SetIpInterfaceEntry(&raw mut row) })?;
     }
     Ok(())
 }
@@ -699,14 +714,14 @@ pub fn set_interface_mtu(index: u32, mtu: u32, is_v4: bool) -> io::Result<()> {
         InterfaceIndex: index,
         ..Default::default()
     };
-    win_result(unsafe { GetIpInterfaceEntry(&mut row) })?;
+    win_result(unsafe { GetIpInterfaceEntry(&raw mut row) })?;
 
     row.NlMtu = mtu;
     // `GetIpInterfaceEntry` returns a `SitePrefixLength` that `SetIpInterfaceEntry`
     // rejects (notably for IPv4); reset it to 0 before writing back. This is the
     // conventional workaround and is harmless for IPv6, where site prefixes are unused.
     row.SitePrefixLength = 0;
-    win_result(unsafe { SetIpInterfaceEntry(&mut row) })
+    win_result(unsafe { SetIpInterfaceEntry(&raw mut row) })
 }
 
 /// Adds a single unicast address to the interface, optionally installing a
@@ -718,19 +733,19 @@ pub fn add_address(
     gateway: Option<IpAddr>,
 ) -> io::Result<()> {
     let mut row = MIB_UNICASTIPADDRESS_ROW::default();
-    unsafe { InitializeUnicastIpAddressEntry(&mut row) };
+    unsafe { InitializeUnicastIpAddressEntry(&raw mut row) };
     row.InterfaceIndex = index;
     row.Address = sockaddr_inet_from_ip(address);
     row.OnLinkPrefixLength = prefix;
 
-    let code = unsafe { CreateUnicastIpAddressEntry(&row) };
+    let code = unsafe { CreateUnicastIpAddressEntry(&raw const row) };
     if code != ERROR_OBJECT_ALREADY_EXISTS {
         win_result(code)?;
     }
 
     if let Some(gateway) = gateway {
         let mut route = MIB_IPFORWARD_ROW2::default();
-        unsafe { InitializeIpForwardEntry(&mut route) };
+        unsafe { InitializeIpForwardEntry(&raw mut route) };
         route.InterfaceIndex = index;
         // Install a default route (0.0.0.0/0 or ::/0) via `gateway`. `DestinationPrefix`
         // must carry a valid address family matching `NextHop`; `InitializeIpForwardEntry`
@@ -752,7 +767,7 @@ pub fn add_address(
         route.Protocol = MIB_IPPROTO_NETMGMT;
         route.Origin = NlroManual;
 
-        let code = unsafe { CreateIpForwardEntry2(&route) };
+        let code = unsafe { CreateIpForwardEntry2(&raw const route) };
         if code != ERROR_OBJECT_ALREADY_EXISTS {
             win_result(code)?;
         }
@@ -763,17 +778,17 @@ pub fn add_address(
 /// Removes a single unicast address from the interface.
 pub fn remove_address(index: u32, address: IpAddr) -> io::Result<()> {
     let mut row = MIB_UNICASTIPADDRESS_ROW::default();
-    unsafe { InitializeUnicastIpAddressEntry(&mut row) };
+    unsafe { InitializeUnicastIpAddressEntry(&raw mut row) };
     row.InterfaceIndex = index;
     row.Address = sockaddr_inet_from_ip(address);
-    win_result(unsafe { DeleteUnicastIpAddressEntry(&row) })
+    win_result(unsafe { DeleteUnicastIpAddressEntry(&raw const row) })
 }
 
 /// Removes every unicast address of the given family from the interface.
 fn clear_addresses(index: u32, is_v4: bool) -> io::Result<()> {
     let family = if is_v4 { AF_INET } else { AF_INET6 };
     let mut table: *mut MIB_UNICASTIPADDRESS_TABLE = ptr::null_mut();
-    win_result(unsafe { GetUnicastIpAddressTable(family, &mut table) })?;
+    win_result(unsafe { GetUnicastIpAddressTable(family, &raw mut table) })?;
 
     // Copy out the rows we want to delete before freeing the table.
     let rows: Vec<MIB_UNICASTIPADDRESS_ROW> = unsafe {
@@ -804,7 +819,7 @@ fn clear_addresses(index: u32, is_v4: bool) -> io::Result<()> {
 fn clear_default_routes(index: u32, is_v4: bool) -> io::Result<()> {
     let family = if is_v4 { AF_INET } else { AF_INET6 };
     let mut table: *mut MIB_IPFORWARD_TABLE2 = ptr::null_mut();
-    win_result(unsafe { GetIpForwardTable2(family, &mut table) })?;
+    win_result(unsafe { GetIpForwardTable2(family, &raw mut table) })?;
 
     // Copy out this interface's default routes before freeing the table.
     let rows: Vec<MIB_IPFORWARD_ROW2> = unsafe {
@@ -834,7 +849,7 @@ pub fn set_address(
     add_address(index, address, prefix, gateway)
 }
 
-/// Enables or disables a device via SetupAPI (`DIF_PROPERTYCHANGE`), equivalent
+/// Enables or disables a device via `SetupAPI` (`DIF_PROPERTYCHANGE`), equivalent
 /// to enabling/disabling it in Device Manager.
 pub fn set_device_state(
     devinfo: HDEVINFO,
@@ -857,8 +872,8 @@ pub fn set_device_state(
     let ok = unsafe {
         SetupDiSetClassInstallParamsW(
             devinfo,
-            devinfo_data as *const _,
-            &params as *const SP_PROPCHANGE_PARAMS as *const SP_CLASSINSTALL_HEADER,
+            std::ptr::from_ref(devinfo_data),
+            (&raw const params).cast::<SP_CLASSINSTALL_HEADER>(),
             mem::size_of::<SP_PROPCHANGE_PARAMS>() as u32,
         )
     };
