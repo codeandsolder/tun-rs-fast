@@ -333,7 +333,13 @@ pub fn destroy_device_info_list(devinfo: HDEVINFO) -> io::Result<()> {
 }
 
 pub fn class_name_from_guid(guid: &GUID) -> io::Result<String> {
-    let mut class_name = vec![0; usize::from(MAX_CLASS_NAME_LEN)];
+    let class_name_capacity = usize::try_from(MAX_CLASS_NAME_LEN).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "MAX_CLASS_NAME_LEN exceeds usize",
+        )
+    })?;
+    let mut class_name = vec![0; class_name_capacity];
     let class_name_len = usize_to_u32(class_name.len(), "class-name buffer length")?;
     match unsafe {
         SetupDiClassNameFromGuidW(
@@ -645,7 +651,11 @@ pub fn enum_device_info(
     member_index: u32,
 ) -> Option<io::Result<SP_DEVINFO_DATA>> {
     let mut devinfo_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
-    devinfo_data.cbSize = usize_to_u32(mem::size_of_val(&devinfo_data), "SP_DEVINFO_DATA size")?;
+    devinfo_data.cbSize =
+        match usize_to_u32(mem::size_of_val(&devinfo_data), "SP_DEVINFO_DATA size") {
+            Ok(size) => size,
+            Err(error) => return Some(Err(error)),
+        };
 
     match unsafe { SetupDiEnumDeviceInfo(devinfo, member_index, &raw mut devinfo_data) } {
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
