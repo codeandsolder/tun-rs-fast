@@ -1061,9 +1061,28 @@ pub fn set_device_state(
 
 #[cfg(test)]
 mod wait_tests {
-    use super::{create_event, set_event, wait_for_single_object};
+    use super::{alias_to_luid, create_event, set_event, wait_for_single_object};
     use std::io;
     use std::os::windows::io::AsRawHandle;
+
+    #[test]
+    fn interface_alias_error_uses_returned_status() -> io::Result<()> {
+        const STALE_LAST_ERROR: u32 = 0x1234;
+
+        // SAFETY: SetLastError only updates this thread's error slot and has no
+        // pointer or ownership preconditions.
+        unsafe { windows_sys::Win32::Foundation::SetLastError(STALE_LAST_ERROR) };
+        let error = alias_to_luid("")
+            .err()
+            .ok_or_else(|| io::Error::other("empty interface alias unexpectedly resolved"))?;
+
+        assert_ne!(
+            error.raw_os_error(),
+            Some(STALE_LAST_ERROR.cast_signed()),
+            "wrapper returned stale GetLastError instead of the API status"
+        );
+        Ok(())
+    }
 
     #[test]
     fn unsignalled_event_reports_timeout() -> io::Result<()> {
