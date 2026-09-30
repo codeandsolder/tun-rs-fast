@@ -1061,20 +1061,30 @@ pub fn set_device_state(
 
 #[cfg(test)]
 mod wait_tests {
-    use super::{alias_to_luid, create_event, set_event, wait_for_single_object};
+    use super::{create_event, set_event, wait_for_single_object, win_result};
     use std::io;
     use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::NetworkManagement::{
+        IpHelper::ConvertInterfaceIndexToLuid, Ndis::NET_LUID_LH,
+    };
 
     #[test]
-    fn interface_alias_error_uses_returned_status() -> io::Result<()> {
+    fn netio_status_error_uses_returned_status() -> io::Result<()> {
         const STALE_LAST_ERROR: u32 = 0x1234;
+
+        // Interface index zero is NET_IFINDEX_UNSPECIFIED and is reserved by
+        // NDIS, so ConvertInterfaceIndexToLuid must reject it.
+        let mut luid = NET_LUID_LH { Value: 0 };
 
         // SAFETY: SetLastError only updates this thread's error slot and has no
         // pointer or ownership preconditions.
         unsafe { windows_sys::Win32::Foundation::SetLastError(STALE_LAST_ERROR) };
-        let error = alias_to_luid("")
+        // SAFETY: luid is valid writable output storage; index zero is the
+        // documented reserved/unspecified value used to force an API error.
+        let status = unsafe { ConvertInterfaceIndexToLuid(0, &raw mut luid) };
+        let error = win_result(status)
             .err()
-            .ok_or_else(|| io::Error::other("empty interface alias unexpectedly resolved"))?;
+            .ok_or_else(|| io::Error::other("reserved interface index unexpectedly resolved"))?;
 
         assert_ne!(
             error.raw_os_error(),
