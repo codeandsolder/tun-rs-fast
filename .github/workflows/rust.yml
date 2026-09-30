@@ -2,7 +2,7 @@ name: Push or PR
 
 on:
   push:
-    branches: [main]
+    branches: [main, review/rust-skills2-quality]
     tags: ["*"]
   pull_request:
   workflow_dispatch:
@@ -211,7 +211,7 @@ jobs:
             cargo build --verbose --examples --tests --features async_tokio
 
   build_n_test_openbsd:
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/review/rust-skills2-quality'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
