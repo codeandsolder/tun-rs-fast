@@ -259,6 +259,8 @@ impl DeviceImpl {
     /// Retrieves the name of the device.
     ///
     /// Calls the appropriate method on the underlying driver (TUN or TAP) to obtain the device name.
+    /// # Errors
+    /// Returns an I/O error if the Windows interface name query fails.
     pub fn name(&self) -> io::Result<String> {
         let _guard = self
             .lock
@@ -284,6 +286,8 @@ impl DeviceImpl {
     /// Retrieves the interface index (`if_index`) of the device.
     ///
     /// This is used for various network configuration commands.
+    /// # Errors
+    /// The shared API is fallible; the Windows backend currently returns its cached index.
     pub fn if_index(&self) -> io::Result<u32> {
         let _guard = self
             .lock
@@ -305,6 +309,8 @@ impl DeviceImpl {
     ///
     /// For a TUN device, disabling is not supported and will return an error.
     /// For a TAP device, this calls the appropriate method to set the device status.
+    /// # Errors
+    /// Returns an I/O error if changing the underlying TUN/TAP device state fails.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
         let _guard = self
             .lock
@@ -318,6 +324,8 @@ impl DeviceImpl {
     /// Retrieves all IP addresses associated with this device.
     ///
     /// Filters the adapter addresses by matching the device's interface index.
+    /// # Errors
+    /// Returns an I/O error if Windows interface enumeration fails.
     pub fn addresses(&self) -> io::Result<Vec<IpAddr>> {
         let _guard = self
             .lock
@@ -333,6 +341,8 @@ impl DeviceImpl {
     }
     /// Sets the IPv4 network address, netmask, and an optional destination address.
     /// Remove all previous set IPv4 addresses and set the specified address.
+    /// # Errors
+    /// Returns an error if address conversion or Windows IPv4 configuration fails.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
@@ -388,6 +398,8 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    /// # Errors
+    /// Returns an error if address conversion or Windows IPv4 configuration fails.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
@@ -408,6 +420,8 @@ impl DeviceImpl {
             .map_err(io::Error::from)
     }
     /// Removes the specified IP address from the device.
+    /// # Errors
+    /// Returns an I/O error if removing the address from the Windows interface fails.
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
         let _guard = self
             .lock
@@ -446,6 +460,8 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    /// # Errors
+    /// Returns an error if address conversion or Windows IPv6 configuration fails.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
@@ -469,6 +485,8 @@ impl DeviceImpl {
     /// Retrieves the MTU for the device (IPv4).
     ///
     /// This method uses a Windows-specific FFI function to query the MTU by interface index.
+    /// # Errors
+    /// Returns an error if querying the IPv4 MTU fails or the value exceeds u16.
     pub fn mtu(&self) -> io::Result<u16> {
         let _guard = self
             .lock
@@ -486,6 +504,8 @@ impl DeviceImpl {
     /// Retrieves the MTU for the device (IPv6).
     ///
     /// This method uses a Windows-specific FFI function to query the IPv6 MTU by interface index.
+    /// # Errors
+    /// Returns an error if querying the IPv6 MTU fails or the value exceeds u16.
     pub fn mtu_v6(&self) -> io::Result<u16> {
         let _guard = self
             .lock
@@ -501,6 +521,8 @@ impl DeviceImpl {
         })
     }
     /// Sets the MTU for the device (IPv4).
+    /// # Errors
+    /// Returns an I/O error if updating the Windows IPv4 MTU fails.
     pub fn set_mtu(&self, mtu: u16) -> io::Result<()> {
         let _guard = self
             .lock
@@ -522,6 +544,8 @@ impl DeviceImpl {
     ///
     /// #Note:
     /// set a MAC address is only supported when creating a TUN/TAP device.
+    /// # Errors
+    /// Returns Unsupported for TUN devices or an I/O error if TAP MAC configuration fails.
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
         let _guard = self
             .lock
@@ -535,6 +559,8 @@ impl DeviceImpl {
     /// Retrieves the MAC address of the device.
     ///
     /// This operation is only supported for TAP devices.
+    /// # Errors
+    /// Returns Unsupported for TUN devices or an I/O error if reading the TAP MAC address fails.
     pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
         let _guard = self
             .lock
@@ -575,6 +601,8 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    /// # Errors
+    /// Returns an I/O error if updating the Windows interface metric fails.
     pub fn set_metric(&self, metric: u16) -> io::Result<()> {
         let _guard = self
             .lock
@@ -586,6 +614,8 @@ impl DeviceImpl {
     ///
     /// For TUN devices, this directly queries the driver version.
     /// For TAP devices, the version is composed of several components joined by dots.
+    /// # Errors
+    /// Returns an I/O error if querying the underlying driver version fails.
     pub fn version(&self) -> io::Result<String> {
         let _guard = self
             .lock
@@ -603,6 +633,8 @@ impl DeviceImpl {
     }
     /// Set DNS servers for the current device (supports primary and secondary DNS)
     /// dns_servers: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
+    /// # Errors
+    /// Returns an I/O error if Windows DNS configuration fails.
     pub fn set_dns_servers(&self, dns_servers: &[IpAddr]) -> io::Result<()> {
         let _guard = self
             .lock
@@ -612,6 +644,8 @@ impl DeviceImpl {
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
     /// is_ipv4: true to clear IPv4 DNS, false to clear IPv6 DNS
+    /// # Errors
+    /// Returns an I/O error if clearing Windows DNS configuration fails.
     pub fn clear_dns_servers(&self, is_ipv4: bool) -> io::Result<()> {
         let _guard = self
             .lock
