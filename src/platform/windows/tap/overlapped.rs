@@ -1,16 +1,23 @@
 #![expect(
     unsafe_code,
-    reason = "Windows overlapped I/O requires raw OVERLAPPED structures, waits, and buffer copies"
+    reason = "Windows overlapped I/O requires raw OVERLAPPED pointers and wait APIs"
 )]
 
 use crate::platform::windows::ffi;
 use crate::platform::windows::tap::READ_BUFFER_SIZE;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use bytes::BytesMut;
 use std::io;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::Arc;
-use windows_sys::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
+#[cfg(any(
+    feature = "interruptible",
+    feature = "async_tokio",
+    feature = "async_io"
+))]
+use windows_sys::Win32::System::Threading::WaitForMultipleObjects;
+use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::IO::OVERLAPPED;
 pub(crate) struct ReadOverlapped {
     read_buffer: BytesMut,
@@ -60,6 +67,9 @@ impl ReadOverlapped {
                         "receive buffer too small",
                     ));
                 }
+                // SAFETY: len <= dst_len above; read_buffer contains at least len
+                // initialized bytes from the completed ReadFile operation, and dst
+                // is caller-provided writable storage for dst_len bytes.
                 unsafe {
                     std::ptr::copy_nonoverlapping(self.read_buffer.as_ptr(), dst, len);
                 }
@@ -101,6 +111,11 @@ impl WriteOverlapped {
         self.finish_pending_blocking();
         self.submit(buf)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn write_interruptible(
         &mut self,
         buf: &[u8],
@@ -164,6 +179,11 @@ impl WriteOverlapped {
         }
         inner.no_pending_io = true;
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     fn finish_pending_interruptible(&mut self, interrupt_event: &OwnedHandle) -> io::Result<()> {
         if self.inner.no_pending_io {
             return Ok(());
@@ -173,6 +193,11 @@ impl WriteOverlapped {
         self.finish_pending_blocking();
         Ok(())
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn overlapped_event(&self) -> OverlappedEvent {
         OverlappedEvent {
             event: self.inner.event_handle.clone(),
@@ -224,6 +249,11 @@ impl OverlappedEvent {
     pub fn wait(&self) -> io::Result<()> {
         ffi::wait_for_single_object(self.event.as_raw_handle(), INFINITE)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn wait_interruptible(
         &self,
         interrupt_event: &OwnedHandle,
@@ -235,8 +265,8 @@ impl OverlappedEvent {
             let timeout_ms = timeout.map_or(INFINITE, |limit| {
                 ffi::finite_wait_timeout_millis(limit.saturating_sub(started.elapsed()))
             });
-            // SAFETY: `handles` is a live contiguous array of two valid wait handles for
-            // the duration of this synchronous call.
+            // SAFETY: handles is a live two-element array of valid wait handles;
+            // WaitForMultipleObjects borrows it synchronously and count matches.
             let wait_ret = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms) };
             match wait_ret {
                 windows_sys::Win32::Foundation::WAIT_OBJECT_0 => return Ok(()),

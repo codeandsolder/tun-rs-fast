@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "Windows TAP interface management uses Win32 handles, unions, and SetupAPI FFI"
+    reason = "TAP adapter discovery and setup crosses Win32 SetupAPI/handle FFI boundaries"
 )]
 
 use crate::platform::windows::device::GUID_NETWORK_ADAPTER;
@@ -69,33 +69,34 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
     let mut driver_version = 0;
     let mut member_index = 0;
 
-    while let Some(driver_info_result) =
+    while let Some(driver_data) =
         ffi::enum_driver_info(devinfo, &devinfo_data, SPDIT_COMPATDRIVER, member_index)
     {
         member_index += 1;
 
-        let Ok(driver_info) = driver_info_result else {
+        if driver_data.is_err() {
             continue;
-        };
-        if driver_info.DriverVersion <= driver_version {
+        }
+        let driver_data = driver_data?;
+        if driver_data.DriverVersion <= driver_version {
             continue;
         }
 
-        let Ok(drvinfo_detail) = ffi::get_driver_info_detail(devinfo, &devinfo_data, &driver_info)
+        let Ok(driver_detail) = ffi::get_driver_info_detail(devinfo, &devinfo_data, &driver_data)
         else {
             continue;
         };
 
-        let hardware_id = decode_utf16(&drvinfo_detail.HardwareID);
+        let hardware_id = decode_utf16(&driver_detail.HardwareID);
         if !hardware_id.eq_ignore_ascii_case(component_id) {
             continue;
         }
 
-        if ffi::set_selected_driver(devinfo, &devinfo_data, &driver_info).is_err() {
+        if ffi::set_selected_driver(devinfo, &devinfo_data, &driver_data).is_err() {
             continue;
         }
 
-        driver_version = driver_info.DriverVersion;
+        driver_version = driver_data.DriverVersion;
     }
 
     if driver_version == 0 {
@@ -192,6 +193,8 @@ pub fn check_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()>
 
         let luid2 = net_luid(if_type.into(), luid_index.into());
 
+        // SAFETY: both NET_LUID_LH values were initialized by Win32/our constructor;
+        // reading the Value union member is the canonical representation comparison.
         if unsafe { luid.Value != luid2.Value } {
             continue;
         }
@@ -255,6 +258,8 @@ pub fn delete_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()
 
         let luid2 = net_luid(if_type.into(), luid_index.into());
 
+        // SAFETY: both NET_LUID_LH values were initialized by Win32/our constructor;
+        // reading the Value union member is the canonical representation comparison.
         if unsafe { luid.Value != luid2.Value } {
             continue;
         }
@@ -279,6 +284,8 @@ pub fn open_interface(luid: &NET_LUID_LH) -> io::Result<OwnedHandle> {
         OPEN_EXISTING,
         FILE_ATTRIBUTE_SYSTEM | FILE_FLAG_OVERLAPPED,
     )?;
+    // SAFETY: create_file returned a live owned HANDLE on success; ownership is
+    // transferred exactly once into OwnedHandle here.
     unsafe { Ok(OwnedHandle::from_raw_handle(handle)) }
 }
 
@@ -364,6 +371,8 @@ pub fn enable_adapter(component_id: &str, luid: &NET_LUID_LH, val: bool) -> io::
 
         let luid2 = net_luid(if_type.into(), luid_index.into());
 
+        // SAFETY: both NET_LUID_LH values were initialized by Win32/our constructor;
+        // reading the Value union member is the canonical representation comparison.
         if unsafe { luid.Value != luid2.Value } {
             continue;
         }
@@ -383,6 +392,7 @@ mod tests {
     fn net_luid_packs_if_type_and_index() {
         // e.g. IF_TYPE_PROP_VIRTUAL (53), NetLuidIndex 5
         let luid = net_luid(53, 5);
+        // SAFETY: net_luid initializes the Value union member directly.
         assert_eq!(unsafe { luid.Value }, (53u64 << 48) | (5u64 << 24));
     }
 
@@ -392,12 +402,14 @@ mod tests {
         // neighbouring fields.
         let a = net_luid(0x1_2345, 0x1AB_CDEF);
         let b = net_luid(0x2345, 0xAB_CDEF);
+        // SAFETY: net_luid initializes the Value union member directly for both values.
         assert_eq!(unsafe { a.Value }, unsafe { b.Value });
     }
 
     #[test]
     fn net_luid_zero_keeps_reserved_clear() {
         let luid = net_luid(0, 0);
+        // SAFETY: net_luid initializes the Value union member directly.
         assert_eq!(unsafe { luid.Value }, 0);
     }
 }

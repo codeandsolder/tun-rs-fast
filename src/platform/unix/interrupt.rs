@@ -63,7 +63,9 @@ let handle = thread::spawn(move || {
 thread::sleep(std::time::Duration::from_secs(1));
 event.trigger()?;
 
-handle.join().unwrap();
+handle
+    .join()
+    .map_err(|_| std::io::Error::other("reader thread panicked"))?;
 # }
 # Ok::<(), std::io::Error>(())
 ```
@@ -205,16 +207,18 @@ impl Fd {
                 },
             ];
 
-            // POSIX requires finer-than-supported poll timeouts to be rounded up.
-            // The helper also clamps to c_int::MAX; if that shorter wait expires,
-            // loop against the original Duration so a large requested timeout is
-            // not silently shortened.
+            // poll accepts integer milliseconds. Round a fractional millisecond up
+            // rather than accidentally turning a positive timeout into a nonblocking
+            // poll; if a very large timeout is clamped, loop against the original
+            // Duration after the finite poll expires.
             let poll_timeout =
                 poll_timeout_ms(timeout.map(|limit| limit.saturating_sub(started.elapsed())));
+            let nfds = libc::nfds_t::try_from(fds.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow")
+            })?;
             // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
             // the synchronous call; both descriptors are owned/borrowed live descriptors.
-            let result =
-                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, poll_timeout) };
+            let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, poll_timeout) };
 
             if result == -1 {
                 return Err(io::Error::last_os_error());
@@ -263,7 +267,15 @@ impl Fd {
 
         // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
         // the synchronous call; both descriptors remain live for this method.
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        let result = unsafe {
+            libc::poll(
+                fds.as_mut_ptr(),
+                libc::nfds_t::try_from(fds.len()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow")
+                })?,
+                -1,
+            )
+        };
 
         if result == -1 {
             return Err(io::Error::last_os_error());
@@ -306,19 +318,20 @@ impl Fd {
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
         let fd = self.as_raw_fd();
-        let mut fds = Vec::with_capacity(if interrupt_event.is_some() { 2 } else { 1 });
-        fds.push(libc::pollfd {
-            fd,
-            events: device_events,
-            revents: 0,
-        });
-        if let Some(interrupt_event) = interrupt_event {
-            fds.push(libc::pollfd {
-                fd: interrupt_event.as_event_fd(),
+        let interrupt_fd = interrupt_event.map_or(-1, InterruptEvent::as_event_fd);
+        let mut fds = [
+            libc::pollfd {
+                fd,
+                events: device_events,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: interrupt_fd,
                 events: libc::POLLIN,
                 revents: 0,
-            });
-        }
+            },
+        ];
+        let nfds: libc::nfds_t = if interrupt_event.is_some() { 2 } else { 1 };
         let started = Instant::now();
         loop {
             for pollfd in &mut fds {
@@ -326,10 +339,9 @@ impl Fd {
             }
             let timeout_ms =
                 poll_timeout_ms(timeout.map(|limit| limit.saturating_sub(started.elapsed())));
-            // SAFETY: fds is a live contiguous pollfd array and poll only borrows it
-            // synchronously; all descriptors remain valid for the call.
-            let result =
-                unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
+            // SAFETY: fds is stack storage for two pollfd values; nfds selects only
+            // initialized live descriptors and poll borrows the array synchronously.
+            let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, timeout_ms) };
             if result < 0 {
                 return Err(io::Error::last_os_error());
             }
@@ -339,7 +351,7 @@ impl Fd {
                 }
                 continue;
             }
-            if interrupt_event.is_some() && fds[1].revents & libc::POLLIN != 0 {
+            if nfds == 2 && fds[1].revents & libc::POLLIN != 0 {
                 return Err(io::Error::new(
                     io::ErrorKind::Interrupted,
                     "trigger interrupt",
@@ -391,7 +403,10 @@ impl Fd {
 /// // Trigger the interrupt
 /// event.trigger()?;
 ///
-/// match reader.join().unwrap() {
+/// let read_result = reader
+///     .join()
+///     .map_err(|_| std::io::Error::other("reader thread panicked"))?;
+/// match read_result {
 ///     Ok(n) => println!("Read {} bytes", n),
 ///     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {
 ///         println!("Successfully interrupted!");

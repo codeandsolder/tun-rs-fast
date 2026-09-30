@@ -733,6 +733,8 @@ fn test_windows_new_apis() -> TestResult {
     // ── 1. if_luid() ─────────────────────────────────────────────────────────
     // New public API; a valid adapter LUID is never zero.
     let luid = device.if_luid()?;
+    // SAFETY: if_luid() returned a fully initialized NET_LUID_LH; Value is an
+    // alternate view of the same initialized union storage.
     let luid_value = unsafe { luid.Value };
     assert_ne!(luid_value, 0, "LUID must be non-zero for a live adapter");
 

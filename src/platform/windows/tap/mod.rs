@@ -1,10 +1,11 @@
 #![expect(
     unsafe_code,
-    reason = "Windows TAP owns raw OS handles and declares Send/Sync for the handle-backed device after synchronization"
+    reason = "the TAP backend owns Windows handles and explicitly asserts thread-safety for overlapped I/O"
 )]
 
 use crate::platform::windows::tap::overlapped::{ReadOverlapped, WriteOverlapped};
 use crate::platform::windows::{ffi, netsh};
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::{Arc, Mutex};
@@ -24,8 +25,14 @@ pub struct TapDevice {
     write_io_overlapped: Mutex<WriteOverlapped>,
 }
 pub(crate) const READ_BUFFER_SIZE: usize = 14 + 65536;
+// SAFETY: TapDevice owns its Windows handles, and the only mutable overlapped-I/O
+// state is behind per-direction Mutexes. Moving the wrapper between threads does
+// not move the boxed OVERLAPPED storage or invalidate its event/file handles.
 unsafe impl Send for TapDevice {}
 
+// SAFETY: all shared mutable access to the read/write OVERLAPPED state is
+// serialized by the corresponding Mutex; the remaining fields are immutable
+// owned handles/metadata whose Windows operations are safe to invoke cross-thread.
 unsafe impl Sync for TapDevice {}
 
 impl Drop for TapInterface {
@@ -56,7 +63,7 @@ impl TapDevice {
         self.index
     }
     /// Creates a new tap-windows device
-    pub fn create(component_id: &str, persist: bool, mut mac: Option<&String>) -> io::Result<Self> {
+    pub fn create(component_id: &str, persist: bool, mut mac: Option<&str>) -> io::Result<Self> {
         let luid = iface::create_interface(component_id)?;
         let mut tap_interface = TapInterface {
             luid,
@@ -76,27 +83,24 @@ impl TapDevice {
                 ));
             }
 
-            match ffi::luid_to_guid(&luid) {
-                Err(_) => {
-                    std::thread::sleep(time::Duration::from_millis(20));
-                }
-                Ok(guid) => {
-                    if let Some(mac) = mac.take() {
-                        let guid = ffi::string_from_guid(&guid)?;
-                        iface::set_adapter_mac_by_guid(&guid, mac)?;
-                        std::thread::sleep(time::Duration::from_millis(20));
-                        iface::enable_adapter(component_id, &luid, false)?;
-                        std::thread::sleep(time::Duration::from_millis(20));
-                        iface::enable_adapter(component_id, &luid, true)?;
-                    }
-                    let handle = iface::open_interface(&luid)?;
-                    if get_version(handle.as_raw_handle()).is_err() {
-                        std::thread::sleep(time::Duration::from_millis(200));
-                        continue;
-                    }
-                    break handle;
-                }
+            let Ok(guid) = ffi::luid_to_guid(&luid) else {
+                std::thread::sleep(time::Duration::from_millis(20));
+                continue;
+            };
+            if let Some(mac) = mac.take() {
+                let guid = ffi::string_from_guid(&guid)?;
+                iface::set_adapter_mac_by_guid(&guid, mac)?;
+                std::thread::sleep(time::Duration::from_millis(20));
+                iface::enable_adapter(component_id, &luid, false)?;
+                std::thread::sleep(time::Duration::from_millis(20));
+                iface::enable_adapter(component_id, &luid, true)?;
             }
+            let handle = iface::open_interface(&luid)?;
+            if get_version(handle.as_raw_handle()).is_err() {
+                std::thread::sleep(time::Duration::from_millis(200));
+                continue;
+            }
+            break handle;
         };
 
         let index = match ffi::luid_to_index(&luid) {
@@ -122,7 +126,7 @@ impl TapDevice {
         component_id: &str,
         name: &str,
         persist: bool,
-        mac: Option<&String>,
+        mac: Option<&str>,
     ) -> io::Result<Self> {
         let luid = ffi::alias_to_luid(name)?;
         iface::check_interface(component_id, &luid)?;
@@ -172,11 +176,7 @@ impl TapDevice {
         )
         .map(|()| mac)
     }
-    #[expect(
-        clippy::unused_self,
-        reason = "the TAP backend keeps a method-shaped MAC setter to match the device backend API even though runtime mutation is unsupported"
-    )]
-    pub fn set_mac(&self, _mac: [u8; 6]) -> io::Result<()> {
+    pub fn set_mac(_mac: [u8; 6]) -> io::Result<()> {
         Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 

@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "Windows async I/O copies packet bytes across raw Wintun/TAP buffers at the FFI boundary"
+    reason = "the Windows async backend copies into caller-provided uninitialized storage after checked blocking I/O"
 )]
 
 use crate::platform::windows::{ffi, InterruptEvent};
@@ -87,10 +87,10 @@ impl Drop for AsyncDevice {
     }
 }
 impl AsyncDevice {
-    /// Creates a new async wrapper around a TUN/TAP device
+    /// Creates a new async wrapper around a TUN/TAP device.
     ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if the Windows interrupt event cannot be created.
     pub fn new(device: SyncDevice) -> io::Result<AsyncDevice> {
         AsyncDevice::new_dev(device.0)
     }
@@ -217,6 +217,8 @@ impl AsyncDevice {
                                 "receive buffer too small",
                             )));
                         }
+                        // SAFETY: n <= buf.len() above, packet contains at least n
+                        // initialized bytes, and the source/destination do not overlap.
                         unsafe {
                             std::ptr::copy_nonoverlapping(packet.as_ptr(), buf.as_mut_ptr(), n);
                         }
@@ -291,9 +293,9 @@ impl AsyncDevice {
     /// will continue to return immediately until the readiness event is
     /// consumed by an attempt to read that fails with `WouldBlock` or
     /// `Poll::Pending`.
-    ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if creating the cancellation event or waiting for
+    /// device readiness fails.
     pub async fn readable(&self) -> io::Result<()> {
         let mut canceller = Canceller::new_cancelable()?;
         let device = self.inner.clone();
@@ -308,10 +310,10 @@ impl AsyncDevice {
         Ok(())
     }
 
-    /// Recv a packet from the device
+    /// Receives a packet from the device.
     ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if readiness waiting or packet reception fails.
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             match self.try_recv(buf) {
@@ -322,6 +324,9 @@ impl AsyncDevice {
         }
     }
     /// Attempts to read a packet without blocking.
+    ///
+    /// # Errors
+    /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
     ///
     /// # Errors
@@ -337,7 +342,7 @@ impl AsyncDevice {
     /// After cancellation, it is uncertain whether the data has been written or not.
     ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if cancellation setup or packet transmission fails.
     pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match self.inner.try_send(buf) {
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -357,6 +362,9 @@ impl AsyncDevice {
         result
     }
     /// Attempts to write a packet without blocking.
+    ///
+    /// # Errors
+    /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
     ///
     /// # Errors

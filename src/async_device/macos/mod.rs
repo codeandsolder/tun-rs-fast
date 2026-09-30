@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "macOS async raw-fd constructors are the explicit descriptor ownership boundary"
+)]
+
 use crate::async_device::unix;
 use crate::{DeviceImpl, SyncDevice};
 use bytes::buf::UninitSlice;
@@ -70,7 +75,9 @@ impl AsyncModel {
 }
 impl FromRawFd for AsyncDevice {
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        match AsyncDevice::from_fd(fd) {
+        // SAFETY: FromRawFd transfers exclusive ownership of a valid open
+        // descriptor to this value; from_fd consumes the same ownership contract.
+        match unsafe { Self::from_fd(fd) } {
             Ok(device) => device,
             Err(_) => std::process::abort(),
         }
@@ -90,25 +97,53 @@ impl AsRawFd for AsyncDevice {
     }
 }
 impl AsyncDevice {
+    /// Creates a macOS asynchronous wrapper around an existing synchronous device.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the selected async backend cannot register the device.
     pub fn new(device: SyncDevice) -> io::Result<AsyncDevice> {
         AsyncDevice::new_dev(device.0)
     }
 
+    /// Constructs an async device from an owned raw file descriptor.
+    ///
     /// # Safety
-    /// This method is safe if the provided fd is valid
-    /// Construct a AsyncDevice from an existing file descriptor
-    pub unsafe fn from_fd(fd: RawFd) -> io::Result<AsyncDevice> {
-        AsyncDevice::new_dev(DeviceImpl::from_fd(fd)?)
+    ///
+    /// `fd` must be a valid, open TUN/TAP descriptor whose ownership is
+    /// transferred to the returned device. After calling this function, the
+    /// caller must not close `fd` or continue using it as an owner.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor cannot be wrapped or registered with
+    /// the selected async backend.
+    pub unsafe fn from_fd(fd: RawFd) -> io::Result<Self> {
+        // SAFETY: this function's documented contract transfers ownership of a
+        // valid open descriptor directly into DeviceImpl.
+        unsafe { Self::new_dev(DeviceImpl::from_fd(fd)?) }
     }
 
+    /// Borrows an existing raw file descriptor without taking ownership.
+    ///
     /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.\
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
+    ///
+    /// `fd` must be a valid, open TUN/TAP descriptor and must remain open for
+    /// the entire lifetime of the returned device. The external owner must not
+    /// close or otherwise invalidate it while borrowed.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the borrowed descriptor cannot be wrapped or
+    /// registered with the selected async backend.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        AsyncDevice::new_dev(DeviceImpl::borrow_raw(fd)?)
+        // SAFETY: this function's contract guarantees that fd remains live
+        // externally while DeviceImpl records it as borrowed.
+        unsafe { Self::new_dev(DeviceImpl::borrow_raw(fd)?) }
     }
+    /// Consumes the async device and returns its owned raw descriptor.
+    ///
+    /// # Errors
+    /// Returns an error when the selected backend cannot release a raw descriptor.
     pub fn into_fd(self) -> io::Result<RawFd> {
         match self.async_model {
             AsyncModel::Async(dev) => Ok(dev.into_device()?.into_raw_fd()),
@@ -142,6 +177,8 @@ impl AsyncDevice {
     /// will continue to return immediately until the readiness event is
     /// consumed by an attempt to read that fails with `WouldBlock` or
     /// `Poll::Pending`.
+    /// # Errors
+    /// Returns an I/O error if waiting for readable readiness fails.
     pub async fn readable(&self) -> io::Result<()> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.readable().await,
@@ -162,6 +199,8 @@ impl AsyncDevice {
     /// will continue to return immediately until the readiness event is
     /// consumed by an attempt to write that fails with `WouldBlock` or
     /// `Poll::Pending`.
+    /// # Errors
+    /// Returns an I/O error if waiting for writable readiness fails.
     pub async fn writable(&self) -> io::Result<()> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.writable().await,
@@ -285,6 +324,8 @@ impl AsyncDevice {
     /// The function must be called with valid byte array `buf` of sufficient
     /// size to hold the message bytes. If a message is too long to fit in the
     /// supplied buffer, excess bytes may be discarded.
+    /// # Errors
+    /// Returns an I/O error if readiness waiting or packet reception fails.
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.recv(buf).await,
@@ -300,6 +341,8 @@ impl AsyncDevice {
     ///
     /// When there is no pending data, `Err(io::ErrorKind::WouldBlock)` is
     /// returned. This function is usually paired with `readable()`.
+    /// # Errors
+    /// Returns the underlying device error when a packet cannot be received.
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.try_recv(buf),
@@ -310,6 +353,8 @@ impl AsyncDevice {
     ///
     /// # Return
     /// On success, the number of bytes sent is returned, otherwise, the encountered error is returned.
+    /// # Errors
+    /// Returns an I/O error if readiness waiting or packet transmission fails.
     pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.send(buf).await,
@@ -326,6 +371,8 @@ impl AsyncDevice {
     /// If successful, `Ok(n)` is returned, where `n` is the number of bytes
     /// sent. If the device is not ready to send data,
     /// `Err(ErrorKind::WouldBlock)` is returned.
+    /// # Errors
+    /// Returns the underlying device error when a packet cannot be sent.
     pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.try_send(buf),
@@ -335,6 +382,8 @@ impl AsyncDevice {
 
     /// Receives a packet into multiple buffers (scatter read).
     /// **Processes single packet per call**.
+    /// # Errors
+    /// Returns an I/O error if vectored packet reception fails.
     pub async fn recv_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.recv_vectored(bufs).await,
@@ -342,6 +391,8 @@ impl AsyncDevice {
         }
     }
     /// Non-blocking version of `recv_vectored`.
+    /// # Errors
+    /// Returns the underlying device error when a vectored packet cannot be received.
     pub fn try_recv_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.try_recv_vectored(bufs),
@@ -349,6 +400,8 @@ impl AsyncDevice {
         }
     }
     /// Sends multiple buffers as a single packet (gather write).
+    /// # Errors
+    /// Returns an I/O error if vectored packet transmission fails.
     pub async fn send_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.send_vectored(bufs).await,
@@ -356,6 +409,8 @@ impl AsyncDevice {
         }
     }
     /// Non-blocking version of `send_vectored`.
+    /// # Errors
+    /// Returns the underlying device error when a vectored packet cannot be sent.
     pub fn try_send_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
         match &self.async_model {
             AsyncModel::Async(dev) => dev.try_send_vectored(bufs),

@@ -1,26 +1,27 @@
-use libc::{c_char, c_int, c_uint, ifreq, sockaddr, sockaddr_in6, time_t, IFNAMSIZ};
+use libc::{c_char, c_int, ifreq, sockaddr, sockaddr_in6, time_t, IFNAMSIZ};
 use nix::{ioctl_readwrite, ioctl_write_ptr};
 use std::ffi::c_void;
 
 pub const IN6_IFF_NODAD: i32 = 0x0020;
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifra_ifrau {
     pub ifrau_addr: sockaddr,
     pub ifrau_align: c_int,
 }
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the OpenBSD C ABI"
+)]
 pub struct ifaliasreq {
     pub ifra_name: [c_char; IFNAMSIZ],
     pub ifra_ifrau: ifra_ifrau,
     pub ifra_dstaddr: sockaddr, // == ifra_broadaddr
     pub ifra_mask: sockaddr,
 }
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifra_ifrau_in6 {
@@ -28,9 +29,12 @@ pub union ifra_ifrau_in6 {
     pub ifrau_align: c_int,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the OpenBSD C ABI"
+)]
 pub struct in6_aliasreq {
     pub ifra_name: [c_char; IFNAMSIZ],
     pub ifra_ifrau: ifra_ifrau_in6,
@@ -40,7 +44,6 @@ pub struct in6_aliasreq {
     pub ifra_lifetime: in6_addrlifetime,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifreq {
@@ -48,7 +51,6 @@ pub struct in6_ifreq {
     pub ifr_ifru: ifr_ifru_in6,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifr_ifru_in6 {
@@ -64,9 +66,12 @@ pub union ifr_ifru_in6 {
     pub ifru_scope_id: [u32; 16],
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the OpenBSD C ABI"
+)]
 pub struct in6_addrlifetime {
     pub ia6t_expire: time_t,    /* valid lifetime expiration time */
     pub ia6t_preferred: time_t, /* preferred lifetime expiration time */
@@ -74,11 +79,14 @@ pub struct in6_addrlifetime {
     pub ia6t_pltime: u32,       /* prefix lifetime */
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
+#[expect(non_camel_case_types, reason = "type name mirrors the OpenBSD C ABI")]
 type u_quad_t = u64;
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the OpenBSD C ABI"
+)]
 pub struct in6_ifstat {
     pub ifs6_in_receive: u_quad_t,      /* # of total input datagram */
     pub ifs6_in_hdrerr: u_quad_t,       /* # of datagrams with invalid hdr */
@@ -113,9 +121,12 @@ pub struct in6_ifstat {
     pub ifs6_out_mcast: u_quad_t, /* # of outbound multicast datagrams */
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "field names mirror the OpenBSD C ABI"
+)]
 pub struct icmp6_ifstat {
     /*
      * Input statistics
@@ -193,15 +204,6 @@ pub struct icmp6_ifstat {
     /* ipv6IfIcmpOutGroupMembReductions, # of output MLD done */
     pub ifs6_out_mlddone: u_quad_t,
 }
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct ifreq_mtu {
-    pub ifr_name: [c_char; IFNAMSIZ],
-    pub mtu: c_uint,
-    pub pad0: [u8; 12],
-}
-
 // https://github.com/openbsd/src/blob/25ed657ec9c4285c385bc3b3556c0dc8eb6d6665/sys/sys/sockio.h#L114
 
 ioctl_write_ptr!(siocsifflags, b'i', 16, ifreq);
@@ -219,8 +221,8 @@ ioctl_readwrite!(siocgifbrdaddr, b'i', 35, ifreq);
 ioctl_write_ptr!(siocsifnetmask, b'i', 22, ifreq);
 ioctl_readwrite!(siocgifnetmask, b'i', 37, ifreq);
 
-ioctl_write_ptr!(siocsifmtu, b'i', 127, ifreq_mtu);
-ioctl_readwrite!(siocgifmtu, b'i', 126, ifreq_mtu);
+ioctl_write_ptr!(siocsifmtu, b'i', 127, ifreq);
+ioctl_readwrite!(siocgifmtu, b'i', 126, ifreq);
 
 ioctl_write_ptr!(siocaifaddr, b'i', 26, ifaliasreq);
 ioctl_write_ptr!(siocdifaddr, b'i', 25, ifreq);

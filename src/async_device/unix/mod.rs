@@ -8,6 +8,7 @@ use crate::platform::offload::{handle_gro, VirtioNetHdr, VIRTIO_NET_HDR_LEN};
 use crate::platform::DeviceImpl;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use crate::platform::GROTable;
+#[cfg(not(target_os = "macos"))]
 use crate::SyncDevice;
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
@@ -56,6 +57,7 @@ impl AsyncDevice {
     /// # Errors
     ///
     /// Returns an error if the selected async runtime cannot register the device.
+    #[cfg(not(target_os = "macos"))]
     pub fn new(device: SyncDevice) -> io::Result<Self> {
         Self::new_dev(device.0)
     }
@@ -78,6 +80,7 @@ impl AsyncDevice {
     /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
     /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
+    #[cfg(not(target_os = "macos"))]
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
         // SAFETY: this function's contract guarantees fd remains live externally;
         // DeviceImpl marks the descriptor borrowed so the async wrapper will not close it.

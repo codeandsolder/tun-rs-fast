@@ -59,13 +59,7 @@ pub use self::windows::DeviceImpl;
 #[cfg(target_vendor = "apple")]
 pub mod apple;
 
-#[cfg(any(
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(not(target_os = "windows"))]
 use getifaddrs::Interface;
 #[cfg(unix)]
 use std::io::{IoSlice, IoSliceMut};
@@ -83,13 +77,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 ))]
 const ETHER_ADDR_LEN: u8 = 6;
 
-#[cfg(any(
-    target_os = "macos",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(not(target_os = "windows"))]
 fn get_if_addrs_by_name(if_name: &str) -> std::io::Result<Vec<Interface>> {
     let addrs = getifaddrs::getifaddrs()?;
     let ifs = addrs.filter(|v| v.name == if_name).collect();
@@ -231,10 +219,10 @@ impl SyncDevice {
     /// let mut tun = DeviceBuilder::new()
     ///     .name("my-tun")
     ///     .ipv4(Ipv4Addr::new(10, 0, 0, 1), 24, None)
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// let mut buf = [0u8; 1500];
-    /// tun.recv(&mut buf).unwrap();
+    /// tun.recv(&mut buf)?;
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     /// # Note
     /// Blocking the current thread if no packet is available
@@ -257,9 +245,9 @@ impl SyncDevice {
     /// let mut tun = DeviceBuilder::new()
     ///     .name("my-tun")
     ///     .ipv4(Ipv4Addr::new(10, 0, 0, 1), 24, None)
-    ///     .build_sync()
-    ///     .unwrap();
-    /// tun.send(b"hello").unwrap();
+    ///     .build_sync()?;
+    /// tun.send(b"hello")?;
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     #[inline]
     ///

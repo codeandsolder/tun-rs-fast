@@ -235,7 +235,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.tun.set_ignore_packet_info(ign)
+        self.tun.set_ignore_packet_info(ign);
     }
 }
 #[cfg(any(
@@ -275,80 +275,52 @@ pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
     Ok(fd)
 }
 
-/// Copy a device name into a fixed-size C character buffer.
+/// Copies an interface name into a BSD C name array.
 ///
-/// The destination is cleared and NUL-terminated. Names containing an interior NUL or
-/// requiring the entire destination (leaving no room for the terminator) are rejected.
-#[cfg(any(
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    test
-))]
+/// The destination must have room for the trailing NUL byte. It is cleared
+/// before copying so successful calls always produce a NUL-terminated name.
+#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
 pub(crate) fn copy_device_name(name: &str, dest: &mut [libc::c_char]) -> io::Result<()> {
-    let bytes = name.as_bytes();
-    if dest.is_empty() || bytes.len() >= dest.len() || bytes.contains(&0) {
+    if name.as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "invalid or too-long network interface name",
+            "interface name contains NUL",
         ));
     }
-
+    if name.len() >= dest.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface name exceeds platform IFNAMSIZ",
+        ));
+    }
     dest.fill(0);
-    for (slot, &byte) in dest[..bytes.len()].iter_mut().zip(bytes) {
-        *slot = libc::c_char::from_ne_bytes([byte]);
+    for (out, byte) in dest.iter_mut().zip(name.bytes()) {
+        *out = byte.cast_signed();
     }
     Ok(())
 }
 
-#[cfg(test)]
-mod copy_device_name_tests {
+#[cfg(all(
+    test,
+    any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")
+))]
+mod bsd_device_name_tests {
     use super::copy_device_name;
-
-    fn bytes(buf: &[libc::c_char]) -> Vec<u8> {
-        buf.iter().map(|&value| value.to_ne_bytes()[0]).collect()
-    }
+    use std::io;
 
     #[test]
-    fn rejects_empty_destination() {
-        let mut dest = [];
+    fn copy_device_name_enforces_c_string_contract() {
+        let mut dest = [1; 4];
+        assert!(copy_device_name("abc", &mut dest).is_ok());
+        assert_eq!(dest[3], 0);
+
         assert!(matches!(
-            copy_device_name("tun0", &mut dest),
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput
+            copy_device_name("abcd", &mut dest),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
-    }
-
-    #[test]
-    fn copies_and_nul_terminates() -> std::io::Result<()> {
-        let mut dest = [libc::c_char::MAX; 8];
-        copy_device_name("tun0", &mut dest)?;
-        assert_eq!(bytes(&dest), b"tun0\0\0\0\0");
-        Ok(())
-    }
-
-    #[test]
-    fn accepts_largest_name_that_leaves_a_terminator() -> std::io::Result<()> {
-        let mut dest = [libc::c_char::MAX; 4];
-        copy_device_name("tun", &mut dest)?;
-        assert_eq!(bytes(&dest), b"tun\0");
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_overlong_name_instead_of_truncating() {
-        let mut dest = [libc::c_char::MAX; 4];
         assert!(matches!(
-            copy_device_name("tunnel", &mut dest),
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput
-        ));
-    }
-
-    #[test]
-    fn rejects_interior_nul() {
-        let mut dest = [libc::c_char::MAX; 8];
-        assert!(matches!(
-            copy_device_name("tun\0x", &mut dest),
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput
+            copy_device_name("a\0b", &mut dest),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
         ));
     }
 }

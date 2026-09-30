@@ -67,8 +67,9 @@ let dev = DeviceBuilder::new()
             .wintun_log(true)          // Enable Wintun logging
             .description("My VPN");     // Set device description
     })
-    .build_sync().unwrap();
+    .build_sync()?;
 # }
+# Ok::<(), std::io::Error>(())
 ```
 
 ### macOS Specific
@@ -104,15 +105,16 @@ let tap = DeviceBuilder::new()
     .name("tap0")
     .layer(Layer::L2)
     .mac_addr([0x00, 0x11, 0x22, 0x33, 0x44, 0x55])
-    .build_sync().unwrap();
+    .build_sync()?;
 
 // TUN interface (Layer 3, default)
 let tun = DeviceBuilder::new()
     .name("tun0")
     .layer(Layer::L3)
     .ipv4("10.0.0.1", 24, None)
-    .build_sync().unwrap();
+    .build_sync()?;
 # }
+# Ok::<(), std::io::Error>(())
 ```
 
 ## Multiple IP Addresses
@@ -202,9 +204,9 @@ use crate::platform::{DeviceImpl, SyncDevice};
 ///     .name("tap0")
 ///     .layer(Layer::L2)
 ///     .mac_addr([0x00, 0x11, 0x22, 0x33, 0x44, 0x55])
-///     .build_sync()
-///     .unwrap();
+///     .build_sync()?;
 /// # }
+/// # Ok::<(), std::io::Error>(())
 /// ```
 ///
 /// Creating a TUN (L3) interface (default):
@@ -271,7 +273,7 @@ pub(crate) struct DeviceConfig {
     /// The description of the device/interface.
     #[cfg(windows)]
     pub(crate) description: Option<String>,
-    /// Available with Layer::L2; creates a pair of feth devices, with peer_feth as the IO interface name.
+    /// Available with `Layer::L2`; creates a pair of feth devices, with `peer_feth` as the IO interface name.
     #[cfg(target_os = "macos")]
     pub(crate) peer_feth: Option<String>,
     /// If true (default), the program will automatically add or remove routes on macOS or FreeBSD to provide consistent routing behavior across all platforms.
@@ -310,7 +312,7 @@ pub(crate) struct DeviceConfig {
     #[cfg(windows)]
     pub(crate) delete_driver: Option<bool>,
     #[cfg(windows)]
-    pub(crate) mac_address: Option<String>,
+    pub(crate) mac_address: Option<[u8; 6]>,
     /// switch of Enable/Disable packet information for network driver
     #[cfg(any(
         target_os = "macos",
@@ -491,9 +493,9 @@ impl DeviceBuilderGuard<'_> {
     ///     .with(|builder| {
     ///         builder.metric(10); // Set lower metric for higher priority
     ///     })
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// # }
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
     /// # Platform
@@ -782,9 +784,9 @@ impl DeviceBuilderGuard<'_> {
     ///     .with(|builder| {
     ///         builder.reuse_dev(false); // Error if tap0 already exists
     ///     })
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// # }
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
     /// # Platform
@@ -819,9 +821,9 @@ impl DeviceBuilderGuard<'_> {
     ///     .with(|builder| {
     ///         builder.persist(true); // Keep device after program exits
     ///     })
-    ///     .build_sync()
-    ///     .unwrap();
+    ///     .build_sync()?;
     /// # }
+    /// # Ok::<(), std::io::Error>(())
     /// ```
     ///
     /// # Platform
@@ -1213,7 +1215,7 @@ impl DeviceBuilder {
         self.packet_information = Some(packet_information);
         self
     }
-    /// Available on Layer::L2;
+    /// Available on `Layer::L2`;
     /// creates a pair of `feth` devices, with `peer_feth` as the IO interface name.
     #[cfg(target_os = "macos")]
     pub fn peer_feth<S: Into<String>>(mut self, peer_feth: S) -> Self {
@@ -1305,7 +1307,6 @@ impl DeviceBuilder {
     /// let dev = DeviceBuilder::new()
     ///     .name("tun0")
     ///     .ipv4("10.0.0.1", 24, None)
-    ///     .with(|builder| builder.reuse_dev(true))
     ///     .inherit_enable_state() // Don't change the existing enable state
     ///     .build_sync()?;
     /// # }
@@ -1356,15 +1357,7 @@ impl DeviceBuilder {
             #[cfg(windows)]
             delete_driver: self.delete_driver.take(),
             #[cfg(windows)]
-            mac_address: self.mac_addr.map(|v| {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                let mut encoded = String::with_capacity(v.len() * 2);
-                for byte in v {
-                    encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-                    encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-                }
-                encoded
-            }),
+            mac_address: self.mac_addr,
             #[cfg(any(
                 target_os = "macos",
                 target_os = "linux",
@@ -1461,7 +1454,8 @@ impl DeviceBuilder {
     /// let builder = builder.associate_route(false);
     /// #[cfg(windows)]
     /// let builder = builder.wintun_log(false);
-    /// let dev = builder.build_sync().unwrap();
+    /// let dev = builder.build_sync()?;
+    /// # Ok::<(), std::io::Error>(())
     /// ````
     /// This is tedious and breaks the calling chain.
     ///
@@ -1473,7 +1467,8 @@ impl DeviceBuilder {
     ///    opt.wintun_log(false);
     ///    #[cfg(target_os = "macos")]
     ///    opt.associate_route(false).packet_information(false);
-    /// }).build_sync().unwrap();
+    /// }).build_sync()?;
+    /// # Ok::<(), std::io::Error>(())
     /// ````
     pub fn with<F: FnMut(&mut DeviceBuilderGuard)>(mut self, mut f: F) -> Self {
         let mut borrow = DeviceBuilderGuard(&mut self);

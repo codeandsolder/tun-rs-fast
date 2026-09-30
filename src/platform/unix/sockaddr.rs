@@ -80,13 +80,7 @@ const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
 /// `min(size, size_of::<sockaddr_union>())` bytes. The pointer must be derived from
 /// the complete backing C object being overwritten, not from a narrower Rust reference
 /// to one of its fields. The destination must not overlap the local source value.
-#[cfg(any(
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
     src_addr: T,
     src_port: u16,
@@ -164,6 +158,8 @@ fn test_conversion() -> std::io::Result<()> {
     let old = std::net::SocketAddr::new([127, 0, 0, 1].into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
     #[cfg(target_endian = "big")]
+    // SAFETY: rs_addr_to_sockaddr initialized the IPv4 union member selected by
+    // the test before these field reads.
     unsafe {
         assert_eq!(0x7f00_0001, addr.addr4.sin_addr.s_addr);
         assert_eq!(0x0208, addr.addr4.sin_port);

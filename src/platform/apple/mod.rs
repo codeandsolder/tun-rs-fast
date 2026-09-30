@@ -19,6 +19,10 @@
 /// # Feature
 ///
 /// This function is only available when the `utun_fd` feature is enabled.
+#[expect(
+    unsafe_code,
+    reason = "enumerating Apple utun descriptors requires getsockopt over libc control-socket structures"
+)]
 pub fn utun_fd() -> Option<i32> {
     unsafe {
         let mut ctl_info: libc::ctl_info = std::mem::zeroed();

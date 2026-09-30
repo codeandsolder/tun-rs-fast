@@ -87,9 +87,9 @@ pub fn set_dns_servers(index: u32, dns_servers: &[IpAddr]) -> io::Result<()> {
     set_primary_dns(index, dns_servers[0])?;
 
     for (i, &addr) in dns_servers.iter().skip(1).enumerate() {
-        let position = u32::try_from(i + 2)
+        let index_pos = u32::try_from(i + 2)
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "too many DNS servers"))?;
-        add_secondary_dns(index, addr, position)?;
+        add_secondary_dns(index, addr, index_pos)?;
     }
 
     Ok(())

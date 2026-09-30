@@ -8,24 +8,27 @@ pub struct InterruptEvent {
     state: Mutex<i32>,
 }
 impl InterruptEvent {
+    /// Creates a new interrupt event.
     ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if the underlying Windows event cannot be created.
     pub fn new() -> io::Result<Self> {
         Ok(Self {
             handle: ffi::create_event()?,
             state: Mutex::new(0),
         })
     }
+    /// Triggers the interrupt event.
     ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if signalling the Windows event fails.
     pub fn trigger(&self) -> io::Result<()> {
         self.trigger_value(1)
     }
+    /// Stores a trigger value and signals the interrupt event.
     ///
     /// # Errors
-    /// Returns an error if the underlying Windows operation fails.
+    /// Returns an I/O error if signalling the Windows event fails.
     pub fn trigger_value(&self, val: i32) -> io::Result<()> {
         let mut guard = self
             .state
@@ -49,6 +52,10 @@ impl InterruptEvent {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+    /// Clears the trigger value and resets the interrupt event.
+    ///
+    /// # Errors
+    /// Returns an I/O error if resetting the Windows event fails.
     #[cfg(feature = "interruptible")]
     ///
     /// # Errors

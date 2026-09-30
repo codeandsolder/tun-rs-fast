@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "Windows DNS configuration dynamically loads and invokes documented Win32 APIs through raw FFI"
+    reason = "runtime DNS API loading and invocation crosses the Win32 FFI boundary"
 )]
 
 //! Interface DNS configuration via `SetInterfaceDnsSettings`.
@@ -49,11 +49,14 @@ impl DnsApi {
 
     fn load() -> Option<DnsApi> {
         // Load `iphlpapi.dll` from `System32` only, to avoid DLL search-order hijacking.
+        // SAFETY: loading a system DLL is an explicit FFI boundary; restricting
+        // the search to System32 avoids user-controlled search-order resolution.
         let library =
             unsafe { Library::load_with_flags("iphlpapi.dll", LOAD_LIBRARY_SEARCH_SYSTEM32) }
                 .ok()?;
+        // SAFETY: the symbol name is NUL-terminated and the function type
+        // matches the documented SetInterfaceDnsSettings ABI; library stays loaded.
         let func = unsafe {
-            // SAFETY: the signature matches the documented `SetInterfaceDnsSettings`.
             let symbol: Symbol<SetInterfaceDnsSettingsFn> =
                 library.get(b"SetInterfaceDnsSettings\0").ok()?;
             *symbol

@@ -1,8 +1,9 @@
 #![expect(
     unsafe_code,
-    reason = "Wintun is a C ABI with raw handles, callbacks, packet pointers, and wait APIs"
+    reason = "the Wintun backend operates on opaque Wintun handles and Win32 wait APIs"
 )]
 
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,11 +36,6 @@ pub const MIN_RING_CAPACITY: u32 = 0x2_0000;
 /// Maximum pool name length including zero terminator
 pub const MAX_POOL: usize = 256;
 
-const _: () = assert!(
-    std::mem::size_of::<wintun_raw::NET_LUID>() == std::mem::size_of::<NET_LUID_LH>(),
-    "NET_LUID size mismatch between wintun and windows-sys"
-);
-
 pub struct TunDevice {
     index: u32,
     luid: NET_LUID_LH,
@@ -54,7 +50,13 @@ struct WinTunAdapter {
     session: RwLock<Option<WinTunSession>>,
     delete_driver: bool,
 }
+// SAFETY: Wintun documents packet receive/release and allocate/send operations
+// as thread-safe. Adapter/session lifecycle mutation is serialized by the State
+// mutex and session RwLock, and the opaque handles remain owned by this adapter.
 unsafe impl Send for WinTunAdapter {}
+// SAFETY: concurrent safe methods either use Wintun's documented thread-safe
+// packet APIs or synchronize lifecycle changes through State/session locks; no
+// safe method exposes the raw adapter/session pointers for unsynchronized use.
 unsafe impl Sync for WinTunAdapter {}
 struct WinTunSession {
     win_tun: Arc<wintun_raw::wintun>,
@@ -69,11 +71,13 @@ impl Drop for WinTunAdapter {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         drop(session);
-        unsafe {
-            self.win_tun.WintunCloseAdapter(self.handle);
-            if self.delete_driver {
-                self.win_tun.WintunDeleteDriver();
-            }
+        // SAFETY: self exclusively owns the live adapter handle, and the session
+        // was dropped above so no session can retain a dependency on the adapter.
+        unsafe { self.win_tun.WintunCloseAdapter(self.handle) };
+        if self.delete_driver {
+            // SAFETY: this is a parameterless Wintun DLL operation. The loaded
+            // function pointer was resolved when win_tun was constructed.
+            unsafe { self.win_tun.WintunDeleteDriver() };
         }
     }
 }
@@ -134,31 +138,38 @@ impl WinTunAdapter {
                 .session
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            unsafe {
-                let session_handle = self
-                    .win_tun
-                    .WintunStartSession(self.handle, self.ring_capacity);
-                if session_handle.is_null() {
-                    Err(io::Error::last_os_error())?;
-                }
-                let read_event_handle = self.win_tun.WintunGetReadWaitEvent(session_handle);
-                if read_event_handle.is_null() {
-                    self.win_tun.WintunEndSession(session_handle);
-                    Err(io::Error::last_os_error())?;
-                }
-
-                let wintun_session = WinTunSession {
-                    win_tun: self.win_tun.clone(),
-                    handle: session_handle,
-                    read_event: read_event_handle,
-                };
-                session.replace(wintun_session);
+            // SAFETY: self owns a live adapter handle and ring_capacity was
+            // range-validated by TunDevice construction.
+            let session_handle = unsafe {
+                self.win_tun
+                    .WintunStartSession(self.handle, self.ring_capacity)
+            };
+            if session_handle.is_null() {
+                return Err(io::Error::last_os_error());
             }
+            // SAFETY: session_handle was returned non-null by WintunStartSession
+            // and remains live until the WinTunSession below is dropped.
+            let read_event_handle = unsafe { self.win_tun.WintunGetReadWaitEvent(session_handle) };
+            if read_event_handle.is_null() {
+                // SAFETY: session_handle is the live session created above and has
+                // not yet been transferred into WinTunSession.
+                unsafe { self.win_tun.WintunEndSession(session_handle) };
+                return Err(io::Error::last_os_error());
+            }
+
+            let wintun_session = WinTunSession {
+                win_tun: self.win_tun.clone(),
+                handle: session_handle,
+                read_event: read_event_handle,
+            };
+            session.replace(wintun_session);
             self.state.enable();
         }
         Ok(())
     }
     fn version(&self) -> String {
+        // SAFETY: this parameterless call uses a function pointer resolved from
+        // the loaded Wintun DLL and retains no Rust memory.
         let version = unsafe { self.win_tun.WintunGetRunningDriverVersion() };
         let v = version.to_be_bytes();
         format!(
@@ -218,6 +229,11 @@ impl WinTunAdapter {
         }
         Err(io::Error::other("The interface has been disabled"))
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     fn wait_readable_interruptible(
         &self,
         interrupt_event: &OwnedHandle,
@@ -236,9 +252,9 @@ impl WinTunAdapter {
 
 impl Drop for WinTunSession {
     fn drop(&mut self) {
-        unsafe {
-            self.win_tun.WintunEndSession(self.handle);
-        }
+        // SAFETY: WinTunSession exclusively owns this live Wintun session handle,
+        // and Drop executes exactly once before the parent adapter is closed.
+        unsafe { self.win_tun.WintunEndSession(self.handle) };
     }
 }
 
@@ -311,8 +327,12 @@ impl WinTunSession {
         })?;
         let win_tun = &self.win_tun;
         let handle = self.handle;
+        // SAFETY: handle is the live session owned by self and packet_size is
+        // the checked u32 representation of the source slice length.
         let bytes_ptr = unsafe { win_tun.WintunAllocateSendPacket(handle, packet_size) };
         if bytes_ptr.is_null() {
+            // SAFETY: GetLastError has no pointer or lifetime preconditions and
+            // must be read immediately after the failed Wintun call.
             match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::WriteZero)),
                 ERROR_BUFFER_OVERFLOW => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
@@ -320,7 +340,11 @@ impl WinTunSession {
                 e => Err(io::Error::from_raw_os_error(e.cast_signed())),
             }
         } else {
+            // SAFETY: Wintun allocated bytes_ptr for exactly buf.len() writable
+            // bytes above; the source slice is initialized and non-overlapping.
             unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), bytes_ptr, buf.len()) };
+            // SAFETY: bytes_ptr is the outstanding send allocation returned for
+            // this live session and is handed back exactly once.
             unsafe { win_tun.WintunSendPacket(handle, bytes_ptr) };
             Ok(buf.len())
         }
@@ -337,10 +361,14 @@ impl WinTunSession {
 
         let win_tun = &self.win_tun;
         let handle = self.handle;
+        // SAFETY: handle is the live session owned by self and &mut size is
+        // writable storage for Wintun's synchronous size out-parameter.
         let ptr = unsafe { win_tun.WintunReceivePacket(handle, &raw mut size) };
 
         if ptr.is_null() {
             // Wintun returns ERROR_NO_MORE_ITEMS instead of blocking if packets are not available.
+            // SAFETY: GetLastError has no pointer or lifetime preconditions and
+            // must be read immediately after the failed receive call.
             return match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::UnexpectedEof)),
                 ERROR_NO_MORE_ITEMS => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
@@ -349,16 +377,32 @@ impl WinTunSession {
         }
         let size = size as usize;
         if size > dst_len {
+            // SAFETY: ptr is the outstanding receive packet returned for this
+            // live session and is released exactly once on this error path.
             unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "destination buffer too small",
             ));
         }
+        // SAFETY: size <= dst_len above, callers provide dst valid for dst_len
+        // writable bytes, and Wintun guarantees ptr references size packet bytes.
         unsafe { ptr::copy_nonoverlapping(ptr, dst, size) };
+        // SAFETY: ptr is the outstanding receive packet returned for this live
+        // session and has not been released on the success path yet.
         unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
         Ok(size)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     fn wait_readable_interruptible(
         &self,
         inner_event: &OwnedHandle,
@@ -406,11 +450,9 @@ impl WinTunSession {
     fn wait_readable(&self, inner_event: &OwnedHandle) -> io::Result<()> {
         //Wait on both the read handle and the shutdown handle so that we stop when requested
         let handles = [self.read_event, inner_event.as_raw_handle()];
-        let result = unsafe {
-            //SAFETY: We abide by the requirements of WaitForMultipleObjects, handles is a
-            //pointer to valid, aligned, stack memory
-            WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE)
-        };
+        // SAFETY: handles is a live stack array of two valid wait handles;
+        // WaitForMultipleObjects borrows the array synchronously and count matches.
+        let result = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
         match result {
             WAIT_FAILED => Err(io::Error::last_os_error()),
             _ => {
@@ -446,39 +488,49 @@ impl TunDevice {
             Err(io::Error::other("name too long"))?;
         }
 
-        unsafe {
-            let event = ffi::create_event()?;
+        let event = ffi::create_event()?;
 
-            let win_tun = wintun_raw::wintun::new(wintun_path).map_err(io::Error::other)?;
-            if wintun_log {
-                wintun_log::set_default_logger_if_unset(&win_tun);
-            }
-            let adapter = win_tun.WintunOpenAdapter(name_utf16.as_ptr());
-            if adapter.is_null() {
-                Err(io::Error::last_os_error())?;
-            }
-            let mut luid: wintun_raw::NET_LUID = std::mem::zeroed();
-            win_tun.WintunGetAdapterLUID(adapter, &raw mut luid);
-
-            let win_tun_adapter = WinTunAdapter {
-                win_tun: Arc::new(win_tun),
-                handle: adapter,
-                state: State::default(),
-                event,
-                ring_capacity,
-                session: RwLock::default(),
-                delete_driver,
-            };
-            let luid = std::mem::transmute::<wintun_raw::NET_LUID, NET_LUID_LH>(luid);
-            let index = ffi::luid_to_index(&luid)?;
-
-            let tun = Self {
-                index,
-                luid,
-                win_tun_adapter,
-            };
-            Ok(tun)
+        // SAFETY: loading a native DLL is an explicit trust boundary. The configured
+        // path is expected to name a Wintun DLL whose exported symbols have the ABI
+        // described by the generated bindings; the loader verifies required symbols.
+        let win_tun = unsafe { wintun_raw::wintun::new(wintun_path) }.map_err(io::Error::other)?;
+        if wintun_log {
+            wintun_log::set_default_logger_if_unset(&win_tun);
         }
+        // SAFETY: name_utf16 is NUL-terminated storage produced by encode_utf16 and
+        // remains live for the duration of the synchronous Wintun call.
+        let adapter = unsafe { win_tun.WintunOpenAdapter(name_utf16.as_ptr()) };
+        if adapter.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+
+        let mut raw_luid = std::mem::MaybeUninit::<wintun_raw::NET_LUID>::uninit();
+        // SAFETY: adapter was returned non-null above and raw_luid is writable
+        // storage for the NET_LUID out-parameter.
+        unsafe { win_tun.WintunGetAdapterLUID(adapter, raw_luid.as_mut_ptr()) };
+        // SAFETY: WintunGetAdapterLUID initializes the complete NET_LUID output.
+        let raw_luid = unsafe { raw_luid.assume_init() };
+        // SAFETY: NET_LUID's Value member is the canonical 64-bit representation
+        // initialized by WintunGetAdapterLUID above.
+        let luid_value = unsafe { raw_luid.Value };
+        let luid = NET_LUID_LH { Value: luid_value };
+
+        let win_tun_adapter = WinTunAdapter {
+            win_tun: Arc::new(win_tun),
+            handle: adapter,
+            state: State::default(),
+            event,
+            ring_capacity,
+            session: RwLock::default(),
+            delete_driver,
+        };
+        let index = ffi::luid_to_index(&luid)?;
+
+        Ok(Self {
+            index,
+            luid,
+            win_tun_adapter,
+        })
     }
     pub fn create(
         wintun_path: &str,
@@ -503,61 +555,66 @@ impl TunDevice {
         if description_utf16.len() > MAX_POOL {
             Err(io::Error::other("tunnel type too long"))?;
         }
-        unsafe {
-            let event = ffi::create_event()?;
+        let event = ffi::create_event()?;
 
-            let win_tun = wintun_raw::wintun::new(wintun_path).map_err(io::Error::other)?;
-            if wintun_log {
-                wintun_log::set_default_logger_if_unset(&win_tun);
+        // SAFETY: loading a native DLL is an explicit trust boundary. The configured
+        // path is expected to name a Wintun DLL whose exported symbols have the ABI
+        // described by the generated bindings; the loader verifies required symbols.
+        let win_tun = unsafe { wintun_raw::wintun::new(wintun_path) }.map_err(io::Error::other)?;
+        if wintun_log {
+            wintun_log::set_default_logger_if_unset(&win_tun);
+        }
+
+        let guid = guid.map(|guid| {
+            let guid = GUID::from_u128(guid);
+            wintun_raw::GUID {
+                Data1: guid.data1,
+                Data2: guid.data2,
+                Data3: guid.data3,
+                Data4: guid.data4,
             }
-            //SAFETY: guid is a unique integer so transmuting either all zeroes or the user's preferred
-            //guid to the wintun_raw guid type is safe and will allow the windows kernel to see our GUID
+        });
 
-            let guid = guid.map(|guid| {
-                let guid = GUID::from_u128(guid);
-                wintun_raw::GUID {
-                    Data1: guid.data1,
-                    Data2: guid.data2,
-                    Data3: guid.data3,
-                    Data4: guid.data4,
-                }
-            });
-
-            //SAFETY: the function is loaded from the wintun dll properly, we are providing valid
-            //pointers, and all the strings are correct null terminated UTF-16. This safety rationale
-            //applies for all Wintun* functions below
-            let adapter = win_tun.WintunCreateAdapter(
+        // SAFETY: both UTF-16 strings are NUL-terminated and remain live for the
+        // synchronous call; guid is either null or points to a live GUID value.
+        let adapter = unsafe {
+            win_tun.WintunCreateAdapter(
                 name_utf16.as_ptr(),
                 description_utf16.as_ptr(),
                 guid.as_ref().map_or(ptr::null(), |guid| guid),
-            );
-            if adapter.is_null() {
-                Err(io::Error::last_os_error())?;
-            }
-            let mut luid: wintun_raw::NET_LUID = std::mem::zeroed();
-            win_tun.WintunGetAdapterLUID(adapter, &raw mut luid);
-
-            let win_tun_adapter = WinTunAdapter {
-                win_tun: Arc::new(win_tun),
-                handle: adapter,
-                state: State::default(),
-                event,
-                ring_capacity,
-                session: RwLock::default(),
-                delete_driver,
-            };
-            // SAFETY: wintun_raw::NET_LUID and windows_sys::NET_LUID_LH are both
-            // 8-byte unions representing the same Windows NET_LUID_LH structure.
-            let luid = std::mem::transmute::<wintun_raw::NET_LUID, NET_LUID_LH>(luid);
-            let index = ffi::luid_to_index(&luid)?;
-
-            let tun = Self {
-                index,
-                luid,
-                win_tun_adapter,
-            };
-            Ok(tun)
+            )
+        };
+        if adapter.is_null() {
+            return Err(io::Error::last_os_error());
         }
+
+        let mut raw_luid = std::mem::MaybeUninit::<wintun_raw::NET_LUID>::uninit();
+        // SAFETY: adapter was returned non-null above and raw_luid is writable
+        // storage for the NET_LUID out-parameter.
+        unsafe { win_tun.WintunGetAdapterLUID(adapter, raw_luid.as_mut_ptr()) };
+        // SAFETY: WintunGetAdapterLUID initializes the complete NET_LUID output.
+        let raw_luid = unsafe { raw_luid.assume_init() };
+        // SAFETY: NET_LUID's Value member is the canonical 64-bit representation
+        // initialized by WintunGetAdapterLUID above.
+        let luid_value = unsafe { raw_luid.Value };
+        let luid = NET_LUID_LH { Value: luid_value };
+
+        let win_tun_adapter = WinTunAdapter {
+            win_tun: Arc::new(win_tun),
+            handle: adapter,
+            state: State::default(),
+            event,
+            ring_capacity,
+            session: RwLock::default(),
+            delete_driver,
+        };
+        let index = ffi::luid_to_index(&luid)?;
+
+        Ok(Self {
+            index,
+            luid,
+            win_tun_adapter,
+        })
     }
     pub fn luid(&self) -> NET_LUID_LH {
         self.luid

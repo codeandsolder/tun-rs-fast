@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the macOS select backend is a dedicated pipe/poll/fcntl libc FFI boundary"
+)]
+
 use crate::DeviceImpl;
 use bytes::buf::UninitSlice;
 use std::future::Future;
@@ -60,25 +65,28 @@ impl NonBlockingDevice {
     ) -> io::Result<()> {
         let fd = self.device.as_raw_fd();
         let event_fd = self.shutdown_event.as_event_fd();
-        let mut fds = Vec::with_capacity(if cancel_event.is_some() { 3 } else { 2 });
-        fds.push(libc::pollfd {
-            fd,
-            events: device_events,
-            revents: 0,
-        });
-        fds.push(libc::pollfd {
-            fd: event_fd,
-            events: libc::POLLIN,
-            revents: 0,
-        });
-        if let Some(cancel_event) = cancel_event {
-            fds.push(libc::pollfd {
-                fd: cancel_event,
+        let cancel_fd = cancel_event.unwrap_or(-1);
+        let mut fds = [
+            libc::pollfd {
+                fd,
+                events: device_events,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: event_fd,
                 events: libc::POLLIN,
                 revents: 0,
-            });
-        }
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+            },
+            libc::pollfd {
+                fd: cancel_fd,
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let nfds = if cancel_event.is_some() { 3 } else { 2 };
+        // SAFETY: fds is stack storage for three pollfd values; nfds selects only
+        // initialized live descriptors and poll borrows the array synchronously.
+        let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, -1) };
         if result < 0 {
             return Err(io::Error::last_os_error());
         }
@@ -88,7 +96,7 @@ impl NonBlockingDevice {
         if fds[1].revents & libc::POLLIN != 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "close"));
         }
-        if cancel_event.is_some() && fds[2].revents & libc::POLLIN != 0 {
+        if nfds == 3 && fds[2].revents & libc::POLLIN != 0 {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "cancel"));
         }
         if fds[0].revents & device_events != 0 {
@@ -102,12 +110,16 @@ struct EventFd(libc::c_int, libc::c_int);
 impl EventFd {
     fn new() -> io::Result<Self> {
         let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: fds is writable storage for exactly two descriptors; on
+        // success pipe initializes both entries synchronously.
         if unsafe { libc::pipe(fds.as_mut_ptr()) } == -1 {
             return Err(io::Error::last_os_error());
         }
         let read_fd = fds[0];
         let write_fd = fds[1];
-        if let Err(e) = set_pipe_fd_flags(read_fd).and_then(|_| set_pipe_fd_flags(write_fd)) {
+        if let Err(e) = set_pipe_fd_flags(read_fd).and_then(|()| set_pipe_fd_flags(write_fd)) {
+            // SAFETY: both descriptors were initialized by the successful pipe
+            // call above and ownership has not escaped this constructor.
             unsafe {
                 let _ = libc::close(read_fd);
                 let _ = libc::close(write_fd);
@@ -118,7 +130,9 @@ impl EventFd {
     }
     fn wake(&self) -> io::Result<()> {
         let buf: [u8; 8] = 2u64.to_ne_bytes();
-        let res = unsafe { libc::write(self.1, buf.as_ptr() as *const libc::c_void, buf.len()) };
+        // SAFETY: self.1 is the owned live pipe write descriptor and buf is
+        // readable for its full length for the synchronous write.
+        let res = unsafe { libc::write(self.1, buf.as_ptr().cast(), buf.len()) };
         if res == -1 {
             let err = io::Error::last_os_error();
             if err.kind() == io::ErrorKind::WouldBlock {
@@ -136,14 +150,16 @@ impl EventFd {
             events: libc::POLLIN,
             revents: 0,
         }];
-        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
-        let res = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
-        if res < 0 {
-            Err(io::Error::last_os_error())
-        } else if res == 0 {
-            Err(io::Error::from(io::ErrorKind::TimedOut))
-        } else {
-            Ok(())
+        let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let nfds = libc::nfds_t::try_from(fds.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow"))?;
+        // SAFETY: fds is a live one-element pollfd array and poll borrows it
+        // only for this synchronous call.
+        let res = unsafe { libc::poll(fds.as_mut_ptr(), nfds, timeout_ms) };
+        match res.cmp(&0) {
+            std::cmp::Ordering::Less => Err(io::Error::last_os_error()),
+            std::cmp::Ordering::Equal => Err(io::Error::from(io::ErrorKind::TimedOut)),
+            std::cmp::Ordering::Greater => Ok(()),
         }
     }
     fn as_event_fd(&self) -> libc::c_int {
@@ -152,6 +168,8 @@ impl EventFd {
 }
 
 fn set_pipe_fd_flags(fd: libc::c_int) -> io::Result<()> {
+    // SAFETY: fd is one of the live descriptors returned by pipe; fcntl only
+    // reads or updates descriptor flags and retains no pointer.
     unsafe {
         let flags = libc::fcntl(fd, libc::F_GETFL);
         if flags < 0 {
@@ -172,6 +190,8 @@ fn set_pipe_fd_flags(fd: libc::c_int) -> io::Result<()> {
 }
 impl Drop for EventFd {
     fn drop(&mut self) {
+        // SAFETY: EventFd exclusively owns both pipe descriptors and Drop runs
+        // once, so each descriptor is closed at most once.
         unsafe {
             let _ = libc::close(self.0);
             let _ = libc::close(self.1);
@@ -246,7 +266,7 @@ impl AsyncDevice {
             Poll::Ready(rs) => {
                 drop(guard);
                 match rs {
-                    Ok(_) => Poll::Ready(Ok(())),
+                    Ok(()) => Poll::Ready(Ok(())),
                     Err(e) => Poll::Ready(Err(e)),
                 }
             }
@@ -263,7 +283,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.poll_readable(cx)? {
-                Poll::Ready(_) => {}
+                Poll::Ready(()) => {}
                 Poll::Pending => {
                     return Poll::Pending;
                 }
@@ -282,7 +302,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.poll_readable(cx)? {
-                Poll::Ready(_) => {}
+                Poll::Ready(()) => {}
                 Poll::Pending => {
                     return Poll::Pending;
                 }
@@ -302,7 +322,7 @@ impl AsyncDevice {
         };
         match Pin::new(&mut task).poll(cx) {
             Poll::Ready(rs) => match rs {
-                Ok(_) => Poll::Ready(Ok(())),
+                Ok(()) => Poll::Ready(Ok(())),
                 Err(e) => Poll::Ready(Err(e)),
             },
             Poll::Pending => {
@@ -318,7 +338,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.poll_writable(cx)? {
-                Poll::Ready(_) => {}
+                Poll::Ready(()) => {}
                 Poll::Pending => {
                     return Poll::Pending;
                 }
@@ -440,7 +460,7 @@ impl Drop for CancelWaitGuard<'_> {
         if self.cancel_event_handle.wake().is_ok() {
             _ = self
                 .exit_event_handle
-                .wait_timeout(Duration::from_millis(1))
+                .wait_timeout(Duration::from_millis(1));
         }
     }
 }
