@@ -672,30 +672,19 @@ pub fn notify_change_key_value(
     notify_filter: u32,
     milliseconds: u32,
 ) -> io::Result<()> {
-    const INVALID_HANDLE_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE.cast();
-
     // SAFETY: optional security/name pointers are null; on success this creates
     // a new event handle owned by this function until CloseHandle below.
-    let event = match unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null()) } {
-        INVALID_HANDLE_VALUE => Err(io::Error::last_os_error()),
-        event => Ok(event),
-    }?;
+    let event = unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null()) };
+    if event.is_null() {
+        return Err(io::Error::last_os_error());
+    }
 
+    // SAFETY: key and event are live handles and the asynchronous notification
+    // writes only to event, which remains live through the wait.
+    let notify_status =
+        unsafe { RegNotifyChangeKeyValue(key, watch_subtree, notify_filter, event, TRUE) };
     let result =
-        // SAFETY: key and event are live handles and the asynchronous notification
-        // writes only to event, which remains live through the wait.
-        match unsafe { RegNotifyChangeKeyValue(key, watch_subtree, notify_filter, event, TRUE) } {
-            // SAFETY: event remains live until this synchronous wait completes.
-            0 => match unsafe { WaitForSingleObject(event, milliseconds) } {
-                0 => Ok(()),
-                0x102 => Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "Registry timed out",
-                )),
-                _ => Err(io::Error::last_os_error()),
-            },
-            _err => Err(io::Error::last_os_error()),
-        };
+        win_result(notify_status).and_then(|()| wait_for_single_object(event, milliseconds));
 
     // SAFETY: event was created successfully above and is closed exactly once.
     unsafe { CloseHandle(event) };
@@ -1078,8 +1067,8 @@ pub fn set_device_state(
 #[cfg(test)]
 mod wait_tests {
     use super::{
-        create_event, create_file, finite_wait_timeout_millis, set_event, wait_for_single_object,
-        win_result,
+        create_event, create_file, finite_wait_timeout_millis, notify_change_key_value, set_event,
+        wait_for_single_object, win_result,
     };
     use std::io;
     use std::os::windows::io::AsRawHandle;
@@ -1087,7 +1076,7 @@ mod wait_tests {
     use windows_sys::Win32::NetworkManagement::{
         IpHelper::ConvertInterfaceIndexToLuid, Ndis::NET_LUID_LH,
     };
-    use windows_sys::Win32::System::Threading::INFINITE;
+    use windows_sys::Win32::System::{Registry::REG_NOTIFY_CHANGE_LAST_SET, Threading::INFINITE};
 
     #[test]
     fn netio_status_error_uses_returned_status() -> io::Result<()> {
@@ -1138,6 +1127,27 @@ mod wait_tests {
         .ok_or_else(|| io::Error::other("CreateFileW failure returned a usable handle"))?;
 
         assert_eq!(error.kind(), io::ErrorKind::NotFound);
+        Ok(())
+    }
+
+    #[test]
+    fn registry_notify_returns_api_status_not_stale_last_error() -> io::Result<()> {
+        const STALE_LAST_ERROR: u32 = 0x1234;
+
+        // A null HKEY is invalid. Seed the thread's last-error slot with an
+        // unrelated value so the old implementation would report the sentinel
+        // instead of RegNotifyChangeKeyValue's returned status.
+        unsafe { windows_sys::Win32::Foundation::SetLastError(STALE_LAST_ERROR) };
+        let error =
+            notify_change_key_value(std::ptr::null_mut(), FALSE, REG_NOTIFY_CHANGE_LAST_SET, 0)
+                .err()
+                .ok_or_else(|| io::Error::other("invalid registry key unexpectedly succeeded"))?;
+
+        assert_ne!(
+            error.raw_os_error(),
+            Some(STALE_LAST_ERROR.cast_signed()),
+            "wrapper returned stale GetLastError instead of registry API status"
+        );
         Ok(())
     }
 
