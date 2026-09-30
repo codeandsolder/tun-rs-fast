@@ -55,7 +55,7 @@ use windows_sys::{
         System::{
             Com::StringFromGUID2,
             Registry::{RegNotifyChangeKeyValue, HKEY},
-            Threading::{CreateEventW, WaitForSingleObject, INFINITE},
+            Threading::{CreateEventW, WaitForSingleObject},
             IO::DeviceIoControl,
         },
     },
@@ -106,12 +106,19 @@ fn usize_to_i32(value: usize, what: &'static str) -> io::Result<i32> {
     })
 }
 
+#[cfg(any(
+    test,
+    feature = "interruptible",
+    feature = "async_tokio",
+    feature = "async_io"
+))]
 pub(crate) fn finite_wait_timeout_millis(duration: std::time::Duration) -> u32 {
     let whole_millis = duration.as_millis();
     let has_fraction = !duration.subsec_nanos().is_multiple_of(1_000_000);
     let rounded_up = whole_millis.saturating_add(u128::from(has_fraction));
-    let max_finite = u128::from(INFINITE - 1);
-    u32::try_from(rounded_up.min(max_finite)).unwrap_or(INFINITE - 1)
+    let max_finite = u128::from(windows_sys::Win32::System::Threading::INFINITE - 1);
+    u32::try_from(rounded_up.min(max_finite))
+        .unwrap_or(windows_sys::Win32::System::Threading::INFINITE - 1)
 }
 
 pub fn string_from_guid(guid: &GUID) -> io::Result<String> {

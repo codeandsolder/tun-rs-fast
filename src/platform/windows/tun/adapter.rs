@@ -207,6 +207,8 @@ fn dev_node_status(devinfo_data: &SP_DEVINFO_DATA) -> io::Result<CM_DEVNODE_STAT
     };
 
     if cr != CR_SUCCESS {
+        // SAFETY: CM_MapCrToWin32Err is a pure status-code conversion with no
+        // pointer or ownership preconditions.
         let code = unsafe { CM_MapCrToWin32Err(cr, ERROR_GEN_FAILURE) };
         return Err(io::Error::from_raw_os_error(code.cast_signed()));
     }

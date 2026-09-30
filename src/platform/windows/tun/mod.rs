@@ -252,9 +252,9 @@ impl WinTunAdapter {
 
 impl Drop for WinTunSession {
     fn drop(&mut self) {
-        unsafe {
-            self.win_tun.WintunEndSession(self.handle);
-        }
+        // SAFETY: WinTunSession exclusively owns this live Wintun session handle,
+        // and Drop executes exactly once before the parent adapter is closed.
+        unsafe { self.win_tun.WintunEndSession(self.handle) };
     }
 }
 
@@ -353,10 +353,14 @@ impl WinTunSession {
 
         let win_tun = &self.win_tun;
         let handle = self.handle;
+        // SAFETY: handle is the live session owned by self and &mut size is
+        // writable storage for Wintun's synchronous size out-parameter.
         let ptr = unsafe { win_tun.WintunReceivePacket(handle, &raw mut size) };
 
         if ptr.is_null() {
             // Wintun returns ERROR_NO_MORE_ITEMS instead of blocking if packets are not available.
+            // SAFETY: GetLastError has no pointer or lifetime preconditions and
+            // must be read immediately after the failed receive call.
             return match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::UnexpectedEof)),
                 ERROR_NO_MORE_ITEMS => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
@@ -365,16 +369,32 @@ impl WinTunSession {
         }
         let size = size as usize;
         if size > dst_len {
+            // SAFETY: ptr is the outstanding receive packet returned for this
+            // live session and is released exactly once on this error path.
             unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "destination buffer too small",
             ));
         }
+        // SAFETY: size <= dst_len above, callers provide dst valid for dst_len
+        // writable bytes, and Wintun guarantees ptr references size packet bytes.
         unsafe { ptr::copy_nonoverlapping(ptr, dst, size) };
+        // SAFETY: ptr is the outstanding receive packet returned for this live
+        // session and has not been released on the success path yet.
         unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
         Ok(size)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     fn wait_readable_interruptible(
         &self,
         inner_event: &OwnedHandle,
