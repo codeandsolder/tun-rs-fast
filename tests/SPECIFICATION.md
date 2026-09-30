@@ -28,6 +28,7 @@ When an external source and the implementation disagree, the implementation is t
 | Linux persistent-device offload state is correctly reset on reattach | **External:** Linux TUN offload ioctls + crate lifecycle contract | Dedicated privileged regression explicitly runs under CI rather than hiding behind `#[ignore]`. |
 | NetBSD TUN MTU is 576–1500 inclusive | **External:** NetBSD `sys/net/if_tun.c` (`SIOCSIFMTU`) and `if_tun.h` (`TUNMTU=1500`) | Native NetBSD privileged test accepts both boundaries and rejects 575/1501. |
 | Windows interface LUID/MTU/address configuration and error reporting use each API family's documented status model | **External:** Microsoft NetIO/IP Helper, Registry, Configuration Manager, and Win32 synchronization docs | Native Windows tests exercise live adapter identity/configuration; `netio_status_conversion_uses_the_returned_error_code` locks direct status-code translation rather than stale `GetLastError()` state. |
+| Windows TAP creation requires the external TAP-Windows driver | **External prerequisite:** project-supported TAP backend uses hardware ID `tap0901`; README documents TAP-Windows installation | Native `create_tap` validates a real TAP when the driver exists; when absent, only the backend's explicit `NotFound: No driver found` capability error is accepted. |
 
 ## Intentional tun-rs contracts
 

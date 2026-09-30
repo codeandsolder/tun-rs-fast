@@ -535,9 +535,12 @@ fn test_op() -> TestResult {
     target_os = "netbsd",
 ))]
 #[test]
-#[expect(
-    unsafe_code,
-    reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+#[cfg_attr(
+    unix,
+    expect(
+        unsafe_code,
+        reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+    )
 )]
 fn create_tun() -> TestResult {
     #[cfg(not(target_os = "macos"))]
@@ -572,9 +575,12 @@ fn create_tun() -> TestResult {
     target_os = "netbsd",
 ))]
 #[test]
-#[expect(
-    unsafe_code,
-    reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+#[cfg_attr(
+    all(unix, not(target_os = "macos")),
+    expect(
+        unsafe_code,
+        reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+    )
 )]
 fn create_tap() -> TestResult {
     #[cfg(not(target_os = "macos"))]
@@ -582,10 +588,25 @@ fn create_tap() -> TestResult {
     #[cfg(target_os = "macos")]
     let name = "feth12";
 
-    let device = DeviceBuilder::new()
+    let device_result = DeviceBuilder::new()
         .name(name)
         .layer(tun_rs::Layer::L2)
-        .build_sync()?;
+        .build_sync();
+    #[cfg(target_os = "windows")]
+    let device = match device_result {
+        Ok(device) => device,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && error.to_string() == "No driver found" =>
+        {
+            // TAP-Windows is an external prerequisite. Its absence is a valid
+            // environment state; the backend must report that state explicitly.
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(not(target_os = "windows"))]
+    let device = device_result?;
     let dev_name = device.name()?;
     assert_eq!(dev_name.as_str(), name);
     #[cfg(all(unix, not(target_os = "macos")))]
