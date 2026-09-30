@@ -49,51 +49,50 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
 
     let mut index = 0;
     let is_orphaned_adapter = loop {
-        match enum_device_info(dev_info, index) {
-            Some(ret) => {
-                let Ok(devinfo_data) = ret else {
-                    continue;
-                };
+        let Some(result) = enum_device_info(dev_info, index) else {
+            break false;
+        };
+        let Ok(devinfo_data) = result else {
+            index += 1;
+            continue;
+        };
 
-                unsafe {
-                    let mut ptype = mem::zeroed();
-                    let mut buf: [u8; mem::size_of::<OwningProcess>()] = mem::zeroed();
-                    let buffer_len = match u32::try_from(buf.len()) {
-                        Ok(len) => len,
-                        Err(_) => return false,
-                    };
+        unsafe {
+            let mut ptype = mem::zeroed();
+            let mut buf: [u8; mem::size_of::<OwningProcess>()] = mem::zeroed();
+            let buffer_len = match u32::try_from(buf.len()) {
+                Ok(len) => len,
+                Err(_) => return false,
+            };
 
-                    let ok = SetupDiGetDevicePropertyW(
-                        dev_info,
-                        &raw const devinfo_data,
-                        &DEVPKEY_Wintun_OwningProcess,
-                        &raw mut ptype,
-                        buf.as_mut_ptr(),
-                        buffer_len,
-                        ptr::null_mut(),
-                        0,
-                    );
+            let ok = SetupDiGetDevicePropertyW(
+                dev_info,
+                &raw const devinfo_data,
+                &DEVPKEY_Wintun_OwningProcess,
+                &raw mut ptype,
+                buf.as_mut_ptr(),
+                buffer_len,
+                ptr::null_mut(),
+                0,
+            );
 
-                    if ok != 0 && ptype == DEVPROP_TYPE_BINARY && {
-                        // SAFETY: buf is [u8] (alignment 1) but OwningProcess requires alignment 4.
-                        // Use read_unaligned to avoid UB from misaligned access.
-                        let owning_process =
-                            std::ptr::read_unaligned(buf.as_ptr().cast::<OwningProcess>());
-                        !process_is_stale(&owning_process)
-                    } {
-                        continue;
-                    }
-                }
-
-                let Ok(name) = get_device_name(dev_info, &devinfo_data) else {
-                    index += 1;
-                    continue;
-                };
-                if adapter_name == name {
-                    break true;
-                }
+            if ok != 0 && ptype == DEVPROP_TYPE_BINARY && {
+                // SAFETY: buf is [u8] (alignment 1) but OwningProcess requires alignment 4.
+                // Use read_unaligned to avoid UB from misaligned access.
+                let owning_process = std::ptr::read_unaligned(buf.as_ptr().cast::<OwningProcess>());
+                !process_is_stale(&owning_process)
+            } {
+                index += 1;
+                continue;
             }
-            None => break false,
+        }
+
+        let Ok(name) = get_device_name(dev_info, &devinfo_data) else {
+            index += 1;
+            continue;
+        };
+        if adapter_name == name {
+            break true;
         }
 
         index += 1;

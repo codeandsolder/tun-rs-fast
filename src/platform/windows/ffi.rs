@@ -110,6 +110,8 @@ pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
     let mut string = vec![0; 39];
     let capacity = usize_to_i32(string.len(), "GUID string buffer length")?;
 
+    // SAFETY: guid is a live GUID and string owns capacity writable UTF-16
+    // code units for the duration of this synchronous conversion.
     match unsafe { StringFromGUID2(guid, string.as_mut_ptr(), capacity) } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(decode_utf16(&string)),
@@ -118,7 +120,10 @@ pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
 
 pub fn alias_to_luid(alias: &str) -> io::Result<NET_LUID_LH> {
     let alias = encode_utf16(alias);
+    // SAFETY: NET_LUID_LH is a plain Win32 value type for which all-zero is a
+    // valid initialization state before the API fills the output.
     let mut luid = unsafe { mem::zeroed() };
+    // SAFETY: alias is NUL-terminated and live; luid is writable output storage.
     match unsafe { ConvertInterfaceAliasToLuid(alias.as_ptr(), &raw mut luid) } {
         0 => Ok(luid),
         _err => Err(io::Error::last_os_error()),
@@ -127,6 +132,7 @@ pub fn alias_to_luid(alias: &str) -> io::Result<NET_LUID_LH> {
 
 pub fn luid_to_index(luid: &NET_LUID_LH) -> io::Result<u32> {
     let mut index = 0;
+    // SAFETY: luid is a live input value and index is writable output storage.
     match unsafe { ConvertInterfaceLuidToIndex(luid, &raw mut index) } {
         0 => Ok(index),
         _err => Err(io::Error::last_os_error()),
@@ -134,7 +140,10 @@ pub fn luid_to_index(luid: &NET_LUID_LH) -> io::Result<u32> {
 }
 
 pub fn luid_to_guid(luid: &NET_LUID_LH) -> io::Result<GUID> {
+    // SAFETY: GUID is a plain Win32 value type and zero-initialization is valid
+    // before the conversion API overwrites the output.
     let mut guid = unsafe { mem::zeroed() };
+    // SAFETY: luid is live and guid is writable for the synchronous call.
     match unsafe { ConvertInterfaceLuidToGuid(luid, &raw mut guid) } {
         0 => Ok(guid),
         _err => Err(io::Error::last_os_error()),
@@ -144,12 +153,16 @@ pub fn luid_to_guid(luid: &NET_LUID_LH) -> io::Result<GUID> {
 pub fn luid_to_alias(luid: &NET_LUID_LH) -> io::Result<String> {
     // IF_MAX_STRING_SIZE + 1
     let mut alias = vec![0; 257];
+    // SAFETY: luid is live and alias provides the documented
+    // IF_MAX_STRING_SIZE + 1 writable UTF-16 code units.
     match unsafe { ConvertInterfaceLuidToAlias(luid, alias.as_mut_ptr(), alias.len()) } {
         0 => Ok(decode_utf16(&alias)),
         _err => Err(io::Error::last_os_error()),
     }
 }
 pub fn reset_event(handle: RawHandle) -> io::Result<()> {
+    // SAFETY: callers supply a live event handle owned elsewhere; ResetEvent does
+    // not take ownership and uses it only for the duration of the call.
     unsafe {
         if FALSE == ResetEvent(handle) {
             return Err(io::Error::last_os_error());
@@ -158,6 +171,8 @@ pub fn reset_event(handle: RawHandle) -> io::Result<()> {
     Ok(())
 }
 pub fn wait_for_single_object(handle: RawHandle, timeout: u32) -> io::Result<()> {
+    // SAFETY: callers supply a live waitable handle; WaitForSingleObject borrows
+    // the handle synchronously and does not alter its ownership.
     match unsafe { WaitForSingleObject(handle, timeout) } {
         WAIT_OBJECT_0 => Ok(()),
         WAIT_TIMEOUT => Err(io::Error::from(io::ErrorKind::TimedOut)),
@@ -168,6 +183,7 @@ pub fn wait_for_single_object(handle: RawHandle, timeout: u32) -> io::Result<()>
     }
 }
 pub fn set_event(handle: RawHandle) -> io::Result<()> {
+    // SAFETY: callers supply a live event handle; SetEvent only borrows it.
     unsafe {
         if FALSE == SetEvent(handle) {
             return Err(io::Error::last_os_error());
@@ -176,6 +192,9 @@ pub fn set_event(handle: RawHandle) -> io::Result<()> {
     Ok(())
 }
 pub fn create_event() -> io::Result<OwnedHandle> {
+    // SAFETY: CreateEventW is called with null optional security/name pointers.
+    // On success it returns a newly owned handle which is transferred exactly once
+    // into OwnedHandle.
     unsafe {
         let read_event_handle = CreateEventW(ptr::null_mut(), 1, 0, ptr::null_mut());
         if read_event_handle.is_null() {
@@ -193,6 +212,8 @@ pub fn create_file(
     flags_and_attributes: FILE_FLAGS_AND_ATTRIBUTES,
 ) -> io::Result<HANDLE> {
     let file_name = encode_utf16(file_name);
+    // SAFETY: file_name is NUL-terminated and all optional pointer parameters
+    // are null; the returned HANDLE is checked before being exposed.
     let handle = unsafe {
         CreateFileW(
             file_name.as_ptr(),
@@ -232,7 +253,9 @@ pub fn try_read_file(
 ) -> io::Result<u32> {
     let mut ret = 0;
     let buffer_len = usize_to_u32(buffer.len(), "ReadFile buffer length")?;
-    //https://www.cnblogs.com/linyilong3/archive/2012/05/03/2480451.html
+    // SAFETY: handle and io_overlapped must remain valid until the overlapped
+    // operation completes; the owning TAP layer guarantees that lifetime. buffer
+    // supplies buffer_len writable bytes for this submission.
     unsafe {
         if 0 == ReadFile(
             handle,
@@ -255,6 +278,8 @@ pub fn try_write_file(
 ) -> io::Result<u32> {
     let mut ret = 0;
     let buffer_len = usize_to_u32(buffer.len(), "WriteFile buffer length")?;
+    // SAFETY: handle and io_overlapped remain valid until completion, and
+    // buffer supplies buffer_len readable bytes for the submission.
     unsafe {
         if 0 == WriteFile(
             handle,
@@ -280,6 +305,8 @@ fn error_map() -> io::Error {
 
 pub fn try_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
     let mut ret = 0;
+    // SAFETY: handle owns the pending I/O represented by the live OVERLAPPED;
+    // ret is writable storage for the transferred-byte count.
     unsafe {
         if 0 == GetOverlappedResult(handle, io_overlapped, &raw mut ret, 0) {
             let err = io::Error::last_os_error();
@@ -294,6 +321,8 @@ pub fn try_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Resu
     }
 }
 pub fn cancel_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
+    // SAFETY: the OVERLAPPED belongs to handle and remains live while cancellation
+    // is requested and completion is subsequently awaited.
     unsafe {
         CancelIoEx(handle, io_overlapped);
         wait_io_overlapped(handle, io_overlapped)
@@ -302,6 +331,8 @@ pub fn cancel_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::R
 
 pub fn wait_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
     let mut ret = 0;
+    // SAFETY: io_overlapped belongs to handle and remains live until the wait
+    // completes; ret is valid writable result storage.
     unsafe {
         if 0 == GetOverlappedResult(handle, io_overlapped, &raw mut ret, 1) {
             Err(io::Error::last_os_error())
@@ -312,6 +343,8 @@ pub fn wait_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Res
 }
 
 pub fn create_device_info_list(guid: &GUID) -> io::Result<HDEVINFO> {
+    // SAFETY: guid is live and the optional parent window handle is null.
+    // SetupAPI returns a new device-info-set handle without borrowing Rust memory.
     match unsafe { SetupDiCreateDeviceInfoList(guid, ptr::null_mut()) } {
         -1 => Err(io::Error::last_os_error()),
         devinfo => Ok(devinfo),
@@ -319,6 +352,8 @@ pub fn create_device_info_list(guid: &GUID) -> io::Result<HDEVINFO> {
 }
 
 pub fn get_class_devs(guid: &GUID, flags: u32) -> io::Result<HDEVINFO> {
+    // SAFETY: guid is live; optional enumerator/window pointers are null, and
+    // SetupAPI returns an owned device-info-set handle on success.
     match unsafe { SetupDiGetClassDevsW(guid, ptr::null(), ptr::null_mut(), flags) } {
         -1 => Err(io::Error::last_os_error()),
         devinfo => Ok(devinfo),
@@ -326,6 +361,7 @@ pub fn get_class_devs(guid: &GUID, flags: u32) -> io::Result<HDEVINFO> {
 }
 
 pub fn destroy_device_info_list(devinfo: HDEVINFO) -> io::Result<()> {
+    // SAFETY: devinfo is an owned SetupAPI device-info-set handle released once.
     match unsafe { SetupDiDestroyDeviceInfoList(devinfo) } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
@@ -341,6 +377,8 @@ pub fn class_name_from_guid(guid: &GUID) -> io::Result<String> {
     })?;
     let mut class_name = vec![0; class_name_capacity];
     let class_name_len = usize_to_u32(class_name.len(), "class-name buffer length")?;
+    // SAFETY: guid is live and class_name provides class_name_len writable
+    // UTF-16 code units; the optional required-size pointer is null.
     match unsafe {
         SetupDiClassNameFromGuidW(
             guid,
@@ -361,10 +399,14 @@ pub fn create_device_info(
     device_description: &str,
     creation_flags: u32,
 ) -> io::Result<SP_DEVINFO_DATA> {
+    // SAFETY: SP_DEVINFO_DATA is a C POD output structure; zeroed state is valid
+    // before cbSize is initialized for SetupAPI.
     let mut devinfo_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
     devinfo_data.cbSize = usize_to_u32(mem::size_of_val(&devinfo_data), "SP_DEVINFO_DATA size")?;
     let device_name = encode_utf16(device_name);
     let device_description = encode_utf16(device_description);
+    // SAFETY: devinfo is live; both UTF-16 strings are NUL-terminated, guid is
+    // live, and devinfo_data is correctly sized writable output storage.
     match unsafe {
         SetupDiCreateDeviceInfoW(
             devinfo,
@@ -382,6 +424,8 @@ pub fn create_device_info(
 }
 
 pub fn set_selected_device(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io::Result<()> {
+    // SAFETY: devinfo and devinfo_data belong to the same live SetupAPI set and
+    // are borrowed only for this synchronous selection call.
     match unsafe { SetupDiSetSelectedDevice(devinfo, std::ptr::from_ref(devinfo_data).cast()) } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
@@ -400,6 +444,8 @@ pub fn set_device_registry_property(
         .checked_mul(mem::size_of::<u16>())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "registry value too large"))?;
     let value_bytes = usize_to_u32(value_bytes, "registry value byte length")?;
+    // SAFETY: devinfo/devinfo_data identify a live device; value is a live
+    // value_bytes-long UTF-16 buffer borrowed synchronously by SetupAPI.
     match unsafe {
         SetupDiSetDeviceRegistryPropertyW(
             devinfo,
@@ -420,7 +466,9 @@ pub fn get_device_registry_property(
     property: u32,
 ) -> io::Result<String> {
     let mut required_size: u32 = 0;
-    // First call to get the required buffer size
+    // First call to get the required buffer size.
+    // SAFETY: devinfo/devinfo_data are live and required_size is writable output;
+    // the data buffer is intentionally null for this size query.
     unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             devinfo,
@@ -449,6 +497,8 @@ pub fn get_device_registry_property(
             )
         })?
     ];
+    // SAFETY: value is allocated from the size returned by the first call and
+    // remains writable/live for the synchronous property read.
     match unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             devinfo,
@@ -470,6 +520,8 @@ pub fn build_driver_info_list(
     devinfo_data: &mut SP_DEVINFO_DATA,
     driver_type: u32,
 ) -> io::Result<()> {
+    // SAFETY: devinfo_data belongs to live devinfo; SetupAPI borrows both for
+    // this synchronous list-construction call.
     match unsafe {
         SetupDiBuildDriverInfoList(
             devinfo,
@@ -487,6 +539,8 @@ pub fn destroy_driver_info_list(
     devinfo_data: &SP_DEVINFO_DATA,
     driver_type: u32,
 ) -> io::Result<()> {
+    // SAFETY: this releases the driver-info list associated with the live
+    // devinfo/devinfo_data pair; neither pointer escapes the call.
     match unsafe {
         SetupDiDestroyDriverInfoList(
             devinfo,
@@ -504,6 +558,8 @@ pub fn get_driver_info_detail(
     devinfo_data: &SP_DEVINFO_DATA,
     driver_data: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<SP_DRVINFO_DETAIL_DATA_W2> {
+    // SAFETY: this is a C-layout output buffer; zeroed trailing storage is valid
+    // before cbSize is populated and SetupAPI fills the detail record.
     let mut drvinfo_detail: SP_DRVINFO_DETAIL_DATA_W2 = unsafe { mem::zeroed() };
     drvinfo_detail.cbSize = usize_to_u32(
         mem::size_of::<SP_DRVINFO_DETAIL_DATA_W>(),
@@ -514,6 +570,8 @@ pub fn get_driver_info_detail(
         "driver detail buffer size",
     )?;
 
+    // SAFETY: all SetupAPI records belong to the same live device-info set and
+    // drvinfo_detail is a correctly sized writable output buffer.
     match unsafe {
         SetupDiGetDriverInfoDetailW(
             devinfo,
@@ -534,6 +592,8 @@ pub fn set_selected_driver(
     devinfo_data: &SP_DEVINFO_DATA,
     driver_data: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<()> {
+    // SAFETY: devinfo_data and driver_data both originate from live devinfo and
+    // are borrowed synchronously to select that driver.
     match unsafe {
         SetupDiSetSelectedDriverW(
             devinfo,
@@ -551,6 +611,8 @@ pub fn call_class_installer(
     devinfo_data: &SP_DEVINFO_DATA,
     install_function: u32,
 ) -> io::Result<()> {
+    // SAFETY: devinfo_data belongs to live devinfo; the installer code is passed
+    // through exactly as required by SetupAPI and no pointer escapes.
     match unsafe {
         SetupDiCallClassInstaller(
             install_function,
@@ -573,6 +635,8 @@ pub fn open_dev_reg_key(
 ) -> io::Result<HKEY> {
     const INVALID_KEY_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE.cast();
 
+    // SAFETY: devinfo_data belongs to live devinfo; SetupAPI borrows it and
+    // returns a registry handle whose ownership is transferred to the caller.
     match unsafe {
         SetupDiOpenDevRegKey(
             devinfo,
@@ -596,13 +660,18 @@ pub fn notify_change_key_value(
 ) -> io::Result<()> {
     const INVALID_HANDLE_VALUE: HKEY = windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE.cast();
 
+    // SAFETY: optional security/name pointers are null; on success this creates
+    // a new event handle owned by this function until CloseHandle below.
     let event = match unsafe { CreateEventW(ptr::null_mut(), FALSE, FALSE, ptr::null()) } {
         INVALID_HANDLE_VALUE => Err(io::Error::last_os_error()),
         event => Ok(event),
     }?;
 
     let result =
+        // SAFETY: key and event are live handles and the asynchronous notification
+        // writes only to event, which remains live through the wait.
         match unsafe { RegNotifyChangeKeyValue(key, watch_subtree, notify_filter, event, TRUE) } {
+            // SAFETY: event remains live until this synchronous wait completes.
             0 => match unsafe { WaitForSingleObject(event, milliseconds) } {
                 0 => Ok(()),
                 0x102 => Err(io::Error::new(
@@ -614,6 +683,7 @@ pub fn notify_change_key_value(
             _err => Err(io::Error::last_os_error()),
         };
 
+    // SAFETY: event was created successfully above and is closed exactly once.
     unsafe { CloseHandle(event) };
 
     result
@@ -625,12 +695,16 @@ pub fn enum_driver_info(
     driver_type: u32,
     member_index: u32,
 ) -> Option<io::Result<SP_DRVINFO_DATA_V2_W>> {
+    // SAFETY: SP_DRVINFO_DATA_V2_W is a C POD output structure; zeroed state is
+    // valid before cbSize is initialized for SetupAPI.
     let mut driver_data: SP_DRVINFO_DATA_V2_W = unsafe { mem::zeroed() };
     driver_data.cbSize =
         match usize_to_u32(mem::size_of_val(&driver_data), "SP_DRVINFO_DATA_V2_W size") {
             Ok(size) => size,
             Err(error) => return Some(Err(error)),
         };
+    // SAFETY: devinfo_data belongs to live devinfo and driver_data is correctly
+    // sized writable storage for one enumerated record.
     match unsafe {
         SetupDiEnumDriverInfoW(
             devinfo,
@@ -640,6 +714,8 @@ pub fn enum_driver_info(
             &raw mut driver_data,
         )
     } {
+        // SAFETY: GetLastError has no pointer preconditions and is read immediately
+        // after the failed SetupAPI enumeration call.
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
         0 => Some(Err(io::Error::last_os_error())),
         _ => Some(Ok(driver_data)),
@@ -650,6 +726,8 @@ pub fn enum_device_info(
     devinfo: HDEVINFO,
     member_index: u32,
 ) -> Option<io::Result<SP_DEVINFO_DATA>> {
+    // SAFETY: SP_DEVINFO_DATA is a C POD output structure; zeroed state is valid
+    // before cbSize is initialized for SetupAPI.
     let mut devinfo_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
     devinfo_data.cbSize =
         match usize_to_u32(mem::size_of_val(&devinfo_data), "SP_DEVINFO_DATA size") {
@@ -657,7 +735,11 @@ pub fn enum_device_info(
             Err(error) => return Some(Err(error)),
         };
 
+    // SAFETY: devinfo is live and devinfo_data is correctly sized writable
+    // storage for this synchronous enumeration call.
     match unsafe { SetupDiEnumDeviceInfo(devinfo, member_index, &raw mut devinfo_data) } {
+        // SAFETY: GetLastError has no pointer preconditions and is read immediately
+        // after the failed SetupAPI enumeration call.
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
         0 => Some(Err(io::Error::last_os_error())),
         _ => Some(Ok(devinfo_data)),
@@ -673,6 +755,8 @@ pub fn device_io_control(
     let mut junk = 0;
     let in_size = usize_to_u32(mem::size_of_val(in_buffer), "DeviceIoControl input size")?;
     let out_size = usize_to_u32(mem::size_of_val(out_buffer), "DeviceIoControl output size")?;
+    // SAFETY: handle is live; input/output pointers point to in_size/out_size
+    // bytes of live Copy values, and the call is synchronous because OVERLAPPED is null.
     match unsafe {
         DeviceIoControl(
             handle,
@@ -694,6 +778,8 @@ pub fn get_mtu_by_index(index: u32, is_v4: bool) -> io::Result<u32> {
     // https://learn.microsoft.com/en-us/windows/win32/api/netioapi/nf-netioapi-getipinterfacetable#examples
     let mut if_table: *mut MIB_IPINTERFACE_TABLE = ptr::null_mut();
     let mut mtu = None;
+    // SAFETY: if_table is writable pointer storage; on success Windows returns a
+    // table allocation valid until FreeMibTable, and row reads stay within NumEntries.
     unsafe {
         if GetIpInterfaceTable(if is_v4 { AF_INET } else { AF_INET6 }, &raw mut if_table)
             != NO_ERROR
@@ -752,6 +838,8 @@ pub fn set_interface_metric(index: u32, metric: u32) -> io::Result<()> {
             InterfaceIndex: index,
             ..Default::default()
         };
+        // SAFETY: row contains a valid family/index key and writable storage for
+        // this synchronous IP Helper query.
         win_result(unsafe { GetIpInterfaceEntry(&raw mut row) })?;
 
         row.Metric = metric;
@@ -759,6 +847,8 @@ pub fn set_interface_metric(index: u32, metric: u32) -> io::Result<()> {
         // `GetIpInterfaceEntry` may return a `SitePrefixLength` that
         // `SetIpInterfaceEntry` rejects when writing the row back.
         row.SitePrefixLength = 0;
+        // SAFETY: row was populated by GetIpInterfaceEntry and remains live for
+        // this synchronous IP Helper update.
         win_result(unsafe { SetIpInterfaceEntry(&raw mut row) })?;
     }
     Ok(())
@@ -771,6 +861,8 @@ pub fn set_interface_mtu(index: u32, mtu: u32, is_v4: bool) -> io::Result<()> {
         InterfaceIndex: index,
         ..Default::default()
     };
+    // SAFETY: row contains a valid family/index key and writable storage for
+    // this synchronous IP Helper query.
     win_result(unsafe { GetIpInterfaceEntry(&raw mut row) })?;
 
     row.NlMtu = mtu;
@@ -778,6 +870,8 @@ pub fn set_interface_mtu(index: u32, mtu: u32, is_v4: bool) -> io::Result<()> {
     // rejects (notably for IPv4); reset it to 0 before writing back. This is the
     // conventional workaround and is harmless for IPv6, where site prefixes are unused.
     row.SitePrefixLength = 0;
+    // SAFETY: row was populated by GetIpInterfaceEntry and remains live for
+    // this synchronous IP Helper update.
     win_result(unsafe { SetIpInterfaceEntry(&raw mut row) })
 }
 
@@ -790,11 +884,13 @@ pub fn add_address(
     gateway: Option<IpAddr>,
 ) -> io::Result<()> {
     let mut row = MIB_UNICASTIPADDRESS_ROW::default();
+    // SAFETY: row is live writable storage for the documented initializer.
     unsafe { InitializeUnicastIpAddressEntry(&raw mut row) };
     row.InterfaceIndex = index;
     row.Address = sockaddr_inet_from_ip(address);
     row.OnLinkPrefixLength = prefix;
 
+    // SAFETY: row is fully initialized and borrowed read-only for this synchronous create call.
     let code = unsafe { CreateUnicastIpAddressEntry(&raw const row) };
     if code != ERROR_OBJECT_ALREADY_EXISTS {
         win_result(code)?;
@@ -802,6 +898,7 @@ pub fn add_address(
 
     if let Some(gateway) = gateway {
         let mut route = MIB_IPFORWARD_ROW2::default();
+        // SAFETY: route is live writable storage for the documented initializer.
         unsafe { InitializeIpForwardEntry(&raw mut route) };
         route.InterfaceIndex = index;
         // Install a default route (0.0.0.0/0 or ::/0) via `gateway`. `DestinationPrefix`
@@ -824,6 +921,7 @@ pub fn add_address(
         route.Protocol = MIB_IPPROTO_NETMGMT;
         route.Origin = NlroManual;
 
+        // SAFETY: route fields are initialized and borrowed read-only for this synchronous create call.
         let code = unsafe { CreateIpForwardEntry2(&raw const route) };
         if code != ERROR_OBJECT_ALREADY_EXISTS {
             win_result(code)?;
@@ -835,9 +933,11 @@ pub fn add_address(
 /// Removes a single unicast address from the interface.
 pub fn remove_address(index: u32, address: IpAddr) -> io::Result<()> {
     let mut row = MIB_UNICASTIPADDRESS_ROW::default();
+    // SAFETY: row is live writable storage for the documented initializer.
     unsafe { InitializeUnicastIpAddressEntry(&raw mut row) };
     row.InterfaceIndex = index;
     row.Address = sockaddr_inet_from_ip(address);
+    // SAFETY: row identifies the address to delete and is borrowed read-only.
     win_result(unsafe { DeleteUnicastIpAddressEntry(&raw const row) })
 }
 
@@ -845,9 +945,12 @@ pub fn remove_address(index: u32, address: IpAddr) -> io::Result<()> {
 fn clear_addresses(index: u32, is_v4: bool) -> io::Result<()> {
     let family = if is_v4 { AF_INET } else { AF_INET6 };
     let mut table: *mut MIB_UNICASTIPADDRESS_TABLE = ptr::null_mut();
+    // SAFETY: table is writable pointer storage; success returns a Windows-owned allocation valid until FreeMibTable.
     win_result(unsafe { GetUnicastIpAddressTable(family, &raw mut table) })?;
 
     // Copy out the rows we want to delete before freeing the table.
+    // SAFETY: successful GetUnicastIpAddressTable returned NumEntries contiguous rows
+    // in storage that remains live until FreeMibTable below.
     let rows: Vec<MIB_UNICASTIPADDRESS_ROW> = unsafe {
         std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize)
     }
@@ -855,9 +958,11 @@ fn clear_addresses(index: u32, is_v4: bool) -> io::Result<()> {
     .filter(|row| row.InterfaceIndex == index)
     .copied()
     .collect();
+    // SAFETY: table is the Windows allocation returned above and is freed exactly once after rows are copied.
     unsafe { FreeMibTable(table as _) };
 
     for row in &rows {
+        // SAFETY: row is an owned copy from the valid Windows table and is borrowed read-only for deletion.
         win_result(unsafe { DeleteUnicastIpAddressEntry(row) })?;
     }
     // Also drop the gateway/default route(s) installed by `add_address` for this family,
@@ -876,9 +981,12 @@ fn clear_addresses(index: u32, is_v4: bool) -> io::Result<()> {
 fn clear_default_routes(index: u32, is_v4: bool) -> io::Result<()> {
     let family = if is_v4 { AF_INET } else { AF_INET6 };
     let mut table: *mut MIB_IPFORWARD_TABLE2 = ptr::null_mut();
+    // SAFETY: table is writable pointer storage; success returns a Windows-owned route table valid until FreeMibTable.
     win_result(unsafe { GetIpForwardTable2(family, &raw mut table) })?;
 
     // Copy out this interface's default routes before freeing the table.
+    // SAFETY: successful GetIpForwardTable2 returned NumEntries contiguous rows
+    // in storage that remains live until FreeMibTable below.
     let rows: Vec<MIB_IPFORWARD_ROW2> = unsafe {
         std::slice::from_raw_parts((*table).Table.as_ptr(), (*table).NumEntries as usize)
     }
@@ -886,9 +994,11 @@ fn clear_default_routes(index: u32, is_v4: bool) -> io::Result<()> {
     .filter(|row| row.InterfaceIndex == index && row.DestinationPrefix.PrefixLength == 0)
     .copied()
     .collect();
+    // SAFETY: table is the Windows allocation returned above and is freed exactly once after rows are copied.
     unsafe { FreeMibTable(table as _) };
 
     for row in &rows {
+        // SAFETY: row is an owned copy from the valid route table and is borrowed read-only for deletion.
         win_result(unsafe { DeleteIpForwardEntry2(row) })?;
     }
     Ok(())
@@ -934,6 +1044,8 @@ pub fn set_device_state(
     // `ClassInstallHeader` is the first field, so the struct pointer doubles as
     // the header pointer. Cast from the whole struct to avoid taking a reference
     // to a field of a `packed` struct (illegal on x86).
+    // SAFETY: devinfo_data belongs to live devinfo; params begins with the required
+    // class-install header and params_size matches the full structure.
     let ok = unsafe {
         SetupDiSetClassInstallParamsW(
             devinfo,

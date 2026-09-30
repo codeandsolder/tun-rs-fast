@@ -128,12 +128,18 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
     };
     if ok == 0 {
         let err = io::Error::last_os_error();
-        if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+        if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed()) {
             return Err(err);
         }
     }
 
-    let mut buf: Vec<u16> = vec![0; (required_size / 2) as usize];
+    let buffer_len = usize::try_from(required_size / 2).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device property size exceeds usize",
+        )
+    })?;
+    let mut buf: Vec<u16> = vec![0; buffer_len];
 
     let ok = unsafe {
         SetupDiGetDevicePropertyW(
@@ -155,8 +161,11 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
 }
 
 fn is_windows_seven() -> bool {
+    let Ok(version_info_size) = u32::try_from(mem::size_of::<OSVERSIONINFOA>()) else {
+        return false;
+    };
     let mut info = OSVERSIONINFOA {
-        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOA>() as u32,
+        dwOSVersionInfoSize: version_info_size,
         dwMajorVersion: 0,
         dwMinorVersion: 0,
         dwBuildNumber: 0,
