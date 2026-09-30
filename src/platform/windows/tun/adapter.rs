@@ -120,10 +120,10 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
             devinfo,
             devinfo_data,
             &DEVPKEY_Wintun_Name,
-            &mut prop_type,
+            &raw mut prop_type,
             ptr::null_mut(),
             0,
-            &mut required_size,
+            &raw mut required_size,
             0,
         )
     };
@@ -141,10 +141,10 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
             devinfo,
             devinfo_data,
             &DEVPKEY_Wintun_Name,
-            &mut prop_type,
-            buf.as_mut_ptr() as *mut u8,
+            &raw mut prop_type,
+            buf.as_mut_ptr().cast::<u8>(),
             required_size,
-            &mut required_size,
+            &raw mut required_size,
             0,
         )
     };
@@ -166,7 +166,7 @@ fn is_windows_seven() -> bool {
     };
 
     unsafe {
-        if GetVersionExA(&mut info as *mut _) == 0 {
+        if GetVersionExA(&raw mut info) == 0 {
             return false;
         }
     }
@@ -180,8 +180,8 @@ fn dev_node_status(devinfo_data: &SP_DEVINFO_DATA) -> io::Result<CM_DEVNODE_STAT
 
     let cr = unsafe {
         CM_Get_DevNode_Status(
-            &mut pulstatus,
-            &mut pulproblemnumber,
+            &raw mut pulstatus,
+            &raw mut pulproblemnumber,
             devinfo_data.DevInst,
             0,
         )

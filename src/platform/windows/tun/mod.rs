@@ -134,12 +134,12 @@ impl WinTunAdapter {
                     .win_tun
                     .WintunStartSession(self.handle, self.ring_capacity);
                 if session_handle.is_null() {
-                    Err(io::Error::last_os_error())?
+                    Err(io::Error::last_os_error())?;
                 }
                 let read_event_handle = self.win_tun.WintunGetReadWaitEvent(session_handle);
                 if read_event_handle.is_null() {
                     self.win_tun.WintunEndSession(session_handle);
-                    Err(io::Error::last_os_error())?
+                    Err(io::Error::last_os_error())?;
                 }
 
                 let wintun_session = WinTunSession {
@@ -332,7 +332,7 @@ impl WinTunSession {
 
         let win_tun = &self.win_tun;
         let handle = self.handle;
-        let ptr = unsafe { win_tun.WintunReceivePacket(handle, &mut size as *mut u32) };
+        let ptr = unsafe { win_tun.WintunReceivePacket(handle, &raw mut size) };
 
         if ptr.is_null() {
             // Wintun returns ERROR_NO_MORE_ITEMS instead of blocking if packets are not available.
@@ -369,11 +369,9 @@ impl WinTunSession {
             //pointer to valid, aligned, stack memory
             WaitForMultipleObjects(
                 3,
-                &handles as _,
+                handles.as_ptr(),
                 0,
-                timeout
-                    .map(|t| t.as_millis().min(INFINITE as _) as u32)
-                    .unwrap_or(INFINITE),
+                timeout.map_or(INFINITE, |t| t.as_millis().min(INFINITE.into()) as u32),
             )
         };
         match result {
@@ -404,7 +402,7 @@ impl WinTunSession {
         let result = unsafe {
             //SAFETY: We abide by the requirements of WaitForMultipleObjects, handles is a
             //pointer to valid, aligned, stack memory
-            WaitForMultipleObjects(2, &handles as _, 0, INFINITE)
+            WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE)
         };
         match result {
             WAIT_FAILED => Err(io::Error::last_os_error()),
@@ -450,10 +448,10 @@ impl TunDevice {
             }
             let adapter = win_tun.WintunOpenAdapter(name_utf16.as_ptr());
             if adapter.is_null() {
-                Err(io::Error::last_os_error())?
+                Err(io::Error::last_os_error())?;
             }
             let mut luid: wintun_raw::NET_LUID = std::mem::zeroed();
-            win_tun.WintunGetAdapterLUID(adapter, &mut luid as *mut wintun_raw::NET_LUID);
+            win_tun.WintunGetAdapterLUID(adapter, &raw mut luid);
 
             let win_tun_adapter = WinTunAdapter {
                 win_tun: Arc::new(win_tun),
@@ -474,8 +472,8 @@ impl TunDevice {
             let index = ffi::luid_to_index(&luid)?;
 
             let tun = Self {
-                luid,
                 index,
+                luid,
                 win_tun_adapter,
             };
             Ok(tun)
@@ -533,10 +531,10 @@ impl TunDevice {
                 guid.as_ref().map_or(ptr::null(), |guid| guid),
             );
             if adapter.is_null() {
-                Err(io::Error::last_os_error())?
+                Err(io::Error::last_os_error())?;
             }
             let mut luid: wintun_raw::NET_LUID = std::mem::zeroed();
-            win_tun.WintunGetAdapterLUID(adapter, &mut luid as *mut wintun_raw::NET_LUID);
+            win_tun.WintunGetAdapterLUID(adapter, &raw mut luid);
 
             let win_tun_adapter = WinTunAdapter {
                 win_tun: Arc::new(win_tun),
@@ -553,8 +551,8 @@ impl TunDevice {
             let index = ffi::luid_to_index(&luid)?;
 
             let tun = Self {
-                luid,
                 index,
+                luid,
                 win_tun_adapter,
             };
             Ok(tun)

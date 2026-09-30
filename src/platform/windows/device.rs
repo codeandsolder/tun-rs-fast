@@ -84,7 +84,7 @@ impl DeviceImpl {
                     Ok(tun_device) => break tun_device,
                     Err(e) => {
                         if attempts > 3 {
-                            Err(e)?
+                            Err(e)?;
                         }
                         attempts += 1;
                     }
@@ -109,7 +109,7 @@ impl DeviceImpl {
                     } else if !config.reuse_dev.unwrap_or(true) {
                         Err(io::Error::other(format!(
                             "The network adapter [{name}] already exists."
-                        )))?
+                        )))?;
                     }
                     let tap =
                         TapDevice::open(HARDWARE_ID, name, persist, config.mac_address.as_ref())?;
@@ -118,7 +118,7 @@ impl DeviceImpl {
                 let tap = TapDevice::create(HARDWARE_ID, persist, config.mac_address.as_ref())?;
                 if let Err(e) = tap.set_name(name) {
                     if config.dev_name.is_some() {
-                        Err(e)?
+                        Err(e)?;
                     }
                 }
                 break tap;
@@ -276,7 +276,7 @@ impl DeviceImpl {
         }
         netsh::set_interface_name(&name, value)
     }
-    /// Retrieves the interface index (if_index) of the device.
+    /// Retrieves the interface index (`if_index`) of the device.
     ///
     /// This is used for various network configuration commands.
     pub fn if_index(&self) -> io::Result<u32> {
@@ -345,7 +345,10 @@ impl DeviceImpl {
             self.if_index_impl()?,
             address.ipv4()?.into(),
             netmask.prefix()?,
-            destination.map(|v| v.ipv4()).transpose()?.map(|v| v.into()),
+            destination
+                .map(|v| v.ipv4())
+                .transpose()?
+                .map(std::convert::Into::into),
         )
     }
     /// Add IPv4 network address and netmask to the interface.
@@ -479,7 +482,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu as _, true)
+        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu.into(), true)
     }
     /// Sets the MTU for the device (IPv6).
     pub fn set_mtu_v6(&self, mtu: u16) -> io::Result<()> {
@@ -487,7 +490,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu as _, false)
+        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu.into(), false)
     }
     /// Sets the MAC address for the device.
     ///
@@ -553,7 +556,7 @@ impl DeviceImpl {
             .lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        super::ffi::set_interface_metric(self.if_index_impl()?, metric as u32)
+        super::ffi::set_interface_metric(self.if_index_impl()?, u32::from(metric))
     }
     /// Retrieves the version of the underlying driver.
     ///
@@ -568,14 +571,14 @@ impl DeviceImpl {
             Driver::Tun(tun) => tun.version(),
             Driver::Tap(tap) => tap.get_version().map(|v| {
                 v.iter()
-                    .map(|v| v.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<String>>()
                     .join(".")
             }),
         }
     }
     /// Set DNS servers for the current device (supports primary and secondary DNS)
-    /// dns_servers: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
+    /// `dns_servers`: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
     pub fn set_dns_servers(&self, dns_servers: &[IpAddr]) -> io::Result<()> {
         let _guard = self
             .lock
@@ -584,7 +587,7 @@ impl DeviceImpl {
         dns::set_dns_servers(self.if_index_impl()?, &self.luid_impl(), dns_servers)
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
-    /// is_ipv4: true to clear IPv4 DNS, false to clear IPv6 DNS
+    /// `is_ipv4`: true to clear IPv4 DNS, false to clear IPv6 DNS
     pub fn clear_dns_servers(&self, is_ipv4: bool) -> io::Result<()> {
         let _guard = self
             .lock

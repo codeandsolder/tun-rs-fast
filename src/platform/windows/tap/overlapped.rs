@@ -235,9 +235,7 @@ impl OverlappedEvent {
                 2,
                 handles.as_ptr(),
                 0,
-                timeout
-                    .map(|t| t.as_millis().min(INFINITE as _) as _)
-                    .unwrap_or(INFINITE),
+                timeout.map_or(INFINITE, |t| t.as_millis().min(INFINITE.into()) as _),
             );
             match wait_ret {
                 windows_sys::Win32::Foundation::WAIT_OBJECT_0 => Ok(()),

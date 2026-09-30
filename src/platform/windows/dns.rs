@@ -72,7 +72,7 @@ impl DnsApi {
         // The API takes a comma-separated, NUL-terminated wide string of addresses.
         let nameserver = servers
             .iter()
-            .map(|addr| addr.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
         let mut nameserver = ffi::encode_utf16(&nameserver);
@@ -85,14 +85,14 @@ impl DnsApi {
 
         let settings = DNS_INTERFACE_SETTINGS {
             Version: DNS_INTERFACE_SETTINGS_VERSION1,
-            Flags: flags as u64,
+            Flags: u64::from(flags),
             NameServer: nameserver.as_mut_ptr(),
             ..Default::default()
         };
 
         // SAFETY: `settings` and the `nameserver` buffer it points at outlive the call, and
         // `guid` identifies the target interface.
-        let code = unsafe { (self.set_interface_dns_settings)(*guid, &settings) };
+        let code = unsafe { (self.set_interface_dns_settings)(*guid, &raw const settings) };
         ffi::win_result(code)
     }
 }
