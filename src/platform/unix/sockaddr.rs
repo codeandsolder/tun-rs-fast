@@ -75,7 +75,6 @@ const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
 /// to one of its fields. The destination must not overlap the local source value.
 #[cfg(any(
     target_os = "linux",
-    target_os = "macos",
     target_os = "freebsd",
     target_os = "openbsd",
     target_os = "netbsd",

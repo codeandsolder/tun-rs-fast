@@ -235,7 +235,7 @@ impl DeviceImpl {
             .op_lock
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        self.tun.set_ignore_packet_info(ign)
+        self.tun.set_ignore_packet_info(ign);
     }
 }
 #[cfg(any(

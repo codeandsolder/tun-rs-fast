@@ -128,13 +128,16 @@ impl Fd {
             .map_err(|_| io::Error::other("non-negative syscall byte count did not fit usize"))
     }
     #[inline]
-    #[cfg(any(
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd"
+    #[cfg(all(
+        any(feature = "async_tokio", feature = "async_io"),
+        any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "tvos",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd"
+        )
     ))]
     pub(crate) fn readv_raw(&self, bufs: &mut [libc::iovec]) -> io::Result<usize> {
         if bufs.len() > max_iov() {

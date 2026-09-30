@@ -50,7 +50,7 @@ pub(crate) fn is_ipv6(buf: &[u8]) -> std::io::Result<bool> {
     target_os = "freebsd",
     target_os = "netbsd",
 ))]
-pub(crate) fn generate_packet_information(_ipv6: bool) -> [u8; PIL] {
+pub(crate) fn generate_packet_information(ipv6: bool) -> [u8; PIL] {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     const TUN_PROTO_IP6: [u8; PIL] = (libc::ETH_P_IPV6 as u32).to_be_bytes();
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -75,7 +75,7 @@ pub(crate) fn generate_packet_information(_ipv6: bool) -> [u8; PIL] {
     ))]
     const TUN_PROTO_IP4: [u8; PIL] = (libc::AF_INET as u32).to_be_bytes();
 
-    if _ipv6 {
+    if ipv6 {
         TUN_PROTO_IP6
     } else {
         TUN_PROTO_IP4
@@ -248,11 +248,11 @@ impl Tun {
             let mut head = [0u8; PIL];
             let mut bufs = [
                 libc::iovec {
-                    iov_base: head.as_mut_ptr() as *mut _,
+                    iov_base: head.as_mut_ptr().cast(),
                     iov_len: head.len(),
                 },
                 libc::iovec {
-                    iov_base: buf.as_mut_ptr() as *mut _,
+                    iov_base: buf.as_mut_ptr().cast(),
                     iov_len: buf.len(),
                 },
             ];

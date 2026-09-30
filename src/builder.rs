@@ -272,7 +272,7 @@ pub(crate) struct DeviceConfig {
     /// The description of the device/interface.
     #[cfg(windows)]
     pub(crate) description: Option<String>,
-    /// Available with Layer::L2; creates a pair of feth devices, with peer_feth as the IO interface name.
+    /// Available with `Layer::L2`; creates a pair of feth devices, with `peer_feth` as the IO interface name.
     #[cfg(target_os = "macos")]
     pub(crate) peer_feth: Option<String>,
     /// If true (default), the program will automatically add or remove routes on macOS or FreeBSD to provide consistent routing behavior across all platforms.
@@ -1150,7 +1150,7 @@ impl DeviceBuilder {
         self.packet_information = Some(packet_information);
         self
     }
-    /// Available on Layer::L2;
+    /// Available on `Layer::L2`;
     /// creates a pair of `feth` devices, with `peer_feth` as the IO interface name.
     #[cfg(target_os = "macos")]
     pub fn peer_feth<S: Into<String>>(mut self, peer_feth: S) -> Self {

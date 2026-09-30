@@ -46,7 +46,7 @@ use bytes::BytesMut;
 use libc::{ifreq, IFNAMSIZ};
 use nix::errno::Errno;
 use std::collections::VecDeque;
-use std::ffi::{CStr, CString};
+use std::ffi::CString;
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::{AsRawFd, IntoRawFd, RawFd};
@@ -81,8 +81,23 @@ pub struct Tap {
     s_ndrv_fd: Fd,
     peer_feth: Feth,
     dev_feth: Feth,
-    buffer: Mutex<VecDeque<BytesMut>>,
+    receive: Mutex<ReceiveState>,
 }
+
+struct ReceiveState {
+    packets: VecDeque<BytesMut>,
+    scratch: Vec<u8>,
+}
+
+impl Default for ReceiveState {
+    fn default() -> Self {
+        Self {
+            packets: VecDeque::new(),
+            scratch: vec![0; BUFFER_LEN],
+        }
+    }
+}
+
 struct Feth {
     is_drop: bool,
     name: String,
@@ -102,111 +117,136 @@ impl IntoRawFd for Tap {
         self.s_bpf_fd.into_raw_fd()
     }
 }
+fn open_ndrv() -> io::Result<Fd> {
+    // SAFETY: socket has no pointer arguments and returns a new descriptor or -1.
+    let raw_fd = unsafe { libc::socket(libc::AF_NDRV, libc::SOCK_RAW, 0) };
+    let fd = Fd::new(raw_fd)?;
+    _ = fd.set_cloexec();
+    Ok(fd)
+}
+
+fn ifreq_name(ifr: &ifreq) -> String {
+    let bytes: Vec<u8> = ifr
+        .ifr_name
+        .iter()
+        .copied()
+        .take_while(|value| *value != 0)
+        .map(i8::cast_unsigned)
+        .collect();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn create_feth(
+    ndrv: &Fd,
+    requested_name: Option<&String>,
+    reuse: bool,
+    persist: bool,
+) -> io::Result<(Feth, ifreq)> {
+    let mut ifr = new_ifreq(requested_name)?;
+    // SAFETY: ifr is a live writable C request object for the synchronous ioctl.
+    if let Err(error) = unsafe { siocifcreate(ndrv.inner, &raw mut ifr) } {
+        if error != Errno::EEXIST || !reuse {
+            return Err(error.into());
+        }
+    }
+    let feth = Feth {
+        is_drop: !persist,
+        name: ifreq_name(&ifr),
+    };
+    Ok((feth, ifr))
+}
+
+fn bind_ndrv(ndrv: &Fd, peer_name: &str) -> io::Result<()> {
+    let sockaddr_size = size_of::<libc::sockaddr_ndrv>();
+    let snd_len = u8::try_from(sockaddr_size)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "sockaddr_ndrv size exceeds u8"))?;
+    let socklen = u32::try_from(sockaddr_size).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "sockaddr_ndrv size exceeds socklen_t",
+        )
+    })?;
+    let snd_family = u8::try_from(libc::AF_NDRV).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AF_NDRV does not fit sockaddr family",
+        )
+    })?;
+
+    // SAFETY: sockaddr_ndrv is a C POD address structure and zero is a valid
+    // initial state before its fields are populated.
+    let mut address: libc::sockaddr_ndrv = unsafe { std::mem::zeroed() };
+    address.snd_len = snd_len;
+    address.snd_family = snd_family;
+    let name_bytes = peer_name.as_bytes();
+    if name_bytes.len() >= address.snd_name.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "peer interface name is too long for sockaddr_ndrv",
+        ));
+    }
+    address.snd_name[..name_bytes.len()].copy_from_slice(name_bytes);
+
+    // SAFETY: address is fully initialized, socklen matches its backing object,
+    // and both syscalls borrow it only for the duration of the call.
+    unsafe {
+        let raw = (&raw const address).cast::<libc::sockaddr>();
+        if libc::bind(ndrv.inner, raw, socklen) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if libc::connect(ndrv.inner, raw, socklen) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
+}
+
+fn configure_bpf(peer_ifr: &mut ifreq) -> io::Result<Fd> {
+    let bpf = open_bpf()?;
+    let mut buffer_len = BUFFER_LEN;
+    let mut enable = 1i32;
+    let mut disable = 0i32;
+
+    // SAFETY: each ioctl receives the live object type expected by the
+    // corresponding Darwin BPF request and borrows it synchronously.
+    unsafe {
+        if libc::ioctl(bpf.inner, libc::BIOCSBLEN, &mut buffer_len) != 0
+            || libc::ioctl(bpf.inner, libc::BIOCIMMEDIATE, &mut enable) != 0
+            || libc::ioctl(bpf.inner, libc::BIOCSSEESENT, &mut disable) != 0
+            || libc::ioctl(bpf.inner, libc::BIOCSETIF, peer_ifr) != 0
+            || libc::ioctl(bpf.inner, libc::BIOCSHDRCMPLT, &mut enable) != 0
+            || libc::ioctl(bpf.inner, u64::from(libc::BIOCPROMISC), &mut enable) != 0
+        {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(bpf)
+}
+
 impl Tap {
     pub fn new(config: &DeviceConfig) -> io::Result<Tap> {
-        unsafe {
-            let s_ndrv_fd = libc::socket(libc::AF_NDRV, libc::SOCK_RAW, 0);
-            let s_ndrv_fd = Fd::new(s_ndrv_fd)?;
-            _ = s_ndrv_fd.set_cloexec();
-            let mut ifr = new_ifreq(config.dev_name.as_ref())?;
-            if let Err(e) = siocifcreate(s_ndrv_fd.inner, &mut ifr) {
-                if e != Errno::EEXIST || !config.reuse_dev.unwrap_or(true) {
-                    return Err(e.into());
-                }
-            }
+        let s_ndrv_fd = open_ndrv()?;
+        let reuse = config.reuse_dev.unwrap_or(true);
+        let persist = config.persist.unwrap_or(false);
 
-            let dev_name = CStr::from_ptr(ifr.ifr_name.as_ptr())
-                .to_string_lossy()
-                .into_owned();
-            let dev_feth = Feth {
-                is_drop: !config.persist.unwrap_or(false),
-                name: dev_name,
-            };
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            let mut peer_ifr = new_ifreq(config.peer_feth.as_ref())?;
-            if let Err(e) = siocifcreate(s_ndrv_fd.inner, &mut peer_ifr) {
-                if e != Errno::EEXIST || !config.reuse_dev.unwrap_or(true) {
-                    return Err(e.into());
-                }
-            }
-            let peer_name = CStr::from_ptr(peer_ifr.ifr_name.as_ptr())
-                .to_string_lossy()
-                .into_owned();
-            let peer_feth = Feth {
-                is_drop: !config.persist.unwrap_or(false),
-                name: peer_name,
-            };
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            run_command("ifconfig", &[&peer_feth.name, "peer", &dev_feth.name])?;
-            let mut nd: libc::sockaddr_ndrv = std::mem::zeroed();
-            nd.snd_len = size_of::<libc::sockaddr_ndrv>() as u8;
-            nd.snd_family = libc::AF_NDRV as u8;
-            // Ensure the name fits within snd_name to prevent buffer overflow
-            let name_bytes = peer_feth.name.as_bytes();
-            if name_bytes.len() > nd.snd_name.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "Interface name '{}' is too long (max {} bytes)",
-                        peer_feth.name,
-                        nd.snd_name.len()
-                    ),
-                ));
-            }
-            nd.snd_name[..name_bytes.len()].copy_from_slice(name_bytes);
-            if libc::bind(
-                s_ndrv_fd.inner,
-                &nd as *const _ as *const libc::sockaddr,
-                size_of::<libc::sockaddr_ndrv>() as u32,
-            ) != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            if libc::connect(
-                s_ndrv_fd.inner,
-                &nd as *const _ as *const libc::sockaddr,
-                size_of::<libc::sockaddr_ndrv>() as u32,
-            ) != 0
-            {
-                return Err(io::Error::last_os_error());
-            }
-            let s_bpf_fd = open_bpf()?;
-            let mut buffer_len = BUFFER_LEN;
-            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCSBLEN, &mut buffer_len);
-            if rs != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let mut enable = 1i32;
-            let mut disable = 0i32;
-            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCIMMEDIATE, &mut enable);
-            if rs != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCSSEESENT, &mut disable);
-            if rs != 0 {
-                return Err(io::Error::last_os_error());
-            }
+        let (dev_feth, _) = create_feth(&s_ndrv_fd, config.dev_name.as_ref(), reuse, persist)?;
+        std::thread::sleep(std::time::Duration::from_millis(1));
 
-            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCSETIF, &mut peer_ifr);
-            if rs != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCSHDRCMPLT, &mut enable);
-            if rs != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            let rs = libc::ioctl(s_bpf_fd.inner, libc::BIOCPROMISC as u64, &mut enable);
-            if rs != 0 {
-                return Err(io::Error::last_os_error());
-            }
-            Ok(Self {
-                s_bpf_fd,
-                s_ndrv_fd,
-                dev_feth,
-                peer_feth,
-                buffer: Default::default(),
-            })
-        }
+        let (peer_feth, mut peer_ifr) =
+            create_feth(&s_ndrv_fd, config.peer_feth.as_ref(), reuse, persist)?;
+        std::thread::sleep(std::time::Duration::from_millis(1));
+
+        run_command("ifconfig", &[&peer_feth.name, "peer", &dev_feth.name])?;
+        bind_ndrv(&s_ndrv_fd, &peer_feth.name)?;
+        let s_bpf_fd = configure_bpf(&mut peer_ifr)?;
+
+        Ok(Self {
+            s_bpf_fd,
+            s_ndrv_fd,
+            dev_feth,
+            peer_feth,
+            receive: Mutex::new(ReceiveState::default()),
+        })
     }
     // pub fn as_s_ndrv_fd(&self) -> RawFd {
     //     self.s_ndrv_fd.as_raw_fd()
@@ -238,14 +278,14 @@ impl Tap {
     }
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         let mut guard = self
-            .buffer
+            .receive
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_empty() {
+        if guard.packets.is_empty() {
             self.recv_to_buffer(&mut guard)?;
         }
 
-        let Some(buffer) = guard.pop_front() else {
+        let Some(buffer) = guard.packets.pop_front() else {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "recv buffer is empty",
@@ -263,14 +303,14 @@ impl Tap {
     #[cfg(any(feature = "async_tokio", feature = "async_io"))]
     pub fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let mut guard = self
-            .buffer
+            .receive
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_empty() {
+        if guard.packets.is_empty() {
             self.recv_to_buffer(&mut guard)?;
         }
 
-        let Some(buffer) = guard.pop_front() else {
+        let Some(buffer) = guard.packets.pop_front() else {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "recv buffer is empty",
@@ -282,31 +322,34 @@ impl Tap {
                 "buffer too small",
             ));
         }
+        // SAFETY: the destination length was checked above, buffer contains
+        // initialized bytes, and the independent allocations cannot overlap.
         unsafe {
             std::ptr::copy_nonoverlapping(buffer.as_ptr(), buf.as_mut_ptr(), buffer.len());
         }
         Ok(buffer.len())
     }
-    fn recv_to_buffer(&self, bufs: &mut VecDeque<BytesMut>) -> io::Result<()> {
-        let mut buffer = [0; BUFFER_LEN];
-        let len = self.s_bpf_fd.read(&mut buffer)?;
+    fn recv_to_buffer(&self, state: &mut ReceiveState) -> io::Result<()> {
+        let ReceiveState { packets, scratch } = state;
+        let len = self.s_bpf_fd.read(scratch.as_mut_slice())?;
         if len > 0 {
+            let buffer = &scratch[..len];
             let mut p = 0;
             while p < len {
                 let remaining_bytes = len - p;
                 if remaining_bytes < BPF_HDR_SIZE {
                     break;
                 }
-                // SAFETY: We use read_unaligned to avoid UB from misaligned access.
-                // buffer is [u8] (alignment 1) but bpf_hdr requires alignment.
+                // SAFETY: read_unaligned handles byte-buffer alignment, and p is
+                // bounded so at least a complete bpf_hdr remains before this read.
                 let hdr: libc::bpf_hdr = unsafe {
-                    std::ptr::read_unaligned(buffer.as_ptr().add(p) as *const libc::bpf_hdr)
+                    std::ptr::read_unaligned(buffer.as_ptr().add(p).cast::<libc::bpf_hdr>())
                 };
                 let bh_caplen = hdr.bh_caplen as usize;
                 let bh_hdrlen = hdr.bh_hdrlen as usize;
                 if bh_caplen > 0 && p + bh_hdrlen + bh_caplen <= len {
-                    let buf = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
-                    bufs.push_back(buf.into());
+                    let packet = &buffer[p + bh_hdrlen..p + bh_hdrlen + bh_caplen];
+                    packets.push_back(packet.into());
                 }
                 let Some(step) = next_bpf_step(bh_hdrlen, bh_caplen) else {
                     break;
@@ -319,14 +362,14 @@ impl Tap {
 
     pub fn recv_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         let mut guard = self
-            .buffer
+            .receive
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if guard.is_empty() {
+        if guard.packets.is_empty() {
             self.recv_to_buffer(&mut guard)?;
         }
 
-        let Some(buf) = guard.pop_front() else {
+        let Some(buf) = guard.packets.pop_front() else {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "recv buffer is empty",
@@ -364,7 +407,7 @@ impl Tap {
         loop {
             self.wait_readable_interruptible(event, timeout)?;
             match self.recv(buf) {
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 rs => return rs,
             }
         }
@@ -380,7 +423,7 @@ impl Tap {
         loop {
             self.wait_readable_interruptible(event, timeout)?;
             match self.recv_vectored(bufs) {
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => continue,
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 rs => return rs,
             }
         }
@@ -446,6 +489,7 @@ impl AsRawFd for Tap {
 fn open_bpf() -> io::Result<Fd> {
     for i in 1..5000 {
         let path = CString::new(format!("/dev/bpf{i}").into_bytes())?;
+        // SAFETY: path is a live NUL-terminated CString; open returns a new descriptor or -1.
         let bpf_fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
         match Fd::new(bpf_fd) {
             Ok(fd) => {
@@ -483,9 +527,10 @@ fn new_ifreq_str(name: &str) -> io::Result<ifreq> {
             "The prefix of the network card name must be 'feth'",
         ));
     }
+    // SAFETY: ifreq is a C POD request structure; zero is a valid initial state.
     let mut ifr: ifreq = unsafe { std::mem::zeroed() };
     for (i, &b) in bytes.iter().enumerate() {
-        ifr.ifr_name[i] = b as libc::c_char;
+        ifr.ifr_name[i] = b.cast_signed();
     }
     ifr.ifr_name[bytes.len()] = 0;
     Ok(ifr)

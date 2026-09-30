@@ -117,7 +117,7 @@ impl EventFd {
         }
         let read_fd = fds[0];
         let write_fd = fds[1];
-        if let Err(e) = set_pipe_fd_flags(read_fd).and_then(|_| set_pipe_fd_flags(write_fd)) {
+        if let Err(e) = set_pipe_fd_flags(read_fd).and_then(|()| set_pipe_fd_flags(write_fd)) {
             // SAFETY: both descriptors were initialized by the successful pipe
             // call above and ownership has not escaped this constructor.
             unsafe {
@@ -150,16 +150,16 @@ impl EventFd {
             events: libc::POLLIN,
             revents: 0,
         }];
-        let timeout_ms = timeout.as_millis().min(i32::MAX as u128) as libc::c_int;
+        let timeout_ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let nfds = libc::nfds_t::try_from(fds.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow"))?;
         // SAFETY: fds is a live one-element pollfd array and poll borrows it
         // only for this synchronous call.
-        let res = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, timeout_ms) };
-        if res < 0 {
-            Err(io::Error::last_os_error())
-        } else if res == 0 {
-            Err(io::Error::from(io::ErrorKind::TimedOut))
-        } else {
-            Ok(())
+        let res = unsafe { libc::poll(fds.as_mut_ptr(), nfds, timeout_ms) };
+        match res.cmp(&0) {
+            std::cmp::Ordering::Less => Err(io::Error::last_os_error()),
+            std::cmp::Ordering::Equal => Err(io::Error::from(io::ErrorKind::TimedOut)),
+            std::cmp::Ordering::Greater => Ok(()),
         }
     }
     fn as_event_fd(&self) -> libc::c_int {
@@ -266,7 +266,7 @@ impl AsyncDevice {
             Poll::Ready(rs) => {
                 drop(guard);
                 match rs {
-                    Ok(_) => Poll::Ready(Ok(())),
+                    Ok(()) => Poll::Ready(Ok(())),
                     Err(e) => Poll::Ready(Err(e)),
                 }
             }
@@ -283,7 +283,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.poll_readable(cx)? {
-                Poll::Ready(_) => {}
+                Poll::Ready(()) => {}
                 Poll::Pending => {
                     return Poll::Pending;
                 }
@@ -302,7 +302,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.poll_readable(cx)? {
-                Poll::Ready(_) => {}
+                Poll::Ready(()) => {}
                 Poll::Pending => {
                     return Poll::Pending;
                 }
@@ -322,7 +322,7 @@ impl AsyncDevice {
         };
         match Pin::new(&mut task).poll(cx) {
             Poll::Ready(rs) => match rs {
-                Ok(_) => Poll::Ready(Ok(())),
+                Ok(()) => Poll::Ready(Ok(())),
                 Err(e) => Poll::Ready(Err(e)),
             },
             Poll::Pending => {
@@ -338,7 +338,7 @@ impl AsyncDevice {
                 rs => return Poll::Ready(rs),
             }
             match self.poll_writable(cx)? {
-                Poll::Ready(_) => {}
+                Poll::Ready(()) => {}
                 Poll::Pending => {
                     return Poll::Pending;
                 }
@@ -460,7 +460,7 @@ impl Drop for CancelWaitGuard<'_> {
         if self.cancel_event_handle.wake().is_ok() {
             _ = self
                 .exit_event_handle
-                .wait_timeout(Duration::from_millis(1))
+                .wait_timeout(Duration::from_millis(1));
         }
     }
 }

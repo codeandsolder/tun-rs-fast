@@ -184,7 +184,9 @@ impl Fd {
         let result = unsafe {
             libc::poll(
                 fds.as_mut_ptr(),
-                fds.len() as libc::nfds_t,
+                libc::nfds_t::try_from(fds.len()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow")
+                })?,
                 timeout.map_or(-1, |duration| {
                     i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
                 }),
@@ -232,7 +234,15 @@ impl Fd {
 
         // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
         // the synchronous call; both descriptors remain live for this method.
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, -1) };
+        let result = unsafe {
+            libc::poll(
+                fds.as_mut_ptr(),
+                libc::nfds_t::try_from(fds.len()).map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow")
+                })?,
+                -1,
+            )
+        };
 
         if result == -1 {
             return Err(io::Error::last_os_error());
@@ -288,10 +298,10 @@ impl Fd {
                 revents: 0,
             },
         ];
-        let nfds = if interrupt_event.is_some() { 2 } else { 1 };
-        let timeout_ms = timeout
-            .map(|t| t.as_millis().min(i32::MAX as u128) as libc::c_int)
-            .unwrap_or(-1);
+        let nfds: libc::nfds_t = if interrupt_event.is_some() { 2 } else { 1 };
+        let timeout_ms = timeout.map_or(-1, |duration| {
+            i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
+        });
 
         // SAFETY: fds is stack storage for two pollfd values; nfds selects only
         // initialized live descriptors and poll borrows the array synchronously.
