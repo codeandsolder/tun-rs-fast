@@ -93,39 +93,65 @@ use std::io;
 use std::io::{IoSlice, IoSliceMut};
 use std::os::fd::AsRawFd;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+fn poll_timeout_ms(timeout: Option<Duration>) -> libc::c_int {
+    let Some(timeout) = timeout else {
+        return -1;
+    };
+    let whole_millis = timeout.as_millis();
+    let has_fractional_millisecond = !timeout.subsec_nanos().is_multiple_of(1_000_000);
+    let rounded_up = whole_millis.saturating_add(u128::from(has_fractional_millisecond));
+    libc::c_int::try_from(rounded_up).unwrap_or(libc::c_int::MAX)
+}
+
+fn timeout_expired(started: Instant, timeout: Option<Duration>) -> bool {
+    timeout.is_some_and(|limit| started.elapsed() >= limit)
+}
 
 impl Fd {
     pub(crate) fn read_interruptible(
         &self,
         buf: &mut [u8],
         event: &InterruptEvent,
-        timeout: Option<std::time::Duration>,
+        timeout: Option<Duration>,
     ) -> io::Result<usize> {
+        let started = Instant::now();
         loop {
-            self.wait_readable_interruptible(event, timeout)?;
-            return match self.read(buf) {
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
+            self.wait_readable_interruptible(
+                event,
+                timeout.map(|limit| limit.saturating_sub(started.elapsed())),
+            )?;
+            match self.read(buf) {
+                Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if timeout_expired(started, timeout) {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
                 }
-                rs => rs,
-            };
+                result => return result,
+            }
         }
     }
     pub(crate) fn readv_interruptible(
         &self,
         bufs: &mut [IoSliceMut<'_>],
         event: &InterruptEvent,
-        timeout: Option<std::time::Duration>,
+        timeout: Option<Duration>,
     ) -> io::Result<usize> {
+        let started = Instant::now();
         loop {
-            self.wait_readable_interruptible(event, timeout)?;
-            return match self.readv(bufs) {
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
+            self.wait_readable_interruptible(
+                event,
+                timeout.map(|limit| limit.saturating_sub(started.elapsed())),
+            )?;
+            match self.readv(bufs) {
+                Err(ref error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    if timeout_expired(started, timeout) {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
                 }
-
-                rs => rs,
-            };
+                result => return result,
+            }
         }
     }
     pub(crate) fn write_interruptible(
@@ -161,56 +187,63 @@ impl Fd {
     pub fn wait_readable_interruptible(
         &self,
         interrupted_event: &InterruptEvent,
-        timeout: Option<std::time::Duration>,
+        timeout: Option<Duration>,
     ) -> io::Result<()> {
         let fd = self.as_raw_fd() as libc::c_int;
         let event_fd = interrupted_event.as_event_fd();
+        let started = Instant::now();
 
-        let mut fds = [
-            libc::pollfd {
-                fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: event_fd,
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
+        loop {
+            let mut fds = [
+                libc::pollfd {
+                    fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+                libc::pollfd {
+                    fd: event_fd,
+                    events: libc::POLLIN,
+                    revents: 0,
+                },
+            ];
 
-        // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
-        // the synchronous call; both descriptors are owned/borrowed live descriptors.
-        let result = unsafe {
-            libc::poll(
-                fds.as_mut_ptr(),
-                libc::nfds_t::try_from(fds.len()).map_err(|_| {
-                    io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow")
-                })?,
-                timeout.map_or(-1, |duration| {
-                    i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
-                }),
-            )
-        };
+            // poll accepts integer milliseconds. Round a fractional millisecond up
+            // rather than accidentally turning a positive timeout into a nonblocking
+            // poll; if a very large timeout is clamped, loop against the original
+            // Duration after the finite poll expires.
+            let poll_timeout =
+                poll_timeout_ms(timeout.map(|limit| limit.saturating_sub(started.elapsed())));
+            let nfds = libc::nfds_t::try_from(fds.len()).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "poll fd count overflow")
+            })?;
+            // SAFETY: fds is a live contiguous pollfd array and poll only borrows it for
+            // the synchronous call; both descriptors are owned/borrowed live descriptors.
+            let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, poll_timeout) };
 
-        if result == -1 {
-            return Err(io::Error::last_os_error());
+            if result == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            if result == 0 {
+                if timeout_expired(started, timeout) {
+                    return Err(io::Error::from(io::ErrorKind::TimedOut));
+                }
+                continue;
+            }
+            // Cancellation has priority if both descriptors became ready in the
+            // same poll result; otherwise a continuously readable device could
+            // starve an already-triggered cancellation event.
+            if fds[1].revents & libc::POLLIN != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "trigger interrupt",
+                ));
+            }
+            if fds[0].revents & libc::POLLIN != 0 {
+                return Ok(());
+            }
+
+            return Err(io::Error::other("fd error"));
         }
-        if result == 0 {
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
-        }
-        if fds[0].revents & libc::POLLIN != 0 {
-            return Ok(());
-        }
-
-        if fds[1].revents & libc::POLLIN != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "trigger interrupt",
-            ));
-        }
-
-        Err(io::Error::other("fd error"))
     }
     pub fn wait_writable_interruptible(
         &self,
@@ -247,15 +280,15 @@ impl Fd {
         if result == -1 {
             return Err(io::Error::last_os_error());
         }
-        if fds[0].revents & libc::POLLOUT != 0 {
-            return Ok(());
-        }
-
         if fds[1].revents & libc::POLLIN != 0 {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
                 "trigger interrupt",
             ));
+        }
+
+        if fds[0].revents & libc::POLLOUT != 0 {
+            return Ok(());
         }
 
         Err(io::Error::other("fd error"))
@@ -299,29 +332,36 @@ impl Fd {
             },
         ];
         let nfds: libc::nfds_t = if interrupt_event.is_some() { 2 } else { 1 };
-        let timeout_ms = timeout.map_or(-1, |duration| {
-            i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
-        });
-
-        // SAFETY: fds is stack storage for two pollfd values; nfds selects only
-        // initialized live descriptors and poll borrows the array synchronously.
-        let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, timeout_ms) };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
+        let started = Instant::now();
+        loop {
+            for pollfd in &mut fds {
+                pollfd.revents = 0;
+            }
+            let timeout_ms =
+                poll_timeout_ms(timeout.map(|limit| limit.saturating_sub(started.elapsed())));
+            // SAFETY: fds is stack storage for two pollfd values; nfds selects only
+            // initialized live descriptors and poll borrows the array synchronously.
+            let result = unsafe { libc::poll(fds.as_mut_ptr(), nfds, timeout_ms) };
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if result == 0 {
+                if timeout_expired(started, timeout) {
+                    return Err(io::Error::from(io::ErrorKind::TimedOut));
+                }
+                continue;
+            }
+            if nfds == 2 && fds[1].revents & libc::POLLIN != 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "trigger interrupt",
+                ));
+            }
+            if fds[0].revents & device_events != 0 {
+                return Ok(());
+            }
+            return Err(io::Error::other("fd error"));
         }
-        if result == 0 {
-            return Err(io::Error::from(io::ErrorKind::TimedOut));
-        }
-        if nfds == 2 && fds[1].revents & libc::POLLIN != 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Interrupted,
-                "trigger interrupt",
-            ));
-        }
-        if fds[0].revents & device_events != 0 {
-            return Ok(());
-        }
-        Err(io::Error::other("fd error"))
     }
 }
 /// Event object for interrupting blocking I/O operations.
@@ -679,5 +719,164 @@ impl InterruptEvent {
     }
     fn as_event_fd(&self) -> libc::c_int {
         self.read_fd.as_raw_fd()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{poll_timeout_ms, Fd, InterruptEvent};
+    use std::io;
+    use std::time::Duration;
+
+    fn pipe_pair() -> io::Result<(Fd, Fd)> {
+        let mut raw = [-1; 2];
+        // SAFETY: raw is writable storage for exactly two descriptors; successful pipe()
+        // initializes both descriptors and ownership is immediately moved into Fd wrappers.
+        if unsafe { libc::pipe(raw.as_mut_ptr()) } == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok((Fd::new(raw[0])?, Fd::new(raw[1])?))
+    }
+
+    #[test]
+    fn poll_timeout_rounds_positive_sub_millisecond_durations_up() {
+        assert_eq!(poll_timeout_ms(None), -1);
+        assert_eq!(poll_timeout_ms(Some(Duration::ZERO)), 0);
+        assert_eq!(poll_timeout_ms(Some(Duration::from_nanos(1))), 1);
+        assert_eq!(poll_timeout_ms(Some(Duration::from_micros(999))), 1);
+        assert_eq!(poll_timeout_ms(Some(Duration::from_millis(1))), 1);
+        assert_eq!(
+            poll_timeout_ms(Some(Duration::from_millis(1) + Duration::from_nanos(1))),
+            2
+        );
+        assert_eq!(poll_timeout_ms(Some(Duration::MAX)), libc::c_int::MAX);
+    }
+
+    #[test]
+    fn interrupt_wins_when_device_is_also_readable_or_writable() -> io::Result<()> {
+        let (reader, writer) = pipe_pair()?;
+        let event = InterruptEvent::new()?;
+        assert_eq!(writer.write(b"x")?, 1);
+        event.trigger()?;
+
+        let read_error = reader
+            .wait_readable_interruptible(&event, Some(Duration::from_secs(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("readable device won over cancellation"))?;
+        assert_eq!(read_error.kind(), io::ErrorKind::Interrupted);
+
+        let write_error = writer
+            .wait_writable_interruptible(&event)
+            .err()
+            .ok_or_else(|| io::Error::other("writable device won over cancellation"))?;
+        assert_eq!(write_error.kind(), io::ErrorKind::Interrupted);
+        Ok(())
+    }
+
+    #[test]
+    fn event_state_is_edge_stable_until_reset() -> io::Result<()> {
+        let event = InterruptEvent::new()?;
+        assert!(!event.is_trigger());
+        assert_eq!(event.value(), 0);
+
+        event.trigger_value(7)?;
+        assert!(event.is_trigger());
+        assert_eq!(event.value(), 7);
+
+        // Repeated triggers before reset are deliberately idempotent and preserve
+        // the value associated with the first edge.
+        event.trigger_value(9)?;
+        assert_eq!(event.value(), 7);
+
+        event.reset()?;
+        assert!(!event.is_trigger());
+        assert_eq!(event.value(), 0);
+
+        event.trigger()?;
+        assert_eq!(event.value(), 1);
+        event.reset()?;
+        Ok(())
+    }
+
+    #[test]
+    fn event_rejects_zero_trigger_value() -> io::Result<()> {
+        let event = InterruptEvent::new()?;
+        let error = event
+            .trigger_value(0)
+            .err()
+            .ok_or_else(|| io::Error::other("zero trigger value was accepted"))?;
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(!event.is_trigger());
+        Ok(())
+    }
+
+    #[test]
+    fn wait_readable_distinguishes_timeout_interrupt_and_device_readiness() -> io::Result<()> {
+        let (reader, writer) = pipe_pair()?;
+        let event = InterruptEvent::new()?;
+
+        let timeout = reader
+            .wait_readable_interruptible(&event, Some(Duration::from_millis(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("empty pipe unexpectedly became readable"))?;
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+
+        event.trigger()?;
+        let interrupted = reader
+            .wait_readable_interruptible(&event, Some(Duration::from_secs(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("triggered event did not interrupt the wait"))?;
+        assert_eq!(interrupted.kind(), io::ErrorKind::Interrupted);
+        event.reset()?;
+
+        assert_eq!(writer.write(b"x")?, 1);
+        reader.wait_readable_interruptible(&event, Some(Duration::from_secs(1)))?;
+        let mut byte = [0u8; 1];
+        assert_eq!(reader.read(&mut byte)?, 1);
+        assert_eq!(byte, [b'x']);
+        Ok(())
+    }
+
+    #[test]
+    fn read_interruptible_returns_data_and_timeout_by_contract() -> io::Result<()> {
+        let (reader, writer) = pipe_pair()?;
+        let event = InterruptEvent::new()?;
+        assert_eq!(writer.write(b"abc")?, 3);
+
+        let mut buf = [0u8; 8];
+        let read = reader.read_interruptible(&mut buf, &event, Some(Duration::from_secs(1)))?;
+        assert_eq!(read, 3);
+        assert_eq!(&buf[..read], b"abc");
+
+        let timeout = reader
+            .read_interruptible(&mut buf, &event, Some(Duration::from_millis(1)))
+            .err()
+            .ok_or_else(|| io::Error::other("empty pipe read did not time out"))?;
+        assert_eq!(timeout.kind(), io::ErrorKind::TimedOut);
+        Ok(())
+    }
+
+    #[test]
+    fn blocked_writer_is_interruptible() -> io::Result<()> {
+        let (_reader, writer) = pipe_pair()?;
+        writer.set_nonblocking(true)?;
+        let fill = [0u8; 4096];
+        loop {
+            match writer.write(&fill) {
+                Ok(0) => return Err(io::Error::other("pipe write made no progress")),
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(error),
+            }
+        }
+
+        let event = InterruptEvent::new()?;
+        event.trigger()?;
+        let error = writer
+            .wait_writable_interruptible(&event)
+            .err()
+            .ok_or_else(|| io::Error::other("full pipe ignored interrupt event"))?;
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        Ok(())
     }
 }

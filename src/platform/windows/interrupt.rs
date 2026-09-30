@@ -57,6 +57,9 @@ impl InterruptEvent {
     /// # Errors
     /// Returns an I/O error if resetting the Windows event fails.
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn reset(&self) -> io::Result<()> {
         let mut guard = self
             .state

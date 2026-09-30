@@ -153,6 +153,9 @@ impl DeviceImpl {
         feature = "async_tokio",
         feature = "async_io"
     ))]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn wait_readable_interruptible(
         &self,
         event: &crate::platform::windows::InterruptEvent,
@@ -164,6 +167,9 @@ impl DeviceImpl {
         }
     }
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn read_interruptible(
         &self,
         buf: &mut [u8],
@@ -182,12 +188,18 @@ impl DeviceImpl {
         }
     }
     /// Recv a packet from tun device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.read(buf),
             Driver::Tun(tun) => tun.recv(buf),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read(buf),
@@ -195,6 +207,9 @@ impl DeviceImpl {
         }
     }
     #[cfg(feature = "async_framed")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read_uninit(buf),
@@ -203,6 +218,9 @@ impl DeviceImpl {
     }
 
     /// Send a packet to tun device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.write(buf),
@@ -214,6 +232,9 @@ impl DeviceImpl {
         feature = "async_tokio",
         feature = "async_io"
     ))]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn write_interruptible(
         &self,
         buf: &[u8],
@@ -224,12 +245,18 @@ impl DeviceImpl {
             Driver::Tun(tun) => tun.send_interruptible(buf, &event.handle),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_write(buf),
             Driver::Tun(tun) => tun.try_send(buf),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn shutdown(&self) -> io::Result<()> {
         match &self.driver {
             Driver::Tun(tun) => tun.shutdown(),

@@ -36,22 +36,6 @@ pub const MIN_RING_CAPACITY: u32 = 0x2_0000;
 /// Maximum pool name length including zero terminator
 pub const MAX_POOL: usize = 256;
 
-#[cfg(any(
-    feature = "interruptible",
-    feature = "async_tokio",
-    feature = "async_io"
-))]
-fn finite_wait_timeout_ms(timeout: Option<std::time::Duration>) -> u32 {
-    const MAX_FINITE_WAIT_MS: u32 = INFINITE - 1;
-    timeout.map_or(INFINITE, |duration| {
-        let millis = duration.as_millis().min(u128::from(MAX_FINITE_WAIT_MS));
-        match u32::try_from(millis) {
-            Ok(value) => value,
-            Err(_) => MAX_FINITE_WAIT_MS,
-        }
-    })
-}
-
 pub struct TunDevice {
     index: u32,
     luid: NET_LUID_LH,
@@ -268,9 +252,9 @@ impl WinTunAdapter {
 
 impl Drop for WinTunSession {
     fn drop(&mut self) {
-        // SAFETY: WinTunSession exclusively owns this live Wintun session handle,
-        // and Drop executes exactly once before the parent adapter is closed.
-        unsafe { self.win_tun.WintunEndSession(self.handle) };
+        unsafe {
+            self.win_tun.WintunEndSession(self.handle);
+        }
     }
 }
 
@@ -331,7 +315,7 @@ impl WinTunSession {
         }
     }
     fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
-        let packet_len = u32::try_from(buf.len()).map_err(|_| {
+        let packet_size = u32::try_from(buf.len()).map_err(|_| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
@@ -343,12 +327,8 @@ impl WinTunSession {
         })?;
         let win_tun = &self.win_tun;
         let handle = self.handle;
-        // SAFETY: handle is the live session owned by self and packet_len is the
-        // checked u32 representation of the source slice length.
-        let bytes_ptr = unsafe { win_tun.WintunAllocateSendPacket(handle, packet_len) };
+        let bytes_ptr = unsafe { win_tun.WintunAllocateSendPacket(handle, packet_size) };
         if bytes_ptr.is_null() {
-            // SAFETY: GetLastError has no pointer or lifetime preconditions and
-            // must be read immediately after the failed Wintun call.
             match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::WriteZero)),
                 ERROR_BUFFER_OVERFLOW => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
@@ -356,11 +336,7 @@ impl WinTunSession {
                 e => Err(io::Error::from_raw_os_error(e.cast_signed())),
             }
         } else {
-            // SAFETY: Wintun allocated bytes_ptr for exactly buf.len() writable
-            // bytes above; the source slice is initialized and non-overlapping.
             unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), bytes_ptr, buf.len()) };
-            // SAFETY: bytes_ptr is the outstanding send allocation returned for
-            // this live session and is handed back exactly once.
             unsafe { win_tun.WintunSendPacket(handle, bytes_ptr) };
             Ok(buf.len())
         }
@@ -377,14 +353,10 @@ impl WinTunSession {
 
         let win_tun = &self.win_tun;
         let handle = self.handle;
-        // SAFETY: handle is the live session owned by self and &mut size is
-        // writable storage for Wintun's synchronous size out-parameter.
         let ptr = unsafe { win_tun.WintunReceivePacket(handle, &raw mut size) };
 
         if ptr.is_null() {
             // Wintun returns ERROR_NO_MORE_ITEMS instead of blocking if packets are not available.
-            // SAFETY: GetLastError has no pointer or lifetime preconditions and
-            // must be read immediately after the failed receive call.
             return match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::UnexpectedEof)),
                 ERROR_NO_MORE_ITEMS => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
@@ -393,61 +365,56 @@ impl WinTunSession {
         }
         let size = size as usize;
         if size > dst_len {
-            // SAFETY: ptr is the outstanding receive packet returned for this
-            // live session and is released exactly once on this error path.
             unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "destination buffer too small",
             ));
         }
-        // SAFETY: size <= dst_len above, callers provide dst valid for dst_len
-        // writable bytes, and Wintun guarantees ptr references size packet bytes.
         unsafe { ptr::copy_nonoverlapping(ptr, dst, size) };
-        // SAFETY: ptr is the outstanding receive packet returned for this live
-        // session and has not been released on the success path yet.
         unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
         Ok(size)
     }
-    #[cfg(any(
-        feature = "interruptible",
-        feature = "async_tokio",
-        feature = "async_io"
-    ))]
     fn wait_readable_interruptible(
         &self,
         inner_event: &OwnedHandle,
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        //Wait on both the read handle and the shutdown handle so that we stop when requested
         let handles = [
             self.read_event,
             inner_event.as_raw_handle(),
             interrupt_event.as_raw_handle(),
         ];
-        let timeout_ms = finite_wait_timeout_ms(timeout);
-        // SAFETY: handles is a live stack array of three valid wait handles;
-        // WaitForMultipleObjects borrows the array synchronously and count matches.
-        let result = unsafe { WaitForMultipleObjects(3, handles.as_ptr(), 0, timeout_ms) };
-        match result {
-            WAIT_FAILED => Err(io::Error::last_os_error()),
-            windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
-                Err(io::Error::from(io::ErrorKind::TimedOut))
-            }
-            _ => {
-                if result == WAIT_OBJECT_0 {
-                    //We have data!
-                    Ok(())
-                } else if result == WAIT_OBJECT_0 + 1 {
-                    Err(io::Error::other("The interface has been disabled"))
-                } else if result == WAIT_OBJECT_0 + 2 {
-                    Err(io::Error::new(
+        let started = std::time::Instant::now();
+        loop {
+            let timeout_ms = timeout.map_or(INFINITE, |limit| {
+                ffi::finite_wait_timeout_millis(limit.saturating_sub(started.elapsed()))
+            });
+            // SAFETY: `handles` is a live contiguous array of three valid wait handles for
+            // the duration of this synchronous call.
+            let result = unsafe { WaitForMultipleObjects(3, handles.as_ptr(), 0, timeout_ms) };
+            match result {
+                WAIT_FAILED => return Err(io::Error::last_os_error()),
+                windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
+                    if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
+                }
+                WAIT_OBJECT_0 => return Ok(()),
+                value if value == WAIT_OBJECT_0 + 1 => {
+                    return Err(io::Error::other("The interface has been disabled"));
+                }
+                value if value == WAIT_OBJECT_0 + 2 => {
+                    return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "trigger interrupt",
-                    ))
-                } else {
-                    Err(io::Error::last_os_error())
+                    ));
+                }
+                value => {
+                    return Err(io::Error::other(format!(
+                        "WaitForMultipleObjects returned unexpected status {value:#x}"
+                    )));
                 }
             }
         }

@@ -55,7 +55,7 @@ use windows_sys::{
         System::{
             Com::StringFromGUID2,
             Registry::{RegNotifyChangeKeyValue, HKEY},
-            Threading::{CreateEventW, WaitForSingleObject},
+            Threading::{CreateEventW, WaitForSingleObject, INFINITE},
             IO::DeviceIoControl,
         },
     },
@@ -104,6 +104,14 @@ fn usize_to_i32(value: usize, what: &'static str) -> io::Result<i32> {
             format!("{what} exceeds the Win32 i32 ABI limit"),
         )
     })
+}
+
+pub(crate) fn finite_wait_timeout_millis(duration: std::time::Duration) -> u32 {
+    let whole_millis = duration.as_millis();
+    let has_fraction = !duration.subsec_nanos().is_multiple_of(1_000_000);
+    let rounded_up = whole_millis.saturating_add(u128::from(has_fraction));
+    let max_finite = u128::from(INFINITE - 1);
+    u32::try_from(rounded_up.min(max_finite)).unwrap_or(INFINITE - 1)
 }
 
 pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
@@ -1061,12 +1069,16 @@ pub fn set_device_state(
 
 #[cfg(test)]
 mod wait_tests {
-    use super::{create_event, set_event, wait_for_single_object, win_result};
+    use super::{
+        create_event, finite_wait_timeout_millis, set_event, wait_for_single_object, win_result,
+    };
     use std::io;
     use std::os::windows::io::AsRawHandle;
+    use std::time::Duration;
     use windows_sys::Win32::NetworkManagement::{
         IpHelper::ConvertInterfaceIndexToLuid, Ndis::NET_LUID_LH,
     };
+    use windows_sys::Win32::System::Threading::INFINITE;
 
     #[test]
     fn netio_status_error_uses_returned_status() -> io::Result<()> {
@@ -1092,6 +1104,17 @@ mod wait_tests {
             "wrapper returned stale GetLastError instead of the API status"
         );
         Ok(())
+    }
+
+    #[test]
+    fn finite_wait_timeout_rounds_up_without_aliasing_infinite() {
+        assert_eq!(finite_wait_timeout_millis(Duration::ZERO), 0);
+        assert_eq!(finite_wait_timeout_millis(Duration::from_nanos(1)), 1);
+        assert_eq!(finite_wait_timeout_millis(Duration::from_micros(1001)), 2);
+        assert_eq!(
+            finite_wait_timeout_millis(Duration::from_millis(u64::from(INFINITE))),
+            INFINITE - 1
+        );
     }
 
     #[test]

@@ -232,7 +232,9 @@ where
 
     /// Sets the size of the read buffer in bytes.
     ///
-    /// Must be at least as large as the MTU to ensure complete packet reception.
+    /// Values below the minimum packet buffer derived from the device MTU are clamped
+    /// to that minimum. The initial minimum also includes Layer-2/QinQ headroom so TAP
+    /// frames are not truncated merely because their Ethernet headers sit outside the MTU.
     pub const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.r_state.set_read_buffer_size(read_buffer_size);
     }
@@ -388,7 +390,8 @@ where
     }
     /// Sets the size of the read buffer in bytes.
     ///
-    /// Must be at least as large as the MTU to ensure complete packet reception.
+    /// Values below the minimum packet buffer derived from the device MTU are clamped
+    /// to that minimum. The initial minimum also includes Layer-2/QinQ headroom.
     pub const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
         self.state.set_read_buffer_size(read_buffer_size);
     }
@@ -584,6 +587,7 @@ fn compute_buffer_size<T: Borrow<AsyncDevice>>(dev: &T) -> usize {
 }
 struct ReadState {
     recv_buffer_size: usize,
+    min_recv_buffer_size: usize,
     rd: BytesMut,
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     packet_splitter: Option<PacketSplitter>,
@@ -603,6 +607,7 @@ impl ReadState {
 
         Self {
             recv_buffer_size,
+            min_recv_buffer_size: recv_buffer_size,
             rd: BytesMut::with_capacity(recv_buffer_size),
             #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
             packet_splitter,
@@ -614,10 +619,15 @@ impl ReadState {
     }
 
     pub(crate) const fn set_read_buffer_size(&mut self, read_buffer_size: usize) {
-        self.recv_buffer_size = read_buffer_size;
+        let effective_size = if read_buffer_size < self.min_recv_buffer_size {
+            self.min_recv_buffer_size
+        } else {
+            read_buffer_size
+        };
+        self.recv_buffer_size = effective_size;
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if let Some(packet_splitter) = &mut self.packet_splitter {
-            packet_splitter.set_recv_buffer_size(read_buffer_size);
+            packet_splitter.set_recv_buffer_size(effective_size);
         }
     }
 }
@@ -998,13 +1008,114 @@ where
 }
 
 #[cfg(test)]
-mod buffer_size_tests {
-    use super::{framed_buffer_size_for_mtu, ETHERNET_HEADER_LEN, VLAN_TAG_LEN};
+mod tests {
+    use super::{
+        framed_buffer_size_for_mtu, BytesCodec, Decoder, Encoder, ReadState, WriteState,
+        ETHERNET_HEADER_LEN, VLAN_TAG_LEN,
+    };
+    use bytes::{Bytes, BytesMut};
+    use std::io;
+
+    struct FourByteDecoder;
+
+    impl Decoder for FourByteDecoder {
+        type Item = BytesMut;
+        type Error = io::Error;
+
+        fn decode(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
+            if src.len() < 4 {
+                return Ok(None);
+            }
+            Ok(Some(src.split_to(4)))
+        }
+    }
 
     #[test]
-    fn default_framed_buffer_accepts_full_mtu_qinq_frame() {
-        const MTU: usize = 1500;
-        let qinq_frame_len = MTU + ETHERNET_HEADER_LEN + 2 * VLAN_TAG_LEN;
-        assert_eq!(framed_buffer_size_for_mtu(MTU), qinq_frame_len);
+    fn framed_buffer_reserves_ethernet_and_two_vlan_tags() {
+        for mtu in [0, 576, 1500, 9000] {
+            assert_eq!(
+                framed_buffer_size_for_mtu(mtu),
+                mtu + ETHERNET_HEADER_LEN + 2 * VLAN_TAG_LEN
+            );
+        }
+    }
+
+    #[test]
+    fn decoder_eof_rejects_incomplete_frame_and_accepts_complete_frame() -> io::Result<()> {
+        let mut decoder = FourByteDecoder;
+        let mut empty = BytesMut::new();
+        assert!(decoder.decode_eof(&mut empty)?.is_none());
+
+        let mut incomplete = BytesMut::from(&b"abc"[..]);
+        let error = decoder
+            .decode_eof(&mut incomplete)
+            .err()
+            .ok_or_else(|| io::Error::other("incomplete EOF frame was accepted"))?;
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(&incomplete[..], b"abc");
+
+        let mut complete = BytesMut::from(&b"abcd"[..]);
+        let Some(frame) = decoder.decode_eof(&mut complete)? else {
+            return Err(io::Error::other("complete EOF frame was not decoded"));
+        };
+        assert_eq!(&frame[..], b"abcd");
+        assert!(complete.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn bytes_codec_decodes_entire_packet_without_copy_semantics() -> io::Result<()> {
+        let mut codec = BytesCodec::new();
+        let mut src = BytesMut::from(&b"packet"[..]);
+        let original_ptr = src.as_ptr();
+        let Some(frame) = codec.decode(&mut src)? else {
+            return Err(io::Error::other("non-empty packet was not decoded"));
+        };
+        assert_eq!(&frame[..], b"packet");
+        assert_eq!(frame.as_ptr(), original_ptr);
+        assert!(src.is_empty());
+        assert!(codec.decode(&mut src)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn bytes_codec_encoders_append_bytes_and_bytes_mut() -> io::Result<()> {
+        let mut codec = BytesCodec::new();
+        let mut dst = BytesMut::from(&b"prefix:"[..]);
+        Encoder::<Bytes>::encode(&mut codec, Bytes::from_static(b"one"), &mut dst)?;
+        Encoder::<BytesMut>::encode(&mut codec, BytesMut::from(&b":two"[..]), &mut dst)?;
+        assert_eq!(&dst[..], b"prefix:one:two");
+        Ok(())
+    }
+
+    #[test]
+    fn read_buffer_size_setter_respects_packet_minimum_and_allows_safe_resize() {
+        let mut state = ReadState {
+            recv_buffer_size: 1500,
+            min_recv_buffer_size: 1500,
+            rd: BytesMut::new(),
+            #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+            packet_splitter: None,
+        };
+        state.set_read_buffer_size(1200);
+        assert_eq!(state.read_buffer_size(), 1500);
+        state.set_read_buffer_size(9000);
+        assert_eq!(state.read_buffer_size(), 9000);
+        state.set_read_buffer_size(2000);
+        assert_eq!(state.read_buffer_size(), 2000);
+    }
+
+    #[test]
+    fn write_buffer_size_setter_only_grows_without_gso() {
+        let mut state = WriteState {
+            send_buffer_size: 1500,
+            wr: BytesMut::new(),
+            #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+            packet_arena: None,
+        };
+        state.set_write_buffer_size(1200);
+        assert_eq!(state.write_buffer_size(), 1500);
+        state.set_write_buffer_size(9000);
+        assert_eq!(state.write_buffer_size(), 9000);
     }
 }

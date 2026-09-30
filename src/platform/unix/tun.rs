@@ -554,3 +554,40 @@ impl IntoRawFd for Tun {
         self.fd.into_raw_fd()
     }
 }
+
+#[cfg(all(
+    test,
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "openbsd",
+        target_os = "freebsd",
+        target_os = "netbsd",
+    )
+))]
+mod packet_information_tests {
+    use super::{generate_packet_information, is_ipv6};
+    use std::io;
+
+    #[test]
+    fn packet_information_uses_network_order_address_family() {
+        assert_eq!(
+            generate_packet_information(false),
+            (libc::AF_INET as u32).to_be_bytes()
+        );
+        assert_eq!(
+            generate_packet_information(true),
+            (libc::AF_INET6 as u32).to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn packet_version_detection_accepts_only_ipv4_and_ipv6() -> io::Result<()> {
+        assert!(!is_ipv6(&[0x45])?);
+        assert!(is_ipv6(&[0x60])?);
+        assert!(is_ipv6(&[]).is_err());
+        assert!(is_ipv6(&[0x50]).is_err());
+        Ok(())
+    }
+}

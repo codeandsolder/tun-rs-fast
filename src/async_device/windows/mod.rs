@@ -95,6 +95,9 @@ impl AsyncDevice {
         AsyncDevice::new_dev(device.0)
     }
     /// Create a new `AsyncDevice` wrapping around a `Device`.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn new_dev(device: DeviceImpl) -> io::Result<AsyncDevice> {
         let inner = Arc::new(device);
 
@@ -182,6 +185,9 @@ impl AsyncDevice {
         }
     }
     #[cfg(feature = "async_framed")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
@@ -322,6 +328,9 @@ impl AsyncDevice {
     /// # Errors
     /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.try_recv(buf)
     }
@@ -357,6 +366,9 @@ impl AsyncDevice {
     /// # Errors
     /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         self.inner.try_send(buf)
     }
@@ -374,6 +386,9 @@ impl Drop for ExitSignalGuard {
     }
 }
 impl ExitSignalGuard {
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn call<R>(
         &self,
         mut op: impl FnMut(&DeviceImpl, &InterruptEvent) -> io::Result<R>,

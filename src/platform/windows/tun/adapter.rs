@@ -10,14 +10,15 @@ use crate::windows::{
     ffi::{decode_utf16, destroy_device_info_list, encode_utf16, enum_device_info},
 };
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use windows_sys::Win32::Foundation::{DEVPROPKEY, ERROR_INSUFFICIENT_BUFFER};
+use windows_sys::Win32::Foundation::{DEVPROPKEY, ERROR_GEN_FAILURE, ERROR_INSUFFICIENT_BUFFER};
 use windows_sys::{
     core::GUID,
     Win32::{
         Devices::{
             DeviceAndDriverInstallation::{
-                CM_Get_DevNode_Status, SetupDiGetClassDevsExW, SetupDiGetDevicePropertyW,
-                CM_DEVNODE_STATUS_FLAGS, CR_SUCCESS, DN_HAS_PROBLEM, HDEVINFO, SP_DEVINFO_DATA,
+                CM_Get_DevNode_Status, CM_MapCrToWin32Err, SetupDiGetClassDevsExW,
+                SetupDiGetDevicePropertyW, CM_DEVNODE_STATUS_FLAGS, CR_SUCCESS, DN_HAS_PROBLEM,
+                HDEVINFO, SP_DEVINFO_DATA,
             },
             Properties::DEVPROPID_FIRST_USABLE,
         },
@@ -206,7 +207,8 @@ fn dev_node_status(devinfo_data: &SP_DEVINFO_DATA) -> io::Result<CM_DEVNODE_STAT
     };
 
     if cr != CR_SUCCESS {
-        return Err(io::Error::last_os_error());
+        let code = unsafe { CM_MapCrToWin32Err(cr, ERROR_GEN_FAILURE) };
+        return Err(io::Error::from_raw_os_error(code.cast_signed()));
     }
 
     Ok(pulstatus)

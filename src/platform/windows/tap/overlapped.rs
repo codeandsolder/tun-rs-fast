@@ -259,33 +259,35 @@ impl OverlappedEvent {
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        const MAX_FINITE_WAIT_MS: u32 = INFINITE - 1;
         let handles = [self.event.as_raw_handle(), interrupt_event.as_raw_handle()];
-        let timeout_ms = timeout.map_or(INFINITE, |duration| {
-            let millis = duration.as_millis().min(u128::from(MAX_FINITE_WAIT_MS));
-            match u32::try_from(millis) {
-                Ok(value) => value,
-                Err(_) => MAX_FINITE_WAIT_MS,
-            }
-        });
-        // SAFETY: handles is a live two-element array of valid wait handles;
-        // WaitForMultipleObjects borrows it synchronously and count matches.
-        unsafe {
-            let wait_ret = WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms);
+        let started = std::time::Instant::now();
+        loop {
+            let timeout_ms = timeout.map_or(INFINITE, |limit| {
+                ffi::finite_wait_timeout_millis(limit.saturating_sub(started.elapsed()))
+            });
+            // SAFETY: handles is a live two-element array of valid wait handles;
+            // WaitForMultipleObjects borrows it synchronously and count matches.
+            let wait_ret = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms) };
             match wait_ret {
-                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => Ok(()),
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => return Ok(()),
                 windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
-                    Err(io::Error::from(io::ErrorKind::TimedOut))
-                }
-                _ => {
-                    if wait_ret == windows_sys::Win32::Foundation::WAIT_OBJECT_0 + 1 {
-                        Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "trigger interrupt",
-                        ))
-                    } else {
-                        Err(io::Error::last_os_error())
+                    if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
+                }
+                value if value == windows_sys::Win32::Foundation::WAIT_OBJECT_0 + 1 => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "trigger interrupt",
+                    ));
+                }
+                windows_sys::Win32::Foundation::WAIT_FAILED => {
+                    return Err(io::Error::last_os_error());
+                }
+                value => {
+                    return Err(io::Error::other(format!(
+                        "WaitForMultipleObjects returned unexpected status {value:#x}"
+                    )));
                 }
             }
         }

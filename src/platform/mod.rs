@@ -319,8 +319,11 @@ impl SyncDevice {
     ///
     /// # Platform-specific Behavior
     ///
-    /// On **Unix platforms**, it is recommended to use this together with `set_nonblocking(true)`.
-    /// Without setting non-blocking mode, concurrent reads may not respond properly to interrupt signals.
+    /// On **Unix platforms**, use this together with `set_nonblocking(true)` when another
+    /// thread or task can read from the same underlying device. POSIX `poll()` reports a
+    /// readiness snapshot; another consumer can drain that readiness before this call reaches
+    /// `read()`. Nonblocking mode lets the implementation observe `WouldBlock`, re-check the
+    /// interrupt event, and continue without becoming stuck in a blocking syscall.
     ///
     /// # Feature
     ///
@@ -350,6 +353,11 @@ impl SyncDevice {
     /// - `Ok(n)` - Successfully read `n` bytes
     /// - `Err(e)` with `ErrorKind::Interrupted` - Operation was interrupted by the event
     /// - `Err(e)` with `ErrorKind::TimedOut` - Timeout expired before data was available
+    ///
+    /// On Unix, callers sharing the underlying device with another reader should enable
+    /// nonblocking mode. Readiness is only a snapshot, so a competing reader can consume the
+    /// packet before this operation reaches `read()`; nonblocking mode lets the timeout and
+    /// interrupt checks remain effective across that race.
     ///
     /// # Example
     ///
