@@ -320,7 +320,7 @@ impl AsyncDevice {
     /// Attempts to read a packet without blocking.
     ///
     /// # Errors
-    /// Returns the underlying device error, including WouldBlock when not ready.
+    /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.try_recv(buf)
@@ -355,7 +355,7 @@ impl AsyncDevice {
     /// Attempts to write a packet without blocking.
     ///
     /// # Errors
-    /// Returns the underlying device error, including WouldBlock when not ready.
+    /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
     pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         self.inner.try_send(buf)
