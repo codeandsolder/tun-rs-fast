@@ -108,7 +108,7 @@ fn win_i32_size(value: usize) -> io::Result<i32> {
 
 pub(crate) fn finite_wait_timeout_millis(duration: std::time::Duration) -> u32 {
     let whole_millis = duration.as_millis();
-    let has_fraction = duration.subsec_nanos() % 1_000_000 != 0;
+    let has_fraction = !duration.subsec_nanos().is_multiple_of(1_000_000);
     let rounded_up = whole_millis.saturating_add(u128::from(has_fraction));
     let max_finite = u128::from(INFINITE - 1);
     u32::try_from(rounded_up.min(max_finite)).unwrap_or(INFINITE - 1)
@@ -487,8 +487,8 @@ pub fn destroy_driver_info_list(
 
 pub fn get_driver_info_detail(
     devinfo: HDEVINFO,
-    devinfo_data: &SP_DEVINFO_DATA,
-    drvinfo_data: &SP_DRVINFO_DATA_V2_W,
+    device_info: &SP_DEVINFO_DATA,
+    driver_info: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<SP_DRVINFO_DETAIL_DATA_W2> {
     let mut drvinfo_detail: SP_DRVINFO_DETAIL_DATA_W2 = unsafe { mem::zeroed() };
     drvinfo_detail.cbSize = win_u32_size(mem::size_of::<SP_DRVINFO_DETAIL_DATA_W>())?;
@@ -497,8 +497,8 @@ pub fn get_driver_info_detail(
     match unsafe {
         SetupDiGetDriverInfoDetailW(
             devinfo,
-            std::ptr::from_ref(devinfo_data).cast(),
-            std::ptr::from_ref(drvinfo_data).cast(),
+            std::ptr::from_ref(device_info).cast(),
+            std::ptr::from_ref(driver_info).cast(),
             (&raw mut drvinfo_detail).cast(),
             detail_size,
             ptr::null_mut(),
@@ -511,14 +511,14 @@ pub fn get_driver_info_detail(
 
 pub fn set_selected_driver(
     devinfo: HDEVINFO,
-    devinfo_data: &SP_DEVINFO_DATA,
-    drvinfo_data: &SP_DRVINFO_DATA_V2_W,
+    device_info: &SP_DEVINFO_DATA,
+    driver_info: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<()> {
     match unsafe {
         SetupDiSetSelectedDriverW(
             devinfo,
-            std::ptr::from_ref(devinfo_data).cast_mut(),
-            std::ptr::from_ref(drvinfo_data).cast_mut(),
+            std::ptr::from_ref(device_info).cast_mut(),
+            std::ptr::from_ref(driver_info).cast_mut(),
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -607,8 +607,8 @@ pub fn enum_driver_info(
     driver_type: u32,
     member_index: u32,
 ) -> Option<io::Result<SP_DRVINFO_DATA_V2_W>> {
-    let mut drvinfo_data: SP_DRVINFO_DATA_V2_W = unsafe { mem::zeroed() };
-    drvinfo_data.cbSize = match win_u32_size(mem::size_of_val(&drvinfo_data)) {
+    let mut driver_info: SP_DRVINFO_DATA_V2_W = unsafe { mem::zeroed() };
+    driver_info.cbSize = match win_u32_size(mem::size_of_val(&driver_info)) {
         Ok(size) => size,
         Err(error) => return Some(Err(error)),
     };
@@ -618,12 +618,12 @@ pub fn enum_driver_info(
             std::ptr::from_ref(devinfo_data).cast(),
             driver_type,
             member_index,
-            &raw mut drvinfo_data,
+            &raw mut driver_info,
         )
     } {
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
         0 => Some(Err(io::Error::last_os_error())),
-        _ => Some(Ok(drvinfo_data)),
+        _ => Some(Ok(driver_info)),
     }
 }
 
