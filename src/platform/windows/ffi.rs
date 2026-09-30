@@ -226,7 +226,8 @@ pub fn create_file(
 ) -> io::Result<HANDLE> {
     let file_name = encode_utf16(file_name);
     // SAFETY: file_name is NUL-terminated and all optional pointer parameters
-    // are null; the returned HANDLE is checked before being exposed.
+    // are null; the returned HANDLE is checked against CreateFileW's documented
+    // INVALID_HANDLE_VALUE failure sentinel before being exposed.
     let handle = unsafe {
         CreateFileW(
             file_name.as_ptr(),
@@ -238,7 +239,7 @@ pub fn create_file(
             ptr::null_mut(),
         )
     };
-    if handle.is_null() {
+    if handle == windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE {
         Err(io::Error::last_os_error())
     } else {
         Ok(handle)
@@ -1077,7 +1078,8 @@ pub fn set_device_state(
 #[cfg(test)]
 mod wait_tests {
     use super::{
-        create_event, finite_wait_timeout_millis, set_event, wait_for_single_object, win_result,
+        create_event, create_file, finite_wait_timeout_millis, set_event, wait_for_single_object,
+        win_result,
     };
     use std::io;
     use std::os::windows::io::AsRawHandle;
@@ -1110,6 +1112,32 @@ mod wait_tests {
             Some(STALE_LAST_ERROR.cast_signed()),
             "wrapper returned stale GetLastError instead of the API status"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn create_file_rejects_invalid_handle_value() -> io::Result<()> {
+        let missing_dir =
+            std::env::temp_dir().join(format!("tun-rs-create-file-missing-{}", std::process::id()));
+        match std::fs::remove_dir_all(&missing_dir) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+
+        let missing_file = missing_dir.join("device");
+        let path = missing_file.to_string_lossy();
+        let error = create_file(
+            &path,
+            0,
+            0,
+            windows_sys::Win32::Storage::FileSystem::OPEN_EXISTING,
+            windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_NORMAL,
+        )
+        .err()
+        .ok_or_else(|| io::Error::other("CreateFileW failure returned a usable handle"))?;
+
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
         Ok(())
     }
 
