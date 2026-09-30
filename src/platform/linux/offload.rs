@@ -128,7 +128,7 @@ pub const VIRTIO_NET_HDR_GSO_TCPV6: u8 = 4;
 /// Available in newer Linux kernels for UDP packet segmentation.
 pub const VIRTIO_NET_HDR_GSO_UDP_L4: u8 = 5;
 
-/// Flag ORed into a TCP GSO type when Explicit Congestion Notification is active.
+/// Flag combined with a TCP GSO type when Explicit Congestion Notification is active.
 ///
 /// Linux masks this bit before identifying the base GSO type and maps it to
 /// `SKB_GSO_TCP_ECN`. It is not a standalone GSO type.
