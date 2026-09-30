@@ -193,6 +193,8 @@ pub fn check_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()>
 
         let luid2 = net_luid(if_type.into(), luid_index.into());
 
+        // SAFETY: both NET_LUID_LH values were initialized by Win32/our constructor;
+        // reading the Value union member is the canonical representation comparison.
         if unsafe { luid.Value != luid2.Value } {
             continue;
         }
@@ -256,6 +258,8 @@ pub fn delete_interface(component_id: &str, luid: &NET_LUID_LH) -> io::Result<()
 
         let luid2 = net_luid(if_type.into(), luid_index.into());
 
+        // SAFETY: both NET_LUID_LH values were initialized by Win32/our constructor;
+        // reading the Value union member is the canonical representation comparison.
         if unsafe { luid.Value != luid2.Value } {
             continue;
         }
@@ -280,6 +284,8 @@ pub fn open_interface(luid: &NET_LUID_LH) -> io::Result<OwnedHandle> {
         OPEN_EXISTING,
         FILE_ATTRIBUTE_SYSTEM | FILE_FLAG_OVERLAPPED,
     )?;
+    // SAFETY: create_file returned a live owned HANDLE on success; ownership is
+    // transferred exactly once into OwnedHandle here.
     unsafe { Ok(OwnedHandle::from_raw_handle(handle)) }
 }
 
@@ -365,6 +371,8 @@ pub fn enable_adapter(component_id: &str, luid: &NET_LUID_LH, val: bool) -> io::
 
         let luid2 = net_luid(if_type.into(), luid_index.into());
 
+        // SAFETY: both NET_LUID_LH values were initialized by Win32/our constructor;
+        // reading the Value union member is the canonical representation comparison.
         if unsafe { luid.Value != luid2.Value } {
             continue;
         }
@@ -384,6 +392,7 @@ mod tests {
     fn net_luid_packs_if_type_and_index() {
         // e.g. IF_TYPE_PROP_VIRTUAL (53), NetLuidIndex 5
         let luid = net_luid(53, 5);
+        // SAFETY: net_luid initializes the Value union member directly.
         assert_eq!(unsafe { luid.Value }, (53u64 << 48) | (5u64 << 24));
     }
 
@@ -393,12 +402,14 @@ mod tests {
         // neighbouring fields.
         let a = net_luid(0x1_2345, 0x1AB_CDEF);
         let b = net_luid(0x2345, 0xAB_CDEF);
+        // SAFETY: net_luid initializes the Value union member directly for both values.
         assert_eq!(unsafe { a.Value }, unsafe { b.Value });
     }
 
     #[test]
     fn net_luid_zero_keeps_reserved_clear() {
         let luid = net_luid(0, 0);
+        // SAFETY: net_luid initializes the Value union member directly.
         assert_eq!(unsafe { luid.Value }, 0);
     }
 }

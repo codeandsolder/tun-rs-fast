@@ -10,6 +10,7 @@ use widestring::U16CStr;
 
 /// Sets the logger wintun will use when logging. Maps to the `WintunSetLogger` C function
 pub fn set_logger(win_tun: &wintun_raw::wintun, f: wintun_raw::WINTUN_LOGGER_CALLBACK) {
+    // SAFETY: win_tun owns a loaded Wintun DLL and f has the generated callback ABI.
     unsafe { win_tun.WintunSetLogger(f) };
 }
 
@@ -38,8 +39,8 @@ pub unsafe extern "C" fn default_logger(
     default_logger_(level, message);
 }
 fn default_logger_(level: wintun_raw::WINTUN_LOGGER_LEVEL, message: *const wintun_raw::WCHAR) {
-    //Cant wait for RFC 2585
-    //Wintun will always give us a valid UTF16 null termineted string
+    // SAFETY: this helper is called only from the Wintun logger callbacks whose
+    // contract guarantees message is a valid NUL-terminated UTF-16 pointer.
     let msg = unsafe { U16CStr::from_ptr_str(message) };
     let utf8_msg = msg.to_string_lossy();
     match level {

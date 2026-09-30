@@ -59,6 +59,8 @@ pub fn check_adapter_if_orphaned_devices(adapter_name: &str) -> bool {
     }
 
     let device_name = encode_utf16("SWD\\Wintun");
+    // SAFETY: device_name is NUL-terminated and the remaining optional pointer
+    // arguments are null; SetupAPI returns a device-info-set handle on success.
     let dev_info = unsafe {
         SetupDiGetClassDevsExW(
             &GUID_NETWORK_ADAPTER,
@@ -77,31 +79,29 @@ pub fn check_adapter_if_orphaned_devices(adapter_name: &str) -> bool {
 
     let mut index = 0;
     let is_orphaned_adapter = loop {
-        match enum_device_info(dev_info, index) {
-            Some(ret) => {
-                let Ok(devinfo_data) = ret else {
-                    continue;
-                };
+        let Some(result) = enum_device_info(dev_info, index) else {
+            break false;
+        };
+        let Ok(devinfo_data) = result else {
+            index += 1;
+            continue;
+        };
 
-                let Ok(status) = dev_node_status(&devinfo_data) else {
-                    index += 1;
-                    continue;
-                };
-                if status & DN_HAS_PROBLEM == 0 {
-                    index += 1;
-                    continue;
-                }
+        let Ok(status) = dev_node_status(&devinfo_data) else {
+            index += 1;
+            continue;
+        };
+        if status & DN_HAS_PROBLEM == 0 {
+            index += 1;
+            continue;
+        }
 
-                let Ok(name) = get_device_name(dev_info, &devinfo_data) else {
-                    index += 1;
-                    continue;
-                };
-
-                if adapter_name == name {
-                    break true;
-                }
-            }
-            None => break false,
+        let Ok(name) = get_device_name(dev_info, &devinfo_data) else {
+            index += 1;
+            continue;
+        };
+        if adapter_name == name {
+            break true;
         }
 
         index += 1;
@@ -114,6 +114,10 @@ pub fn check_adapter_if_orphaned_devices(adapter_name: &str) -> bool {
 pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io::Result<String> {
     let mut prop_type: u32 = 0;
     let mut required_size: u32 = 0;
+    // SAFETY: devinfo/devinfo_data identify a live SetupAPI device and all
+    // out-pointers are valid writable storage for this size-query call.
+    // SAFETY: buf is allocated from required_size and remains writable/live;
+    // devinfo/devinfo_data and all out-pointers are valid for the synchronous call.
     let ok = unsafe {
         SetupDiGetDevicePropertyW(
             devinfo,
@@ -141,6 +145,8 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
     })?;
     let mut buf: Vec<u16> = vec![0; buffer_len];
 
+    // SAFETY: buf is allocated from required_size and remains writable/live;
+    // devinfo/devinfo_data and all out-pointers are valid for the synchronous call.
     let ok = unsafe {
         SetupDiGetDevicePropertyW(
             devinfo,
@@ -173,6 +179,8 @@ fn is_windows_seven() -> bool {
         szCSDVersion: [0; 128],
     };
 
+    // SAFETY: info is correctly sized writable OSVERSIONINFOA storage and the
+    // call is synchronous.
     unsafe {
         if GetVersionExA(&raw mut info) == 0 {
             return false;
@@ -186,6 +194,8 @@ fn dev_node_status(devinfo_data: &SP_DEVINFO_DATA) -> io::Result<CM_DEVNODE_STAT
     let mut pulstatus = 0;
     let mut pulproblemnumber = 0;
 
+    // SAFETY: both status outputs are live writable integers and DevInst comes
+    // from a valid SetupAPI SP_DEVINFO_DATA record.
     let cr = unsafe {
         CM_Get_DevNode_Status(
             &raw mut pulstatus,

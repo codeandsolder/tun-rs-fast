@@ -29,6 +29,8 @@ pub struct OwningProcess {
 
 pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
     let device_name = encode_utf16("ROOT\\Wintun");
+    // SAFETY: device_name is NUL-terminated and optional pointer arguments are
+    // null; SetupAPI returns a device-info-set handle on success.
     let dev_info = unsafe {
         SetupDiGetClassDevsExW(
             &GUID_NETWORK_ADAPTER,
@@ -41,6 +43,8 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
         )
     };
     if dev_info == INVALID_HANDLE_VALUE as isize {
+        // SAFETY: GetLastError has no pointer/lifetime preconditions and is read
+        // immediately after the failed SetupAPI call.
         if unsafe { GetLastError() } != ERROR_INVALID_DATA {
             log::error!("Failed to get adapters");
         }
@@ -57,12 +61,13 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
             continue;
         };
 
+        // SAFETY: ptype/buf are plain writable output storage; devinfo_data belongs
+        // to dev_info, and SetupDiGetDevicePropertyW borrows all buffers synchronously.
         unsafe {
             let mut ptype = mem::zeroed();
             let mut buf: [u8; mem::size_of::<OwningProcess>()] = mem::zeroed();
-            let buffer_len = match u32::try_from(buf.len()) {
-                Ok(len) => len,
-                Err(_) => return false,
+            let Ok(buffer_len) = u32::try_from(buf.len()) else {
+                return false;
             };
 
             let ok = SetupDiGetDevicePropertyW(
@@ -102,6 +107,8 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
 }
 
 fn process_is_stale(owning_process: &OwningProcess) -> bool {
+    // SAFETY: process_id is an integer identifier obtained from Wintun metadata;
+    // OpenProcess returns either a new owned handle or null.
     let process = unsafe {
         OpenProcess(
             PROCESS_QUERY_LIMITED_INFORMATION,
@@ -112,8 +119,13 @@ fn process_is_stale(owning_process: &OwningProcess) -> bool {
     if process.is_null() {
         return true;
     }
+    // SAFETY: FILETIME is a plain Win32 POD value and zero is a valid temporary
+    // initialization before GetProcessTimes overwrites the outputs.
     let mut creation_time: FILETIME = unsafe { std::mem::zeroed() };
+    // SAFETY: same invariant as creation_time; this storage is only an ignored output.
     let mut unused: FILETIME = unsafe { std::mem::zeroed() };
+    // SAFETY: process is a live handle and all FILETIME pointers are writable for
+    // the duration of this synchronous query.
     let ret = unsafe {
         GetProcessTimes(
             process,
@@ -123,6 +135,7 @@ fn process_is_stale(owning_process: &OwningProcess) -> bool {
             &raw mut unused,
         )
     };
+    // SAFETY: process was returned non-null by OpenProcess and is closed exactly once.
     _ = unsafe { CloseHandle(process) };
     if ret == 0 {
         return false;
