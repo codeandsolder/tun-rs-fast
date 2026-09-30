@@ -426,9 +426,9 @@ impl WinTunSession {
             inner_event.as_raw_handle(),
             interrupt_event.as_raw_handle(),
         ];
+        let timeout_ms = finite_wait_timeout_ms(timeout);
         // SAFETY: handles is a live stack array of three valid wait handles;
         // WaitForMultipleObjects borrows the array synchronously and count matches.
-        let timeout_ms = finite_wait_timeout_ms(timeout);
         let result = unsafe { WaitForMultipleObjects(3, handles.as_ptr(), 0, timeout_ms) };
         match result {
             WAIT_FAILED => Err(io::Error::last_os_error()),

@@ -168,9 +168,7 @@ impl DeviceImpl {
                 Ok(rs) => {
                     return Ok(rs);
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
         }

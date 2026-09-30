@@ -259,8 +259,8 @@ impl OverlappedEvent {
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        let handles = [self.event.as_raw_handle(), interrupt_event.as_raw_handle()];
         const MAX_FINITE_WAIT_MS: u32 = INFINITE - 1;
+        let handles = [self.event.as_raw_handle(), interrupt_event.as_raw_handle()];
         let timeout_ms = timeout.map_or(INFINITE, |duration| {
             let millis = duration.as_millis().min(u128::from(MAX_FINITE_WAIT_MS));
             match u32::try_from(millis) {
