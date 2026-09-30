@@ -272,6 +272,9 @@ impl DeviceImpl {
     ///
     /// This method first checks if the current name is different from the desired one. If it is,
     /// it uses the `netsh` command to update the interface name.
+    ///
+    /// # Errors
+    /// Returns an I/O error if querying or renaming the Windows interface fails.
     pub fn set_name(&self, value: &str) -> io::Result<()> {
         let _guard = self
             .lock
@@ -298,6 +301,9 @@ impl DeviceImpl {
     /// Retrieves the interface LUID (locally unique identifier) of the device.
     ///
     /// This is used for various network configuration APIs.
+    ///
+    /// # Errors
+    /// The shared API is fallible; the Windows backend currently returns its cached LUID.
     pub fn if_luid(&self) -> io::Result<NET_LUID_LH> {
         let _guard = self
             .lock
@@ -531,6 +537,9 @@ impl DeviceImpl {
         super::ffi::set_interface_mtu(self.if_index_impl(), u32::from(mtu), true)
     }
     /// Sets the MTU for the device (IPv6).
+    ///
+    /// # Errors
+    /// Returns an I/O error if updating the Windows IPv6 MTU fails.
     pub fn set_mtu_v6(&self, mtu: u16) -> io::Result<()> {
         let _guard = self
             .lock

@@ -517,9 +517,8 @@ impl TunDevice {
         let raw_luid = unsafe { raw_luid.assume_init() };
         // SAFETY: NET_LUID's Value member is the canonical 64-bit representation
         // initialized by WintunGetAdapterLUID above.
-        let luid = NET_LUID_LH {
-            Value: unsafe { raw_luid.Value },
-        };
+        let luid_value = unsafe { raw_luid.Value };
+        let luid = NET_LUID_LH { Value: luid_value };
 
         let win_tun_adapter = WinTunAdapter {
             win_tun: Arc::new(win_tun),
@@ -602,9 +601,8 @@ impl TunDevice {
         let raw_luid = unsafe { raw_luid.assume_init() };
         // SAFETY: NET_LUID's Value member is the canonical 64-bit representation
         // initialized by WintunGetAdapterLUID above.
-        let luid = NET_LUID_LH {
-            Value: unsafe { raw_luid.Value },
-        };
+        let luid_value = unsafe { raw_luid.Value };
+        let luid = NET_LUID_LH { Value: luid_value };
 
         let win_tun_adapter = WinTunAdapter {
             win_tun: Arc::new(win_tun),

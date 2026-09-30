@@ -64,8 +64,9 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                         &devinfo_data,
                         &DEVPKEY_Wintun_OwningProcess,
                         &mut ptype,
-                        &mut buf as _,
-                        buf.len() as _,
+                        buf.as_mut_ptr(),
+                        u32::try_from(buf.len())
+                            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?,
                         ptr::null_mut(),
                         0,
                     );
