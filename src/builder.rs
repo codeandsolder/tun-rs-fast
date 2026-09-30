@@ -311,7 +311,7 @@ pub(crate) struct DeviceConfig {
     #[cfg(windows)]
     pub(crate) delete_driver: Option<bool>,
     #[cfg(windows)]
-    pub(crate) mac_address: Option<String>,
+    pub(crate) mac_address: Option<[u8; 6]>,
     /// switch of Enable/Disable packet information for network driver
     #[cfg(any(
         target_os = "macos",
@@ -1242,7 +1242,6 @@ impl DeviceBuilder {
     /// let dev = DeviceBuilder::new()
     ///     .name("tun0")
     ///     .ipv4("10.0.0.1", 24, None)
-    ///     .with(|builder| builder.reuse_dev(true))
     ///     .inherit_enable_state() // Don't change the existing enable state
     ///     .build_sync()?;
     /// # }
@@ -1256,7 +1255,7 @@ impl DeviceBuilder {
         self.enabled = None;
         self
     }
-    pub(crate) fn build_config(&mut self) -> DeviceConfig {
+    pub(crate) const fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),
             #[cfg(windows)]
@@ -1286,15 +1285,7 @@ impl DeviceBuilder {
             #[cfg(windows)]
             delete_driver: self.delete_driver.take(),
             #[cfg(windows)]
-            mac_address: self.mac_addr.map(|v| {
-                const HEX: &[u8; 16] = b"0123456789ABCDEF";
-                let mut encoded = String::with_capacity(v.len() * 2);
-                for byte in v {
-                    encoded.push(char::from(HEX[usize::from(byte >> 4)]));
-                    encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
-                }
-                encoded
-            }),
+            mac_address: self.mac_addr,
             #[cfg(any(
                 target_os = "macos",
                 target_os = "linux",

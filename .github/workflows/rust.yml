@@ -214,39 +214,53 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/review/rust-skills2-quality'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: cpa.sh {0}
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - name: Native OpenBSD compile and tests
+      - name: Start OpenBSD VM
         uses: cross-platform-actions/action@e0b9770014ba65d5e0815f15b74031c3a635f641 # v1.6.0
         with:
           operating_system: openbsd
           architecture: x86-64
           version: '7.9'
-          shell: bash
           memory: 5G
           cpu_count: 4
-          run: |
-            set -eu
-            uname -a
-            sudo pkg_add -U rust git
-            rustc --version
-            cargo --version
+          sync_files: runner-to-vm
 
-            # OpenBSD 7.9 ships Rust 1.94.1. The crate deliberately requires
-            # 1.98, so ignore only Cargo's version gate here: this job validates
-            # the native OpenBSD ABI/runtime, not the declared MSRV.
-            cargo check --ignore-rust-version --lib
-            cargo check --ignore-rust-version --lib --features async_tokio,async_framed,interruptible,experimental
-            cargo check --ignore-rust-version --lib --features async_io,async_framed,interruptible,experimental
+      - name: Install OpenBSD Rust toolchain
+        run: |
+          set -eu
+          uname -a
+          sudo pkg_add -U rust git
+          rustc --version
+          cargo --version
 
-            cargo test --ignore-rust-version --lib -- --test-threads=1
-            cargo test --ignore-rust-version --lib --features async_tokio,async_framed,interruptible,experimental -- --test-threads=1
-            cargo test --ignore-rust-version --lib --features async_io,async_framed,interruptible,experimental -- --test-threads=1
+      - name: Native OpenBSD compile checks
+        run: |
+          set -eu
+          # OpenBSD 7.9 ships Rust 1.94.1. The crate deliberately requires
+          # 1.98, so ignore only Cargo's version gate here: this job validates
+          # the native OpenBSD ABI/runtime, not the declared MSRV.
+          cargo check --ignore-rust-version --lib
+          cargo check --ignore-rust-version --lib --features async_tokio,async_framed,interruptible,experimental
+          cargo check --ignore-rust-version --lib --features async_io,async_framed,interruptible,experimental
 
-            cargo test --ignore-rust-version --doc
-            cargo test --ignore-rust-version --doc --features async_tokio,async_framed,interruptible,experimental
-            cargo test --ignore-rust-version --doc --features async_io,async_framed,interruptible,experimental
+      - name: Native OpenBSD library tests
+        run: |
+          set -eu
+          cargo test --ignore-rust-version --lib -- --test-threads=1
+          cargo test --ignore-rust-version --lib --features async_tokio,async_framed,interruptible,experimental -- --test-threads=1
+          cargo test --ignore-rust-version --lib --features async_io,async_framed,interruptible,experimental -- --test-threads=1
+
+      - name: Native OpenBSD documentation tests
+        run: |
+          set -eu
+          cargo test --ignore-rust-version --doc
+          cargo test --ignore-rust-version --doc --features async_tokio,async_framed,interruptible,experimental
+          cargo test --ignore-rust-version --doc --features async_io,async_framed,interruptible,experimental
 
   build_n_test_android:
     if: startsWith(github.ref, 'refs/tags/')

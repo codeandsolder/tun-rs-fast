@@ -275,19 +275,52 @@ pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
     Ok(fd)
 }
 
-/// Copies an interface name into a zero-initialized BSD C name array.
+/// Copies an interface name into a BSD C name array.
 ///
-/// The destination must have room for the trailing NUL byte.
+/// The destination must have room for the trailing NUL byte. It is cleared
+/// before copying so successful calls always produce a NUL-terminated name.
 #[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
 pub(crate) fn copy_device_name(name: &str, dest: &mut [libc::c_char]) -> io::Result<()> {
+    if name.as_bytes().contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface name contains NUL",
+        ));
+    }
     if name.len() >= dest.len() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "interface name exceeds platform IFNAMSIZ",
         ));
     }
+    dest.fill(0);
     for (out, byte) in dest.iter_mut().zip(name.bytes()) {
         *out = byte.cast_signed();
     }
     Ok(())
+}
+
+#[cfg(all(
+    test,
+    any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")
+))]
+mod bsd_device_name_tests {
+    use super::copy_device_name;
+    use std::io;
+
+    #[test]
+    fn copy_device_name_enforces_c_string_contract() {
+        let mut dest = [1; 4];
+        assert!(copy_device_name("abc", &mut dest).is_ok());
+        assert_eq!(dest[3], 0);
+
+        assert!(matches!(
+            copy_device_name("abcd", &mut dest),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            copy_device_name("a\0b", &mut dest),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+    }
 }

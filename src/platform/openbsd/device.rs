@@ -767,15 +767,19 @@ mod tests {
     fn borrowed_device_drop_leaves_descriptor_open() -> io::Result<()> {
         let file = File::open("/dev/null")?;
         let raw_fd = file.as_raw_fd();
+        // SAFETY: raw_fd is borrowed from `file`, which remains live through the
+        // device drop below; the borrowed Fd is configured not to close it.
+        let borrowed_fd = unsafe { Fd::new_unchecked_with_borrow(raw_fd, true) };
         let device = DeviceImpl {
             name: "tun-test".into(),
-            tun: Tun::new(unsafe { Fd::new_unchecked_with_borrow(raw_fd, true) }),
+            tun: Tun::new(borrowed_fd),
             op_lock: RwLock::new(()),
             associate_route: AtomicBool::new(true),
         };
 
         drop(device);
 
+        // SAFETY: `file` still owns raw_fd, so it remains valid for this query.
         assert!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) } >= 0);
         Ok(())
     }

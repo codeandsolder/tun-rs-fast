@@ -102,7 +102,16 @@ impl DeviceImpl {
             }
         } else if layer == Layer::L2 {
             const HARDWARE_ID: &str = "tap0901";
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
             let persist = config.persist.unwrap_or(false);
+            let mac_address = config.mac_address.map(|mac| {
+                let mut encoded = String::with_capacity(mac.len() * 2);
+                for byte in mac {
+                    encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                    encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+                }
+                encoded
+            });
 
             let tap = loop {
                 let default_name = format!("tap{count}");
@@ -116,11 +125,10 @@ impl DeviceImpl {
                             "The network adapter [{name}] already exists."
                         )));
                     }
-                    let tap =
-                        TapDevice::open(HARDWARE_ID, name, persist, config.mac_address.as_ref())?;
+                    let tap = TapDevice::open(HARDWARE_ID, name, persist, mac_address.as_deref())?;
                     break tap;
                 }
-                let tap = TapDevice::create(HARDWARE_ID, persist, config.mac_address.as_ref())?;
+                let tap = TapDevice::create(HARDWARE_ID, persist, mac_address.as_deref())?;
                 if let Err(e) = tap.set_name(name) {
                     if config.dev_name.is_some() {
                         return Err(e);
