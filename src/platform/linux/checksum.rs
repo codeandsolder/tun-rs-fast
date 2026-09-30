@@ -166,7 +166,11 @@ unsafe fn checksum_no_fold_sse41(mut b: &[u8], initial: u64) -> u64 {
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn checksum_folded_avx2(mut b: &[u8], initial: u64) -> u16 {
-    use std::arch::x86_64::*;
+    use std::arch::x86_64::{
+        _mm256_add_epi64, _mm256_and_si256, _mm256_extract_epi64, _mm256_loadu_si256,
+        _mm256_sad_epu8, _mm256_set1_epi16, _mm256_setzero_si256, _mm256_slli_epi64,
+        _mm256_srli_epi16,
+    };
 
     let zero = _mm256_setzero_si256();
     let low_byte_mask = _mm256_set1_epi16(0x00ff);
@@ -190,26 +194,27 @@ unsafe fn checksum_folded_avx2(mut b: &[u8], initial: u64) -> u16 {
     let sums = _mm256_add_epi64(_mm256_slli_epi64(even, 8), odd);
 
     let mut accumulator = initial;
-    accumulator += _mm256_extract_epi64(sums, 0) as u64;
-    accumulator += _mm256_extract_epi64(sums, 1) as u64;
-    accumulator += _mm256_extract_epi64(sums, 2) as u64;
-    accumulator += _mm256_extract_epi64(sums, 3) as u64;
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 0).to_ne_bytes());
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 1).to_ne_bytes());
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 2).to_ne_bytes());
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 3).to_ne_bytes());
 
     // The SIMD prefix ends on a 16-bit boundary, so the tail can be added
     // directly as network-order 16-bit words.
     while b.len() >= 2 {
-        accumulator += u16::from_be_bytes([b[0], b[1]]) as u64;
+        accumulator += u64::from(u16::from_be_bytes([b[0], b[1]]));
         b = &b[2..];
     }
     if let Some(&byte) = b.first() {
-        accumulator += (byte as u64) << 8;
+        accumulator += u64::from(byte) << 8;
     }
 
     while accumulator > 0xffff {
         accumulator = (accumulator >> 16) + (accumulator & 0xffff);
     }
 
-    accumulator as u16
+    let folded = accumulator.to_be_bytes();
+    u16::from_be_bytes([folded[6], folded[7]])
 }
 
 /// Calculates a checksum accumulator over a byte slice without the final fold.
@@ -389,11 +394,11 @@ mod tests {
                     expected = (expected >> 16) + (expected & 0xffff);
                 }
 
+                // SAFETY: the runtime feature check above proves AVX2 is available.
                 let actual = unsafe { checksum_folded_avx2(&data, initial) };
-                assert_eq!(
-                    actual, expected as u16,
-                    "length={len}, initial={initial:#x}"
-                );
+                let expected_bytes = expected.to_be_bytes();
+                let expected = u16::from_be_bytes([expected_bytes[6], expected_bytes[7]]);
+                assert_eq!(actual, expected, "length={len}, initial={initial:#x}");
             }
         }
     }
