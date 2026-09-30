@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows TAP owns raw OS handles and declares Send/Sync for the handle-backed device after synchronization"
+)]
+
 use crate::platform::windows::tap::overlapped::{ReadOverlapped, WriteOverlapped};
 use crate::platform::windows::{ffi, netsh};
 use bytes::buf::UninitSlice;
@@ -40,7 +45,7 @@ fn get_version(handle: HANDLE) -> io::Result<[u64; 3]> {
     let in_version: [u64; 3] = [0; 3];
     let mut out_version: [u64; 3] = [0; 3];
     ffi::device_io_control(handle, TAP_IOCTL_GET_VERSION, &in_version, &mut out_version)
-        .map(|_| out_version)
+        .map(|()| out_version)
 }
 
 impl TapDevice {
@@ -74,7 +79,6 @@ impl TapDevice {
             match ffi::luid_to_guid(&luid) {
                 Err(_) => {
                     std::thread::sleep(time::Duration::from_millis(20));
-                    continue;
                 }
                 Ok(guid) => {
                     if let Some(mac) = mac.take() {
@@ -92,7 +96,7 @@ impl TapDevice {
                     }
                     break handle;
                 }
-            };
+            }
         };
 
         let index = match ffi::luid_to_index(&luid) {
@@ -166,10 +170,14 @@ impl TapDevice {
             &(),
             &mut mac,
         )
-        .map(|_| mac)
+        .map(|()| mac)
     }
-    pub fn set_mac(&self, _mac: &[u8; 6]) -> io::Result<()> {
-        Err(io::Error::from(io::ErrorKind::Unsupported))?
+    #[expect(
+        clippy::unused_self,
+        reason = "the TAP backend keeps a method-shaped MAC setter to match the device backend API even though runtime mutation is unsupported"
+    )]
+    pub fn set_mac(&self, _mac: [u8; 6]) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
     /// Retrieve the version of the driver
@@ -211,7 +219,7 @@ impl TapDevice {
     /// Set the status of the interface, true for connected,
     /// false for disconnected.
     pub fn set_status(&self, status: bool) -> io::Result<()> {
-        let status: u32 = if status { 1 } else { 0 };
+        let status: u32 = u32::from(status);
         let mut out_status: u32 = 0;
         ffi::device_io_control(
             self.handle.as_raw_handle(),
@@ -274,7 +282,7 @@ impl TapDevice {
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
-            self.wait_readable()?
+            self.wait_readable()?;
         }
     }
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {

@@ -18,7 +18,12 @@ unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAdd
                 let sa_in6 = sa.addr6;
                 let ip = std::net::Ipv6Addr::from(sa_in6.sin6_addr.s6_addr);
                 let port = u16::from_be(sa_in6.sin6_port);
-                Some(std::net::SocketAddr::new(ip.into(), port))
+                Some(std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+                    ip,
+                    port,
+                    sa_in6.sin6_flowinfo,
+                    sa_in6.sin6_scope_id,
+                )))
             }
             _ => None,
         }
@@ -63,6 +68,8 @@ const fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
             addr.addr6.sin6_family = libc::AF_INET6 as libc::sa_family_t;
             addr.addr6.sin6_addr.s6_addr = ipv6.ip().octets();
             addr.addr6.sin6_port = ipv6.port().to_be();
+            addr.addr6.sin6_flowinfo = ipv6.flowinfo();
+            addr.addr6.sin6_scope_id = ipv6.scope_id();
             addr
         }
     }
@@ -172,8 +179,18 @@ fn test_conversion() -> std::io::Result<()> {
         .ok_or_else(|| std::io::Error::other("IPv4 sockaddr round-trip failed"))?;
     assert_eq!(ip, old);
 
-    let old = std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 0x0208);
+    let old = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
+        std::net::Ipv6Addr::LOCALHOST,
+        0x0208,
+        0x0123_4567,
+        17,
+    ));
     let addr = rs_addr_to_sockaddr(old);
+    // SAFETY: rs_addr_to_sockaddr initialized the IPv6 union member selected by the test.
+    unsafe {
+        assert_eq!(addr.addr6.sin6_flowinfo, 0x0123_4567);
+        assert_eq!(addr.addr6.sin6_scope_id, 17);
+    }
     // SAFETY: addr was created by rs_addr_to_sockaddr, so its family tag and selected union member agree.
     let ip = unsafe { sockaddr_to_rs_addr(&addr) }
         .ok_or_else(|| std::io::Error::other("IPv6 sockaddr round-trip failed"))?;

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows overlapped I/O requires raw OVERLAPPED structures, waits, and buffer copies"
+)]
+
 use crate::platform::windows::ffi;
 use crate::platform::windows::tap::READ_BUFFER_SIZE;
 use bytes::buf::UninitSlice;
@@ -87,7 +92,7 @@ impl WriteOverlapped {
         })
     }
     pub fn try_write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if !self.finish_pending_nonblocking()? {
+        if !self.finish_pending_nonblocking() {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
         }
         self.submit(buf)
@@ -128,21 +133,21 @@ impl WriteOverlapped {
             }
         }
     }
-    fn finish_pending_nonblocking(&mut self) -> io::Result<bool> {
+    fn finish_pending_nonblocking(&mut self) -> bool {
         let inner = &mut self.inner;
         if inner.no_pending_io {
-            return Ok(true);
+            return true;
         }
         match ffi::try_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped) {
             Ok(_) => {
                 inner.no_pending_io = true;
-                Ok(true)
+                true
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
             Err(e) => {
                 inner.no_pending_io = true;
                 log::warn!("previous TAP write completed with error: {e}");
-                Ok(true)
+                true
             }
         }
     }
@@ -225,29 +230,34 @@ impl OverlappedEvent {
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
         let handles = [self.event.as_raw_handle(), interrupt_event.as_raw_handle()];
-        unsafe {
-            let wait_ret = WaitForMultipleObjects(
-                2,
-                handles.as_ptr(),
-                0,
-                timeout
-                    .map(|t| t.as_millis().min(INFINITE as _) as _)
-                    .unwrap_or(INFINITE),
-            );
+        let started = std::time::Instant::now();
+        loop {
+            let timeout_ms = timeout.map_or(INFINITE, |limit| {
+                ffi::finite_wait_timeout_millis(limit.saturating_sub(started.elapsed()))
+            });
+            // SAFETY: `handles` is a live contiguous array of two valid wait handles for
+            // the duration of this synchronous call.
+            let wait_ret = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms) };
             match wait_ret {
-                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => Ok(()),
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => return Ok(()),
                 windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
-                    Err(io::Error::from(io::ErrorKind::TimedOut))
-                }
-                _ => {
-                    if wait_ret == windows_sys::Win32::Foundation::WAIT_OBJECT_0 + 1 {
-                        Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "trigger interrupt",
-                        ))
-                    } else {
-                        Err(io::Error::last_os_error())
+                    if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
+                }
+                value if value == windows_sys::Win32::Foundation::WAIT_OBJECT_0 + 1 => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "trigger interrupt",
+                    ));
+                }
+                windows_sys::Win32::Foundation::WAIT_FAILED => {
+                    return Err(io::Error::last_os_error());
+                }
+                value => {
+                    return Err(io::Error::other(format!(
+                        "WaitForMultipleObjects returned unexpected status {value:#x}"
+                    )));
                 }
             }
         }

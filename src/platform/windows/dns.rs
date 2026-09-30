@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows DNS configuration dynamically loads and invokes documented Win32 APIs through raw FFI"
+)]
+
 //! Interface DNS configuration via `SetInterfaceDnsSettings`.
 //!
 //! [`SetInterfaceDnsSettings`] requires Windows 10, build 19041 (version 2004) or newer, so
@@ -67,7 +72,7 @@ impl DnsApi {
         // The API takes a comma-separated, NUL-terminated wide string of addresses.
         let nameserver = servers
             .iter()
-            .map(|addr| addr.to_string())
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
         let mut nameserver = ffi::encode_utf16(&nameserver);
@@ -80,14 +85,14 @@ impl DnsApi {
 
         let settings = DNS_INTERFACE_SETTINGS {
             Version: DNS_INTERFACE_SETTINGS_VERSION1,
-            Flags: flags as u64,
+            Flags: u64::from(flags),
             NameServer: nameserver.as_mut_ptr(),
             ..Default::default()
         };
 
         // SAFETY: `settings` and the `nameserver` buffer it points at outlive the call, and
         // `guid` identifies the target interface.
-        let code = unsafe { (self.set_interface_dns_settings)(*guid, &settings) };
+        let code = unsafe { (self.set_interface_dns_settings)(*guid, &raw const settings) };
         ffi::win_result(code)
     }
 }
@@ -96,7 +101,7 @@ impl DnsApi {
 /// on systems where `SetInterfaceDnsSettings` is unavailable.
 ///
 /// `dns_servers` must be non-empty and all of the same address family.
-pub fn set_dns_servers(index: u32, luid: &NET_LUID_LH, dns_servers: &[IpAddr]) -> io::Result<()> {
+pub fn set_dns_servers(index: u32, luid: NET_LUID_LH, dns_servers: &[IpAddr]) -> io::Result<()> {
     if dns_servers.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -113,7 +118,7 @@ pub fn set_dns_servers(index: u32, luid: &NET_LUID_LH, dns_servers: &[IpAddr]) -
 
     match DnsApi::get() {
         Some(api) => {
-            let guid = ffi::luid_to_guid(luid)?;
+            let guid = ffi::luid_to_guid(&luid)?;
             api.apply(&guid, dns_servers, is_ipv4)?;
         }
         None => netsh::set_dns_servers(index, dns_servers)?,
@@ -123,10 +128,10 @@ pub fn set_dns_servers(index: u32, luid: &NET_LUID_LH, dns_servers: &[IpAddr]) -
 }
 
 /// Clears the interface DNS servers for one address family, restoring automatic resolution.
-pub fn clear_dns_servers(index: u32, luid: &NET_LUID_LH, is_ipv4: bool) -> io::Result<()> {
+pub fn clear_dns_servers(index: u32, luid: NET_LUID_LH, is_ipv4: bool) -> io::Result<()> {
     match DnsApi::get() {
         Some(api) => {
-            let guid = ffi::luid_to_guid(luid)?;
+            let guid = ffi::luid_to_guid(&luid)?;
             api.apply(&guid, &[], is_ipv4)?;
         }
         None => netsh::clear_dns_servers(index, is_ipv4)?,

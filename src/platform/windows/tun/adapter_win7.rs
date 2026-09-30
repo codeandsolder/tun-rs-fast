@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows 7 Wintun adapter discovery uses legacy SetupAPI and process-handle FFI"
+)]
+
 use std::{mem, ptr};
 use windows_sys::Win32::Devices::DeviceAndDriverInstallation::{
     SetupDiGetClassDevsExW, SetupDiGetDevicePropertyW,
@@ -54,13 +59,16 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                     let mut ptype = mem::zeroed();
                     let mut buf: [u8; mem::size_of::<OwningProcess>()] = mem::zeroed();
 
+                    let Ok(buf_len) = u32::try_from(buf.len()) else {
+                        return false;
+                    };
                     let ok = SetupDiGetDevicePropertyW(
                         dev_info,
-                        &devinfo_data,
+                        &raw const devinfo_data,
                         &DEVPKEY_Wintun_OwningProcess,
-                        &mut ptype,
-                        &mut buf as _,
-                        buf.len() as _,
+                        &raw mut ptype,
+                        buf.as_mut_ptr(),
+                        buf_len,
                         ptr::null_mut(),
                         0,
                     );
@@ -69,7 +77,7 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                         // SAFETY: buf is [u8] (alignment 1) but OwningProcess requires alignment 4.
                         // Use read_unaligned to avoid UB from misaligned access.
                         let owning_process =
-                            std::ptr::read_unaligned(buf.as_ptr() as *const OwningProcess);
+                            std::ptr::read_unaligned(buf.as_ptr().cast::<OwningProcess>());
                         !process_is_stale(&owning_process)
                     } {
                         continue;
@@ -109,10 +117,10 @@ fn process_is_stale(owning_process: &OwningProcess) -> bool {
     let ret = unsafe {
         GetProcessTimes(
             process,
-            &mut creation_time,
-            &mut unused,
-            &mut unused,
-            &mut unused,
+            &raw mut creation_time,
+            &raw mut unused,
+            &raw mut unused,
+            &raw mut unused,
         )
     };
     _ = unsafe { CloseHandle(process) };

@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Wintun is a C ABI with raw handles, callbacks, packet pointers, and wait APIs"
+)]
+
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +34,11 @@ pub const MIN_RING_CAPACITY: u32 = 0x2_0000;
 
 /// Maximum pool name length including zero terminator
 pub const MAX_POOL: usize = 256;
+
+const _: () = assert!(
+    std::mem::size_of::<wintun_raw::NET_LUID>() == std::mem::size_of::<NET_LUID_LH>(),
+    "NET_LUID size mismatch between wintun and windows-sys"
+);
 
 pub struct TunDevice {
     index: u32,
@@ -129,12 +139,12 @@ impl WinTunAdapter {
                     .win_tun
                     .WintunStartSession(self.handle, self.ring_capacity);
                 if session_handle.is_null() {
-                    Err(io::Error::last_os_error())?
+                    Err(io::Error::last_os_error())?;
                 }
                 let read_event_handle = self.win_tun.WintunGetReadWaitEvent(session_handle);
                 if read_event_handle.is_null() {
                     self.win_tun.WintunEndSession(session_handle);
-                    Err(io::Error::last_os_error())?
+                    Err(io::Error::last_os_error())?;
                 }
 
                 let wintun_session = WinTunSession {
@@ -148,14 +158,14 @@ impl WinTunAdapter {
         }
         Ok(())
     }
-    fn version(&self) -> io::Result<String> {
+    fn version(&self) -> String {
         let version = unsafe { self.win_tun.WintunGetRunningDriverVersion() };
         let v = version.to_be_bytes();
-        Ok(format!(
+        format!(
             "{}.{}",
             u16::from_be_bytes([v[0], v[1]]),
             u16::from_be_bytes([v[2], v[3]])
-        ))
+        )
     }
     fn send(&self, buf: &[u8], event: Option<&OwnedHandle>) -> io::Result<usize> {
         let guard = self
@@ -289,25 +299,25 @@ impl WinTunSession {
         }
     }
     fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
-        if buf.len() > u32::MAX as usize {
-            return Err(io::Error::new(
+        let packet_size = u32::try_from(buf.len()).map_err(|_| {
+            io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!(
                     "Buffer too large: {} bytes exceeds maximum size of {} bytes",
                     buf.len(),
                     u32::MAX
                 ),
-            ));
-        }
+            )
+        })?;
         let win_tun = &self.win_tun;
         let handle = self.handle;
-        let bytes_ptr = unsafe { win_tun.WintunAllocateSendPacket(handle, buf.len() as u32) };
+        let bytes_ptr = unsafe { win_tun.WintunAllocateSendPacket(handle, packet_size) };
         if bytes_ptr.is_null() {
             match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::WriteZero)),
                 ERROR_BUFFER_OVERFLOW => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
                 ERROR_INVALID_DATA => Err(std::io::Error::from(io::ErrorKind::InvalidData)),
-                e => Err(io::Error::from_raw_os_error(e as i32)),
+                e => Err(io::Error::from_raw_os_error(e.cast_signed())),
             }
         } else {
             unsafe { ptr::copy_nonoverlapping(buf.as_ptr(), bytes_ptr, buf.len()) };
@@ -327,21 +337,23 @@ impl WinTunSession {
 
         let win_tun = &self.win_tun;
         let handle = self.handle;
-        let ptr = unsafe { win_tun.WintunReceivePacket(handle, &mut size as *mut u32) };
+        let ptr = unsafe { win_tun.WintunReceivePacket(handle, &raw mut size) };
 
         if ptr.is_null() {
             // Wintun returns ERROR_NO_MORE_ITEMS instead of blocking if packets are not available.
             return match unsafe { GetLastError() } {
                 ERROR_HANDLE_EOF => Err(std::io::Error::from(io::ErrorKind::UnexpectedEof)),
                 ERROR_NO_MORE_ITEMS => Err(std::io::Error::from(io::ErrorKind::WouldBlock)),
-                e => Err(io::Error::from_raw_os_error(e as i32)),
+                e => Err(io::Error::from_raw_os_error(e.cast_signed())),
             };
         }
         let size = size as usize;
         if size > dst_len {
             unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
-            use std::io::{Error, ErrorKind::InvalidInput};
-            return Err(Error::new(InvalidInput, "destination buffer too small"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "destination buffer too small",
+            ));
         }
         unsafe { ptr::copy_nonoverlapping(ptr, dst, size) };
         unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
@@ -353,42 +365,40 @@ impl WinTunSession {
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        //Wait on both the read handle and the shutdown handle so that we stop when requested
         let handles = [
             self.read_event,
             inner_event.as_raw_handle(),
             interrupt_event.as_raw_handle(),
         ];
-        let result = unsafe {
-            //SAFETY: We abide by the requirements of WaitForMultipleObjects, handles is a
-            //pointer to valid, aligned, stack memory
-            WaitForMultipleObjects(
-                3,
-                &handles as _,
-                0,
-                timeout
-                    .map(|t| t.as_millis().min(INFINITE as _) as u32)
-                    .unwrap_or(INFINITE),
-            )
-        };
-        match result {
-            WAIT_FAILED => Err(io::Error::last_os_error()),
-            windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
-                Err(io::Error::from(io::ErrorKind::TimedOut))
-            }
-            _ => {
-                if result == WAIT_OBJECT_0 {
-                    //We have data!
-                    Ok(())
-                } else if result == WAIT_OBJECT_0 + 1 {
-                    Err(io::Error::other("The interface has been disabled"))
-                } else if result == WAIT_OBJECT_0 + 2 {
-                    Err(io::Error::new(
+        let started = std::time::Instant::now();
+        loop {
+            let timeout_ms = timeout.map_or(INFINITE, |limit| {
+                ffi::finite_wait_timeout_millis(limit.saturating_sub(started.elapsed()))
+            });
+            // SAFETY: `handles` is a live contiguous array of three valid wait handles for
+            // the duration of this synchronous call.
+            let result = unsafe { WaitForMultipleObjects(3, handles.as_ptr(), 0, timeout_ms) };
+            match result {
+                WAIT_FAILED => return Err(io::Error::last_os_error()),
+                windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
+                    if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
+                    }
+                }
+                WAIT_OBJECT_0 => return Ok(()),
+                value if value == WAIT_OBJECT_0 + 1 => {
+                    return Err(io::Error::other("The interface has been disabled"));
+                }
+                value if value == WAIT_OBJECT_0 + 2 => {
+                    return Err(io::Error::new(
                         io::ErrorKind::Interrupted,
                         "trigger interrupt",
-                    ))
-                } else {
-                    Err(io::Error::last_os_error())
+                    ));
+                }
+                value => {
+                    return Err(io::Error::other(format!(
+                        "WaitForMultipleObjects returned unexpected status {value:#x}"
+                    )));
                 }
             }
         }
@@ -399,7 +409,7 @@ impl WinTunSession {
         let result = unsafe {
             //SAFETY: We abide by the requirements of WaitForMultipleObjects, handles is a
             //pointer to valid, aligned, stack memory
-            WaitForMultipleObjects(2, &handles as _, 0, INFINITE)
+            WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE)
         };
         match result {
             WAIT_FAILED => Err(io::Error::last_os_error()),
@@ -445,10 +455,10 @@ impl TunDevice {
             }
             let adapter = win_tun.WintunOpenAdapter(name_utf16.as_ptr());
             if adapter.is_null() {
-                Err(io::Error::last_os_error())?
+                Err(io::Error::last_os_error())?;
             }
             let mut luid: wintun_raw::NET_LUID = std::mem::zeroed();
-            win_tun.WintunGetAdapterLUID(adapter, &mut luid as *mut wintun_raw::NET_LUID);
+            win_tun.WintunGetAdapterLUID(adapter, &raw mut luid);
 
             let win_tun_adapter = WinTunAdapter {
                 win_tun: Arc::new(win_tun),
@@ -456,21 +466,15 @@ impl TunDevice {
                 state: State::default(),
                 event,
                 ring_capacity,
-                session: Default::default(),
+                session: RwLock::default(),
                 delete_driver,
             };
-            // SAFETY: wintun_raw::NET_LUID and windows_sys::NET_LUID_LH are both
-            // 8-byte unions representing the same Windows NET_LUID_LH structure.
-            const _: () = assert!(
-                std::mem::size_of::<wintun_raw::NET_LUID>() == std::mem::size_of::<NET_LUID_LH>(),
-                "NET_LUID size mismatch between wintun and windows-sys"
-            );
             let luid = std::mem::transmute::<wintun_raw::NET_LUID, NET_LUID_LH>(luid);
             let index = ffi::luid_to_index(&luid)?;
 
             let tun = Self {
-                luid,
                 index,
+                luid,
                 win_tun_adapter,
             };
             Ok(tun)
@@ -528,10 +532,10 @@ impl TunDevice {
                 guid.as_ref().map_or(ptr::null(), |guid| guid),
             );
             if adapter.is_null() {
-                Err(io::Error::last_os_error())?
+                Err(io::Error::last_os_error())?;
             }
             let mut luid: wintun_raw::NET_LUID = std::mem::zeroed();
-            win_tun.WintunGetAdapterLUID(adapter, &mut luid as *mut wintun_raw::NET_LUID);
+            win_tun.WintunGetAdapterLUID(adapter, &raw mut luid);
 
             let win_tun_adapter = WinTunAdapter {
                 win_tun: Arc::new(win_tun),
@@ -539,7 +543,7 @@ impl TunDevice {
                 state: State::default(),
                 event,
                 ring_capacity,
-                session: Default::default(),
+                session: RwLock::default(),
                 delete_driver,
             };
             // SAFETY: wintun_raw::NET_LUID and windows_sys::NET_LUID_LH are both
@@ -548,8 +552,8 @@ impl TunDevice {
             let index = ffi::luid_to_index(&luid)?;
 
             let tun = Self {
-                luid,
                 index,
+                luid,
                 win_tun_adapter,
             };
             Ok(tun)
@@ -612,7 +616,7 @@ impl TunDevice {
     pub fn shutdown(&self) -> io::Result<()> {
         self.win_tun_adapter.disable()
     }
-    pub fn version(&self) -> io::Result<String> {
+    pub fn version(&self) -> String {
         self.win_tun_adapter.version()
     }
     pub fn enabled(&self, value: bool) -> io::Result<()> {

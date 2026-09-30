@@ -265,6 +265,33 @@ mod tests {
     }
 
     #[test]
+    fn vectored_io_preserves_scatter_gather_order() -> std::io::Result<()> {
+        use std::io::{IoSlice, IoSliceMut};
+
+        let mut raw = [-1; 2];
+        // SAFETY: raw is writable storage for two descriptors and ownership is moved
+        // into the Fd wrappers immediately after a successful pipe call.
+        if unsafe { libc::pipe(raw.as_mut_ptr()) } == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: pipe returned two new owned descriptors above.
+        let reader = unsafe { Fd::new_unchecked(raw[0]) };
+        // SAFETY: pipe returned two new owned descriptors above.
+        let writer = unsafe { Fd::new_unchecked(raw[1]) };
+
+        let write_iov = [IoSlice::new(b"ab"), IoSlice::new(b"cde")];
+        assert_eq!(writer.writev(&write_iov)?, 5);
+
+        let mut first = [0u8; 1];
+        let mut second = [0u8; 4];
+        let mut reads = [IoSliceMut::new(&mut first), IoSliceMut::new(&mut second)];
+        assert_eq!(reader.readv(&mut reads)?, 5);
+        assert_eq!(first, [b'a']);
+        assert_eq!(&second, b"bcde");
+        Ok(())
+    }
+
+    #[test]
     fn owned_fd_drop_closes_descriptor() -> std::io::Result<()> {
         let file = File::open("/dev/null")?;
         // SAFETY: file owns a live descriptor for the duration of dup; dup returns a new independent descriptor.

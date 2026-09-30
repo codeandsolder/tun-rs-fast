@@ -170,7 +170,9 @@ use crate::platform::{DeviceImpl, SyncDevice};
 /// - Applications requiring MAC-level control
 /// - Creating virtual switches
 ///
-/// TAP mode requires setting a MAC address and can work with protocols like ARP.
+/// TAP mode carries link-layer protocols such as ARP. A caller may configure the
+/// interface MAC address on platforms that expose that operation, but supplying one
+/// through `DeviceBuilder` is not a general requirement for creating a TAP device.
 ///
 /// **Platform availability**: Windows, Linux, FreeBSD, macOS, OpenBSD, NetBSD
 ///
@@ -183,8 +185,7 @@ use crate::platform::{DeviceImpl, SyncDevice};
 /// - Point-to-point connections
 /// - Routing between networks
 ///
-/// TUN mode is simpler and more efficient than TAP when Ethernet-level features
-/// are not needed.
+/// TUN mode avoids Ethernet framing when link-layer features are not needed.
 ///
 /// **Platform availability**: All platforms
 ///
@@ -232,7 +233,7 @@ pub enum Layer {
     /// Data Link Layer (Ethernet frames with MAC addresses).
     ///
     /// TAP mode operates at Layer 2, handling complete Ethernet frames.
-    /// Requires a MAC address to be configured.
+    /// MAC-address configuration is optional and platform-dependent.
     ///
     /// Available on: Windows, Linux, FreeBSD, macOS, OpenBSD, NetBSD
     #[cfg(any(
@@ -304,7 +305,7 @@ pub(crate) struct DeviceConfig {
     /// Capacity of the ring buffer on Windows.
     #[cfg(windows)]
     pub(crate) ring_capacity: Option<u32>,
-    /// Whether to call WintunDeleteDriver to remove the driver.
+    /// Whether to call `WintunDeleteDriver` to remove the driver.
     /// Default: false.
     #[cfg(windows)]
     pub(crate) delete_driver: Option<bool>,
@@ -834,7 +835,6 @@ impl DeviceBuilderGuard<'_> {
 }
 /// This is a unified constructor of a device for various platforms. The specification of every API can be found by looking at
 /// the documentation of the concrete platform.
-#[derive(Default)]
 #[must_use]
 pub struct DeviceBuilder {
     dev_name: Option<String>,
@@ -901,10 +901,75 @@ pub struct DeviceBuilder {
     multi_queue: Option<bool>,
 }
 
+impl Default for DeviceBuilder {
+    fn default() -> Self {
+        Self {
+            dev_name: None,
+            #[cfg(windows)]
+            description: None,
+            #[cfg(target_os = "macos")]
+            peer_feth: None,
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd"
+            ))]
+            associate_route: None,
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "netbsd"))]
+            reuse_dev: None,
+            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            persist: None,
+            enabled: Some(true),
+            mtu: None,
+            #[cfg(windows)]
+            mtu_v6: None,
+            ipv4: None,
+            ipv6: None,
+            layer: None,
+            #[cfg(any(
+                target_os = "windows",
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "macos",
+                target_os = "netbsd"
+            ))]
+            mac_addr: None,
+            #[cfg(windows)]
+            device_guid: None,
+            #[cfg(windows)]
+            wintun_log: None,
+            #[cfg(windows)]
+            wintun_file: None,
+            #[cfg(windows)]
+            ring_capacity: None,
+            #[cfg(windows)]
+            metric: None,
+            #[cfg(windows)]
+            delete_driver: None,
+            #[cfg(any(
+                target_os = "macos",
+                target_os = "linux",
+                target_os = "freebsd",
+                target_os = "openbsd",
+                target_os = "netbsd"
+            ))]
+            packet_information: None,
+            #[cfg(target_os = "linux")]
+            tx_queue_len: None,
+            #[cfg(target_os = "linux")]
+            offload: None,
+            #[cfg(target_os = "linux")]
+            multi_queue: None,
+        }
+    }
+}
+
 impl DeviceBuilder {
-    /// Creates a new `DeviceBuilder` instance with default settings.
+    /// Creates a new `DeviceBuilder` instance with the same settings as [`Default`].
     pub fn new() -> Self {
-        Self::default().enable(true)
+        Self::default()
     }
     /// Sets the device name.
     pub fn name<S: Into<String>>(mut self, dev_name: S) -> Self {
@@ -1254,7 +1319,14 @@ impl DeviceBuilder {
         self.enabled = None;
         self
     }
-    pub(crate) const fn build_config(&mut self) -> DeviceConfig {
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "the shared builder path cannot be const on Windows because MAC formatting allocates a String"
+        )
+    )]
+    pub(crate) fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),
             #[cfg(windows)]
@@ -1617,5 +1689,132 @@ impl ToIpv6Netmask for &str {
                 "invalid netmask str",
             )),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DeviceBuilder, Layer, ToIpv4Address, ToIpv4Netmask, ToIpv6Address, ToIpv6Netmask};
+    use std::io;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn layer_defaults_to_l3() {
+        assert_eq!(Layer::default(), Layer::L3);
+    }
+
+    #[test]
+    fn new_and_default_enable_device_and_inherit_clears_override() {
+        assert_eq!(DeviceBuilder::default().enabled, Some(true));
+        let builder = DeviceBuilder::new();
+        assert_eq!(builder.enabled, Some(true));
+
+        let builder = builder.enable(false);
+        assert_eq!(builder.enabled, Some(false));
+
+        let builder = builder.inherit_enable_state();
+        assert_eq!(builder.enabled, None);
+    }
+
+    #[test]
+    fn address_conversion_accepts_matching_family_and_rejects_wrong_family() -> io::Result<()> {
+        let v4 = Ipv4Addr::new(10, 26, 1, 100);
+        let v6 = Ipv6Addr::LOCALHOST;
+
+        assert_eq!(ToIpv4Address::ipv4(&v4)?, v4);
+        assert_eq!(ToIpv4Address::ipv4(&IpAddr::V4(v4))?, v4);
+        assert_eq!(ToIpv4Address::ipv4(&v4.to_string())?, v4);
+        assert_eq!(ToIpv4Address::ipv4(&v4.to_string().as_str())?, v4);
+        assert!(ToIpv4Address::ipv4(&IpAddr::V6(v6)).is_err());
+        assert!(ToIpv4Address::ipv4(&"not-an-ip").is_err());
+
+        assert_eq!(ToIpv6Address::ipv6(&v6)?, v6);
+        assert_eq!(ToIpv6Address::ipv6(&IpAddr::V6(v6))?, v6);
+        assert_eq!(ToIpv6Address::ipv6(&v6.to_string())?, v6);
+        assert_eq!(ToIpv6Address::ipv6(&v6.to_string().as_str())?, v6);
+        assert!(ToIpv6Address::ipv6(&IpAddr::V4(v4)).is_err());
+        assert!(ToIpv6Address::ipv6(&"not-an-ip").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn every_ipv4_prefix_round_trips_through_netmask() -> io::Result<()> {
+        for prefix in 0u8..=32 {
+            let mask = ToIpv4Netmask::netmask(&prefix)?;
+            assert_eq!(ToIpv4Netmask::prefix(&mask)?, prefix);
+            assert_eq!(ToIpv4Netmask::prefix(&mask.to_string().as_str())?, prefix);
+        }
+        assert!(ToIpv4Netmask::prefix(&33u8).is_err());
+        assert!(ToIpv4Netmask::prefix(&Ipv4Addr::new(255, 0, 255, 0)).is_err());
+        assert!(ToIpv4Netmask::prefix(&"not-a-mask").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn every_ipv6_prefix_round_trips_through_netmask() -> io::Result<()> {
+        for prefix in 0u8..=128 {
+            let mask = ToIpv6Netmask::netmask(&prefix)?;
+            assert_eq!(ToIpv6Netmask::prefix(&mask)?, prefix);
+            assert_eq!(ToIpv6Netmask::prefix(&mask.to_string().as_str())?, prefix);
+        }
+        assert!(ToIpv6Netmask::prefix(&129u8).is_err());
+        let non_contiguous = Ipv6Addr::new(0xffff, 0x0fff, 0, 0, 0, 0, 0, 0);
+        assert!(ToIpv6Netmask::prefix(&non_contiguous).is_err());
+        assert!(ToIpv6Netmask::prefix(&"not-a-mask").is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn ipv4_configuration_is_last_write_wins() -> io::Result<()> {
+        let builder = DeviceBuilder::new()
+            .ipv4("10.0.0.1", 24, Some("10.0.0.2"))
+            .ipv4("10.1.0.1", "255.255.0.0", None::<&str>);
+        let (address, prefix, destination) = builder
+            .ipv4
+            .ok_or_else(|| io::Error::other("IPv4 configuration missing"))?;
+
+        assert_eq!(address?, Ipv4Addr::new(10, 1, 0, 1));
+        assert_eq!(prefix?, 16);
+        assert!(destination.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn ipv6_configuration_accumulates_in_call_order() -> io::Result<()> {
+        let builder = DeviceBuilder::new()
+            .ipv6("fd00::1", 64)
+            .ipv6_tuple(&[("fd00::2", 80), ("fd00::3", 96)]);
+        let entries = builder
+            .ipv6
+            .ok_or_else(|| io::Error::other("IPv6 configuration missing"))?;
+        assert_eq!(entries.len(), 3);
+
+        for ((address, prefix), (expected_address, expected_prefix)) in entries.into_iter().zip([
+            (Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 1), 64),
+            (Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 2), 80),
+            (Ipv6Addr::new(0xfd00, 0, 0, 0, 0, 0, 0, 3), 96),
+        ]) {
+            assert_eq!(address?, expected_address);
+            assert_eq!(prefix?, expected_prefix);
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn with_guard_preserves_chain_and_updates_linux_options() {
+        let builder = DeviceBuilder::new().name("tun-spec").with(|guard| {
+            guard
+                .tx_queue_len(321)
+                .offload(true)
+                .multi_queue(true)
+                .packet_information(true);
+        });
+
+        assert_eq!(builder.dev_name.as_deref(), Some("tun-spec"));
+        assert_eq!(builder.tx_queue_len, Some(321));
+        assert_eq!(builder.offload, Some(true));
+        assert_eq!(builder.multi_queue, Some(true));
+        assert_eq!(builder.packet_information, Some(true));
     }
 }

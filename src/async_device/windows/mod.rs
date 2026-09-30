@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows async I/O copies packet bytes across raw Wintun/TAP buffers at the FFI boundary"
+)]
+
 use crate::platform::windows::{ffi, InterruptEvent};
 use crate::platform::DeviceImpl;
 use crate::SyncDevice;
@@ -83,10 +88,16 @@ impl Drop for AsyncDevice {
 }
 impl AsyncDevice {
     /// Creates a new async wrapper around a TUN/TAP device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn new(device: SyncDevice) -> io::Result<AsyncDevice> {
         AsyncDevice::new_dev(device.0)
     }
     /// Create a new `AsyncDevice` wrapping around a `Device`.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn new_dev(device: DeviceImpl) -> io::Result<AsyncDevice> {
         let inner = Arc::new(device);
 
@@ -174,6 +185,9 @@ impl AsyncDevice {
         }
     }
     #[cfg(feature = "async_framed")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
@@ -277,6 +291,9 @@ impl AsyncDevice {
     /// will continue to return immediately until the readiness event is
     /// consumed by an attempt to read that fails with `WouldBlock` or
     /// `Poll::Pending`.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub async fn readable(&self) -> io::Result<()> {
         let mut canceller = Canceller::new_cancelable()?;
         let device = self.inner.clone();
@@ -292,6 +309,9 @@ impl AsyncDevice {
     }
 
     /// Recv a packet from the device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             match self.try_recv(buf) {
@@ -303,6 +323,9 @@ impl AsyncDevice {
     }
     /// Attempts to read a packet without blocking.
     #[inline]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.try_recv(buf)
     }
@@ -312,6 +335,9 @@ impl AsyncDevice {
     /// # Cancel safety
     /// This method is not cancellation safe.
     /// After cancellation, it is uncertain whether the data has been written or not.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match self.inner.try_send(buf) {
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -332,6 +358,9 @@ impl AsyncDevice {
     }
     /// Attempts to write a packet without blocking.
     #[inline]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         self.inner.try_send(buf)
     }
@@ -349,6 +378,9 @@ impl Drop for ExitSignalGuard {
     }
 }
 impl ExitSignalGuard {
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn call<R>(
         &self,
         mut op: impl FnMut(&DeviceImpl, &InterruptEvent) -> io::Result<R>,

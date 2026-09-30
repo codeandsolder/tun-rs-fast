@@ -21,9 +21,23 @@ use pnet_packet::Packet;
 use tun_rs::DeviceBuilder;
 use tun_rs::SyncDevice;
 
-#[cfg(any(feature = "async_tokio", not(feature = "async_io")))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 const TEST_IPV4_LOCAL: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 26, 1, 100);
-#[cfg(any(feature = "async_tokio", not(feature = "async_io")))]
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 const TEST_IPV4_REMOTE: std::net::Ipv4Addr = std::net::Ipv4Addr::new(10, 26, 1, 101);
 
 #[cfg(any(
@@ -178,7 +192,7 @@ async fn test_udp_v4() -> TestResult {
     let test_udp_v4_c = test_udp_v4.clone();
     let recv_flag = Arc::new(AtomicBool::new(false));
     let recv_flag_c = recv_flag.clone();
-    let handler = tokio::spawn(async move {
+    let mut handler = tokio::spawn(async move {
         let mut buf = vec![0u8; 65_535];
         loop {
             let Ok(len) = device.recv(&mut buf).await else {
@@ -209,12 +223,13 @@ async fn test_udp_v4() -> TestResult {
         .await?;
     tokio::select! {
         ()=tokio::time::sleep(Duration::from_secs(2))=>{
-            // no promise due to the timeout
+            handler.abort();
+            let _ = handler.await;
             let v4 = test_udp_v4_c.load(Ordering::Relaxed);
             assert!(v4, "timeout: test_udp_v4 = {v4}");
         }
-        _=handler=>{
-            // all modifications to test_udp_v4_c and test_udp_v6_c must be visible
+        _=&mut handler=>{
+            // all modifications to test_udp_v4_c must be visible
             let flag = recv_flag_c.load(Ordering::Acquire); //synchronize
             assert!(flag, "recv_flag = {flag}");
             let v4 = test_udp_v4_c.load(Ordering::Relaxed);
@@ -245,7 +260,7 @@ async fn test_udp_v6() -> TestResult {
     let test_udp_v6_c = test_udp_v6.clone();
     let recv_flag = Arc::new(AtomicBool::new(false));
     let recv_flag_c = recv_flag.clone();
-    let handler = tokio::spawn(async move {
+    let mut handler = tokio::spawn(async move {
         let mut buf = vec![0u8; 65_535];
         loop {
             let Ok(len) = device.recv(&mut buf).await else {
@@ -281,18 +296,129 @@ async fn test_udp_v6() -> TestResult {
 
     tokio::select! {
         ()=tokio::time::sleep(Duration::from_secs(2))=>{
-            // no promise due to the timeout
+            handler.abort();
+            let _ = handler.await;
             let v6 = test_udp_v6_c.load(Ordering::Relaxed);
             assert!(v6, "timeout: test_udp_v6 = {v6}");
         }
-        _=handler=>{
-            // all modifications to test_udp_v4_c and test_udp_v6_c must be visible
+        _=&mut handler=>{
+            // all modifications to test_udp_v6_c must be visible
             let flag = recv_flag_c.load(Ordering::Acquire); //synchronize
             assert!(flag, "recv_flag = {flag}");
             let v6 = test_udp_v6_c.load(Ordering::Relaxed);
             assert!(v6 );
         }
     }
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+#[cfg(feature = "async_io")]
+#[async_std::test]
+async fn test_async_io_udp_v4() -> TestResult {
+    let test_msg = "test udp";
+    let device = DeviceBuilder::new()
+        .ipv4(TEST_IPV4_LOCAL, 24, None)
+        .build_async()?;
+
+    let sender = async_std::task::spawn(async move {
+        async_std::task::sleep(Duration::from_secs(6)).await;
+        let udp_socket = async_std::net::UdpSocket::bind((TEST_IPV4_LOCAL, 0)).await?;
+        udp_socket
+            .send_to(test_msg.as_bytes(), (TEST_IPV4_REMOTE, 8080))
+            .await?;
+        Ok::<(), std::io::Error>(())
+    });
+
+    let received = async_std::future::timeout(Duration::from_secs(8), async {
+        let mut buf = vec![0u8; 65_535];
+        loop {
+            let len = device.recv(&mut buf).await?;
+            let Some(ipv4_packet) = pnet_packet::ipv4::Ipv4Packet::new(&buf[..len]) else {
+                continue;
+            };
+            if ipv4_packet.get_next_level_protocol() != IpNextHeaderProtocols::Udp {
+                continue;
+            }
+            let Some(udp_packet) = pnet_packet::udp::UdpPacket::new(ipv4_packet.payload()) else {
+                continue;
+            };
+            if udp_packet.payload() == test_msg.as_bytes() {
+                return Ok::<(), std::io::Error>(());
+            }
+        }
+    })
+    .await;
+    sender.await?;
+    received.map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "async-io IPv4 receive timed out",
+        )
+    })??;
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "windows",
+    target_os = "macos",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+#[cfg(feature = "async_io")]
+#[async_std::test]
+async fn test_async_io_udp_v6() -> TestResult {
+    let test_msg = "test udp";
+    let local = "fd12:3456:789a:1111:2222:3333:4444:5555";
+    let remote = "fd12:3456:789a:1111:2222:3333:4444:5556";
+    let device = DeviceBuilder::new().ipv6(local, 64).build_async()?;
+    let local_socket = format!("[{local}]:0");
+    let remote_socket = format!("[{remote}]:8080");
+
+    let sender = async_std::task::spawn(async move {
+        async_std::task::sleep(Duration::from_secs(6)).await;
+        let udp_socket = async_std::net::UdpSocket::bind(local_socket).await?;
+        udp_socket
+            .send_to(test_msg.as_bytes(), remote_socket)
+            .await?;
+        Ok::<(), std::io::Error>(())
+    });
+
+    let received = async_std::future::timeout(Duration::from_secs(8), async {
+        let mut buf = vec![0u8; 65_535];
+        loop {
+            let len = device.recv(&mut buf).await?;
+            let Some(ipv6_packet) = pnet_packet::ipv6::Ipv6Packet::new(&buf[..len]) else {
+                continue;
+            };
+            if ipv6_packet.get_next_header() != IpNextHeaderProtocols::Udp {
+                continue;
+            }
+            let Some(udp_packet) = pnet_packet::udp::UdpPacket::new(ipv6_packet.payload()) else {
+                continue;
+            };
+            if udp_packet.payload() == test_msg.as_bytes() {
+                return Ok::<(), std::io::Error>(());
+            }
+        }
+    })
+    .await;
+    sender.await?;
+    received.map_err(|_| {
+        std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "async-io IPv6 receive timed out",
+        )
+    })??;
     Ok(())
 }
 
@@ -387,6 +513,14 @@ fn test_op() -> TestResult {
         device.clear_dns_servers(false)?;
     }
 
+    #[cfg(unix)]
+    {
+        device.set_nonblocking(true)?;
+        assert!(device.is_nonblocking()?);
+        device.set_nonblocking(false)?;
+        assert!(!device.is_nonblocking()?);
+    }
+
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
     assert!(device.is_running()?);
     Ok(())
@@ -401,9 +535,12 @@ fn test_op() -> TestResult {
     target_os = "netbsd",
 ))]
 #[test]
-#[expect(
-    unsafe_code,
-    reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+#[cfg_attr(
+    unix,
+    expect(
+        unsafe_code,
+        reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+    )
 )]
 fn create_tun() -> TestResult {
     #[cfg(not(target_os = "macos"))]
@@ -438,9 +575,12 @@ fn create_tun() -> TestResult {
     target_os = "netbsd",
 ))]
 #[test]
-#[expect(
-    unsafe_code,
-    reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+#[cfg_attr(
+    all(unix, not(target_os = "macos")),
+    expect(
+        unsafe_code,
+        reason = "this test verifies the explicit raw-fd ownership-transfer constructor"
+    )
 )]
 fn create_tap() -> TestResult {
     #[cfg(not(target_os = "macos"))]
@@ -448,10 +588,25 @@ fn create_tap() -> TestResult {
     #[cfg(target_os = "macos")]
     let name = "feth12";
 
-    let device = DeviceBuilder::new()
+    let device_result = DeviceBuilder::new()
         .name(name)
         .layer(tun_rs::Layer::L2)
-        .build_sync()?;
+        .build_sync();
+    #[cfg(target_os = "windows")]
+    let device = match device_result {
+        Ok(device) => device,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && error.to_string() == "No driver found" =>
+        {
+            // TAP-Windows is an external prerequisite. Its absence is a valid
+            // environment state; the backend must report that state explicitly.
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    #[cfg(not(target_os = "windows"))]
+    let device = device_result?;
     let dev_name = device.name()?;
     assert_eq!(dev_name.as_str(), name);
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -466,6 +621,94 @@ fn create_tap() -> TestResult {
             assert_eq!(dev_name, name);
         }
     }
+    Ok(())
+}
+
+#[cfg(all(
+    unix,
+    any(
+        target_os = "macos",
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+    )
+))]
+#[test]
+#[expect(
+    unsafe_code,
+    reason = "the test exercises the public borrowed raw-fd constructor while an owning SyncDevice keeps the descriptor alive"
+)]
+fn borrowed_sync_device_does_not_take_fd_ownership() -> TestResult {
+    use std::os::fd::AsRawFd;
+    use tun_rs::BorrowedSyncDevice;
+
+    let device = DeviceBuilder::new().build_sync()?;
+    let name = device.name()?;
+    let raw_fd = device.as_raw_fd();
+
+    // SAFETY: device owns raw_fd and remains alive until after the borrowed wrapper is dropped.
+    let borrowed = unsafe { BorrowedSyncDevice::borrow_raw(raw_fd)? };
+    assert_eq!(borrowed.name()?, name);
+    drop(borrowed);
+
+    // Dropping the borrowed wrapper must leave the original owner usable.
+    assert_eq!(device.name()?, name);
+    Ok(())
+}
+
+#[cfg(target_os = "netbsd")]
+#[test]
+fn netbsd_tun_mtu_matches_kernel_limits() -> TestResult {
+    let device = DeviceBuilder::new().build_sync()?;
+
+    device.set_mtu(576)?;
+    assert_eq!(device.mtu()?, 576);
+    assert!(device.set_mtu(575).is_err());
+
+    device.set_mtu(1500)?;
+    assert_eq!(device.mtu()?, 1500);
+    assert!(device.set_mtu(1501).is_err());
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn linux_multiqueue_clone_preserves_device_identity() -> TestResult {
+    let device = DeviceBuilder::new().multi_queue(true).build_sync()?;
+    let clone = device.try_clone()?;
+    assert_eq!(clone.name()?, device.name()?);
+    assert_eq!(clone.if_index()?, device.if_index()?);
+    Ok(())
+}
+
+#[cfg(all(
+    feature = "interruptible",
+    unix,
+    any(
+        target_os = "macos",
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+    )
+))]
+#[test]
+fn sync_interruptible_receive_forwards_interrupt() -> TestResult {
+    use tun_rs::InterruptEvent;
+
+    let device = DeviceBuilder::new().build_sync()?;
+    let event = InterruptEvent::new()?;
+    let mut buf = [0u8; 64];
+
+    event.trigger_value(42)?;
+    let interrupted = device
+        .recv_intr_timeout(&mut buf, &event, Some(Duration::from_secs(1)))
+        .err()
+        .ok_or_else(|| std::io::Error::other("triggered receive was not interrupted"))?;
+    assert_eq!(interrupted.kind(), std::io::ErrorKind::Interrupted);
+    assert_eq!(event.value(), 42);
+
     Ok(())
 }
 
