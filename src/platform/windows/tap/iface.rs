@@ -69,35 +69,34 @@ pub fn create_interface(component_id: &str) -> io::Result<NET_LUID_LH> {
     let mut driver_version = 0;
     let mut member_index = 0;
 
-    while let Some(drvinfo_data) =
+    while let Some(driver_info_result) =
         ffi::enum_driver_info(devinfo, &devinfo_data, SPDIT_COMPATDRIVER, member_index)
     {
         member_index += 1;
 
-        if drvinfo_data.is_err() {
+        let Ok(driver_info) = driver_info_result else {
             continue;
-        }
-        let drvinfo_data = drvinfo_data?;
-        if drvinfo_data.DriverVersion <= driver_version {
+        };
+        if driver_info.DriverVersion <= driver_version {
             continue;
         }
 
-        let drvinfo_detail =
-            match ffi::get_driver_info_detail(devinfo, &devinfo_data, &drvinfo_data) {
-                Ok(drvinfo_detail) => drvinfo_detail,
-                _ => continue,
-            };
+        let drvinfo_detail = match ffi::get_driver_info_detail(devinfo, &devinfo_data, &driver_info)
+        {
+            Ok(drvinfo_detail) => drvinfo_detail,
+            _ => continue,
+        };
 
         let hardware_id = decode_utf16(&drvinfo_detail.HardwareID);
         if !hardware_id.eq_ignore_ascii_case(component_id) {
             continue;
         }
 
-        if ffi::set_selected_driver(devinfo, &devinfo_data, &drvinfo_data).is_err() {
+        if ffi::set_selected_driver(devinfo, &devinfo_data, &driver_info).is_err() {
             continue;
         }
 
-        driver_version = drvinfo_data.DriverVersion;
+        driver_version = driver_info.DriverVersion;
     }
 
     if driver_version == 0 {

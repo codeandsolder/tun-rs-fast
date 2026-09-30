@@ -101,7 +101,7 @@ impl DnsApi {
 /// on systems where `SetInterfaceDnsSettings` is unavailable.
 ///
 /// `dns_servers` must be non-empty and all of the same address family.
-pub fn set_dns_servers(index: u32, luid: &NET_LUID_LH, dns_servers: &[IpAddr]) -> io::Result<()> {
+pub fn set_dns_servers(index: u32, luid: NET_LUID_LH, dns_servers: &[IpAddr]) -> io::Result<()> {
     if dns_servers.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -118,7 +118,7 @@ pub fn set_dns_servers(index: u32, luid: &NET_LUID_LH, dns_servers: &[IpAddr]) -
 
     match DnsApi::get() {
         Some(api) => {
-            let guid = ffi::luid_to_guid(luid)?;
+            let guid = ffi::luid_to_guid(&luid)?;
             api.apply(&guid, dns_servers, is_ipv4)?;
         }
         None => netsh::set_dns_servers(index, dns_servers)?,
@@ -128,10 +128,10 @@ pub fn set_dns_servers(index: u32, luid: &NET_LUID_LH, dns_servers: &[IpAddr]) -
 }
 
 /// Clears the interface DNS servers for one address family, restoring automatic resolution.
-pub fn clear_dns_servers(index: u32, luid: &NET_LUID_LH, is_ipv4: bool) -> io::Result<()> {
+pub fn clear_dns_servers(index: u32, luid: NET_LUID_LH, is_ipv4: bool) -> io::Result<()> {
     match DnsApi::get() {
         Some(api) => {
-            let guid = ffi::luid_to_guid(luid)?;
+            let guid = ffi::luid_to_guid(&luid)?;
             api.apply(&guid, &[], is_ipv4)?;
         }
         None => netsh::clear_dns_servers(index, is_ipv4)?,

@@ -79,7 +79,6 @@ impl TapDevice {
             match ffi::luid_to_guid(&luid) {
                 Err(_) => {
                     std::thread::sleep(time::Duration::from_millis(20));
-                    continue;
                 }
                 Ok(guid) => {
                     if let Some(mac) = mac.take() {
@@ -173,8 +172,12 @@ impl TapDevice {
         )
         .map(|()| mac)
     }
-    pub fn set_mac(&self, _mac: &[u8; 6]) -> io::Result<()> {
-        Err(io::Error::from(io::ErrorKind::Unsupported))?
+    #[expect(
+        clippy::unused_self,
+        reason = "the TAP backend keeps a method-shaped MAC setter to match the device backend API even though runtime mutation is unsupported"
+    )]
+    pub fn set_mac(&self, _mac: [u8; 6]) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
     /// Retrieve the version of the driver

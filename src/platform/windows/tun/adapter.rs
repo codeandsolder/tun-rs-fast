@@ -129,7 +129,7 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
     };
     if ok == 0 {
         let err = io::Error::last_os_error();
-        if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+        if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed()) {
             return Err(err);
         }
     }
@@ -156,8 +156,11 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
 }
 
 fn is_windows_seven() -> bool {
+    let Ok(info_size) = u32::try_from(mem::size_of::<OSVERSIONINFOA>()) else {
+        return false;
+    };
     let mut info = OSVERSIONINFOA {
-        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOA>() as u32,
+        dwOSVersionInfoSize: info_size,
         dwMajorVersion: 0,
         dwMinorVersion: 0,
         dwBuildNumber: 0,
@@ -189,7 +192,7 @@ fn dev_node_status(devinfo_data: &SP_DEVINFO_DATA) -> io::Result<CM_DEVNODE_STAT
 
     if cr != CR_SUCCESS {
         let code = unsafe { CM_MapCrToWin32Err(cr, ERROR_GEN_FAILURE) };
-        return Err(io::Error::from_raw_os_error(code as i32));
+        return Err(io::Error::from_raw_os_error(code.cast_signed()));
     }
 
     Ok(pulstatus)

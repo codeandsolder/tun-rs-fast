@@ -88,10 +88,37 @@ pub fn decode_utf16(string: &[u16]) -> String {
     String::from_utf16_lossy(&string[..end])
 }
 
+fn win_u32_size(value: usize) -> io::Result<u32> {
+    u32::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "buffer or structure size exceeds the Win32 u32 range",
+        )
+    })
+}
+
+fn win_i32_size(value: usize) -> io::Result<i32> {
+    i32::try_from(value).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "buffer size exceeds the Win32 i32 range",
+        )
+    })
+}
+
+pub(crate) fn finite_wait_timeout_millis(duration: std::time::Duration) -> u32 {
+    let whole_millis = duration.as_millis();
+    let has_fraction = duration.subsec_nanos() % 1_000_000 != 0;
+    let rounded_up = whole_millis.saturating_add(u128::from(has_fraction));
+    let max_finite = u128::from(INFINITE - 1);
+    u32::try_from(rounded_up.min(max_finite)).unwrap_or(INFINITE - 1)
+}
+
 pub fn string_from_guid(guid: &GUID) -> io::Result<String> {
     let mut string = vec![0; 39];
 
-    match unsafe { StringFromGUID2(guid, string.as_mut_ptr(), string.len() as _) } {
+    let string_len = win_i32_size(string.len())?;
+    match unsafe { StringFromGUID2(guid, string.as_mut_ptr(), string_len) } {
         0 => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "StringFromGUID2 output buffer was too small",
@@ -207,12 +234,13 @@ pub fn try_read_file(
     buffer: &mut [u8],
 ) -> io::Result<u32> {
     let mut ret = 0;
+    let buffer_len = win_u32_size(buffer.len())?;
     //https://www.cnblogs.com/linyilong3/archive/2012/05/03/2480451.html
     unsafe {
         if 0 == ReadFile(
             handle,
             buffer.as_mut_ptr().cast(),
-            buffer.len() as _,
+            buffer_len,
             &raw mut ret,
             io_overlapped,
         ) {
@@ -229,11 +257,12 @@ pub fn try_write_file(
     buffer: &[u8],
 ) -> io::Result<u32> {
     let mut ret = 0;
+    let buffer_len = win_u32_size(buffer.len())?;
     unsafe {
         if 0 == WriteFile(
             handle,
             buffer.as_ptr().cast(),
-            buffer.len() as _,
+            buffer_len,
             &raw mut ret,
             io_overlapped,
         ) {
@@ -245,7 +274,7 @@ pub fn try_write_file(
 }
 fn error_map() -> io::Error {
     let e = io::Error::last_os_error();
-    if e.raw_os_error().unwrap_or(0) == ERROR_IO_PENDING as i32 {
+    if e.raw_os_error().unwrap_or(0) == ERROR_IO_PENDING.cast_signed() {
         io::Error::from(io::ErrorKind::WouldBlock)
     } else {
         e
@@ -257,7 +286,7 @@ pub fn try_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Resu
     unsafe {
         if 0 == GetOverlappedResult(handle, io_overlapped, &raw mut ret, 0) {
             let err = io::Error::last_os_error();
-            if err.raw_os_error().unwrap_or(0) == ERROR_IO_INCOMPLETE as i32 {
+            if err.raw_os_error().unwrap_or(0) == ERROR_IO_INCOMPLETE.cast_signed() {
                 Err(io::Error::from(io::ErrorKind::WouldBlock))
             } else {
                 Err(err)
@@ -308,11 +337,12 @@ pub fn destroy_device_info_list(devinfo: HDEVINFO) -> io::Result<()> {
 
 pub fn class_name_from_guid(guid: &GUID) -> io::Result<String> {
     let mut class_name = vec![0; MAX_CLASS_NAME_LEN as usize];
+    let class_name_len = win_u32_size(class_name.len())?;
     match unsafe {
         SetupDiClassNameFromGuidW(
             guid,
             class_name.as_mut_ptr(),
-            class_name.len() as _,
+            class_name_len,
             ptr::null_mut(),
         )
     } {
@@ -329,7 +359,7 @@ pub fn create_device_info(
     creation_flags: u32,
 ) -> io::Result<SP_DEVINFO_DATA> {
     let mut devinfo_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
-    devinfo_data.cbSize = mem::size_of_val(&devinfo_data) as _;
+    devinfo_data.cbSize = win_u32_size(mem::size_of_val(&devinfo_data))?;
     let device_name = encode_utf16(device_name);
     let device_description = encode_utf16(device_description);
     match unsafe {
@@ -349,7 +379,7 @@ pub fn create_device_info(
 }
 
 pub fn set_selected_device(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io::Result<()> {
-    match unsafe { SetupDiSetSelectedDevice(devinfo, std::ptr::from_ref(devinfo_data) as _) } {
+    match unsafe { SetupDiSetSelectedDevice(devinfo, std::ptr::from_ref(devinfo_data).cast()) } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
     }
@@ -365,10 +395,12 @@ pub fn set_device_registry_property(
     match unsafe {
         SetupDiSetDeviceRegistryPropertyW(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast_mut(),
             property,
             value.as_ptr().cast(),
-            (value.len() * 2) as _,
+            win_u32_size(value.len().checked_mul(2).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "registry value size overflow")
+            })?)?,
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -386,7 +418,7 @@ pub fn get_device_registry_property(
     unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             property,
             ptr::null_mut(),
             ptr::null_mut(),
@@ -406,7 +438,7 @@ pub fn get_device_registry_property(
     match unsafe {
         SetupDiGetDeviceRegistryPropertyW(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             property,
             ptr::null_mut(),
             value.as_mut_ptr().cast(),
@@ -425,7 +457,11 @@ pub fn build_driver_info_list(
     driver_type: u32,
 ) -> io::Result<()> {
     match unsafe {
-        SetupDiBuildDriverInfoList(devinfo, std::ptr::from_ref(devinfo_data) as _, driver_type)
+        SetupDiBuildDriverInfoList(
+            devinfo,
+            std::ptr::from_ref(devinfo_data).cast_mut(),
+            driver_type,
+        )
     } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
@@ -438,7 +474,11 @@ pub fn destroy_driver_info_list(
     driver_type: u32,
 ) -> io::Result<()> {
     match unsafe {
-        SetupDiDestroyDriverInfoList(devinfo, std::ptr::from_ref(devinfo_data) as _, driver_type)
+        SetupDiDestroyDriverInfoList(
+            devinfo,
+            std::ptr::from_ref(devinfo_data).cast(),
+            driver_type,
+        )
     } {
         0 => Err(io::Error::last_os_error()),
         _ => Ok(()),
@@ -451,15 +491,16 @@ pub fn get_driver_info_detail(
     drvinfo_data: &SP_DRVINFO_DATA_V2_W,
 ) -> io::Result<SP_DRVINFO_DETAIL_DATA_W2> {
     let mut drvinfo_detail: SP_DRVINFO_DETAIL_DATA_W2 = unsafe { mem::zeroed() };
-    drvinfo_detail.cbSize = mem::size_of::<SP_DRVINFO_DETAIL_DATA_W>() as _;
+    drvinfo_detail.cbSize = win_u32_size(mem::size_of::<SP_DRVINFO_DETAIL_DATA_W>())?;
+    let detail_size = win_u32_size(mem::size_of_val(&drvinfo_detail))?;
 
     match unsafe {
         SetupDiGetDriverInfoDetailW(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
-            std::ptr::from_ref(drvinfo_data) as _,
-            &raw mut drvinfo_detail as _,
-            mem::size_of_val(&drvinfo_detail) as _,
+            std::ptr::from_ref(devinfo_data).cast(),
+            std::ptr::from_ref(drvinfo_data).cast(),
+            (&raw mut drvinfo_detail).cast(),
+            detail_size,
             ptr::null_mut(),
         )
     } {
@@ -476,8 +517,8 @@ pub fn set_selected_driver(
     match unsafe {
         SetupDiSetSelectedDriverW(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
-            std::ptr::from_ref(drvinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast_mut(),
+            std::ptr::from_ref(drvinfo_data).cast_mut(),
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -494,7 +535,7 @@ pub fn call_class_installer(
         SetupDiCallClassInstaller(
             install_function,
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast(),
         )
     } {
         0 => Err(io::Error::last_os_error()),
@@ -515,7 +556,7 @@ pub fn open_dev_reg_key(
     match unsafe {
         SetupDiOpenDevRegKey(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             scope,
             hw_profile,
             key_type,
@@ -552,7 +593,7 @@ pub fn notify_change_key_value(
             ))),
         }
     } else {
-        Err(io::Error::from_raw_os_error(status as i32))
+        Err(io::Error::from_raw_os_error(status.cast_signed()))
     };
 
     unsafe { CloseHandle(event) };
@@ -567,11 +608,14 @@ pub fn enum_driver_info(
     member_index: u32,
 ) -> Option<io::Result<SP_DRVINFO_DATA_V2_W>> {
     let mut drvinfo_data: SP_DRVINFO_DATA_V2_W = unsafe { mem::zeroed() };
-    drvinfo_data.cbSize = mem::size_of_val(&drvinfo_data) as _;
+    drvinfo_data.cbSize = match win_u32_size(mem::size_of_val(&drvinfo_data)) {
+        Ok(size) => size,
+        Err(error) => return Some(Err(error)),
+    };
     match unsafe {
         SetupDiEnumDriverInfoW(
             devinfo,
-            std::ptr::from_ref(devinfo_data) as _,
+            std::ptr::from_ref(devinfo_data).cast(),
             driver_type,
             member_index,
             &raw mut drvinfo_data,
@@ -588,7 +632,10 @@ pub fn enum_device_info(
     member_index: u32,
 ) -> Option<io::Result<SP_DEVINFO_DATA>> {
     let mut devinfo_data: SP_DEVINFO_DATA = unsafe { mem::zeroed() };
-    devinfo_data.cbSize = mem::size_of_val(&devinfo_data) as _;
+    devinfo_data.cbSize = match win_u32_size(mem::size_of_val(&devinfo_data)) {
+        Ok(size) => size,
+        Err(error) => return Some(Err(error)),
+    };
 
     match unsafe { SetupDiEnumDeviceInfo(devinfo, member_index, &raw mut devinfo_data) } {
         0 if unsafe { GetLastError() == ERROR_NO_MORE_ITEMS } => None,
@@ -604,14 +651,16 @@ pub fn device_io_control(
     out_buffer: &mut impl Copy,
 ) -> io::Result<()> {
     let mut junk = 0;
+    let in_size = win_u32_size(mem::size_of_val(in_buffer))?;
+    let out_size = win_u32_size(mem::size_of_val(out_buffer))?;
     match unsafe {
         DeviceIoControl(
             handle,
             io_control_code,
-            std::ptr::from_ref(in_buffer) as _,
-            mem::size_of_val(in_buffer) as _,
-            std::ptr::from_mut(out_buffer) as _,
-            mem::size_of_val(out_buffer) as _,
+            std::ptr::from_ref(in_buffer).cast(),
+            in_size,
+            std::ptr::from_mut(out_buffer).cast(),
+            out_size,
             &raw mut junk,
             ptr::null_mut(),
         )
@@ -668,7 +717,7 @@ pub(crate) fn win_result(code: u32) -> io::Result<()> {
     if code == NO_ERROR {
         Ok(())
     } else {
-        Err(io::Error::from_raw_os_error(code as i32))
+        Err(io::Error::from_raw_os_error(code.cast_signed()))
     }
 }
 
@@ -841,9 +890,11 @@ pub fn set_device_state(
     devinfo_data: &SP_DEVINFO_DATA,
     enable: bool,
 ) -> io::Result<()> {
+    let class_header_size = win_u32_size(mem::size_of::<SP_CLASSINSTALL_HEADER>())?;
+    let params_size = win_u32_size(mem::size_of::<SP_PROPCHANGE_PARAMS>())?;
     let params = SP_PROPCHANGE_PARAMS {
         ClassInstallHeader: SP_CLASSINSTALL_HEADER {
-            cbSize: mem::size_of::<SP_CLASSINSTALL_HEADER>() as u32,
+            cbSize: class_header_size,
             InstallFunction: DIF_PROPERTYCHANGE,
         },
         StateChange: if enable { DICS_ENABLE } else { DICS_DISABLE },
@@ -858,8 +909,8 @@ pub fn set_device_state(
         SetupDiSetClassInstallParamsW(
             devinfo,
             std::ptr::from_ref(devinfo_data),
-            &raw const params as *const SP_CLASSINSTALL_HEADER,
-            mem::size_of::<SP_PROPCHANGE_PARAMS>() as u32,
+            (&raw const params).cast::<SP_CLASSINSTALL_HEADER>(),
+            params_size,
         )
     };
     if ok == 0 {

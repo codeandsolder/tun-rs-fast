@@ -59,13 +59,16 @@ pub fn check_adapter_if_orphaned_devices_win7(adapter_name: &str) -> bool {
                     let mut ptype = mem::zeroed();
                     let mut buf: [u8; mem::size_of::<OwningProcess>()] = mem::zeroed();
 
+                    let Ok(buf_len) = u32::try_from(buf.len()) else {
+                        return false;
+                    };
                     let ok = SetupDiGetDevicePropertyW(
                         dev_info,
                         &raw const devinfo_data,
                         &DEVPKEY_Wintun_OwningProcess,
                         &raw mut ptype,
                         buf.as_mut_ptr(),
-                        buf.len() as _,
+                        buf_len,
                         ptr::null_mut(),
                         0,
                     );
