@@ -414,20 +414,25 @@ impl WinTunSession {
             inner_event.as_raw_handle(),
             interrupt_event.as_raw_handle(),
         ];
-        let started = std::time::Instant::now();
+        let mut remaining = timeout;
         loop {
-            let timeout_ms = timeout.map_or(INFINITE, |limit| {
-                ffi::finite_wait_timeout_millis(limit.saturating_sub(started.elapsed()))
-            });
+            let timeout_ms = remaining.map_or(INFINITE, ffi::finite_wait_timeout_millis);
             // SAFETY: `handles` is a live contiguous array of three valid wait handles for
             // the duration of this synchronous call.
             let result = unsafe { WaitForMultipleObjects(3, handles.as_ptr(), 0, timeout_ms) };
             match result {
                 WAIT_FAILED => return Err(io::Error::last_os_error()),
                 windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
-                    if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    let Some(limit) = remaining else {
+                        return Err(io::Error::other(
+                            "infinite WaitForMultipleObjects unexpectedly timed out",
+                        ));
+                    };
+                    let waited = std::time::Duration::from_millis(u64::from(timeout_ms));
+                    if limit <= waited {
                         return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
+                    remaining = Some(limit - waited);
                 }
                 WAIT_OBJECT_0 => return Ok(()),
                 value if value == WAIT_OBJECT_0 + 1 => {
@@ -455,16 +460,13 @@ impl WinTunSession {
         let result = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, INFINITE) };
         match result {
             WAIT_FAILED => Err(io::Error::last_os_error()),
-            _ => {
-                if result == WAIT_OBJECT_0 {
-                    //We have data!
-                    Ok(())
-                } else if result == WAIT_OBJECT_0 + 1 {
-                    Err(io::Error::other("The interface has been disabled"))
-                } else {
-                    Err(io::Error::last_os_error())
-                }
+            WAIT_OBJECT_0 => Ok(()),
+            value if value == WAIT_OBJECT_0 + 1 => {
+                Err(io::Error::other("The interface has been disabled"))
             }
+            value => Err(io::Error::other(format!(
+                "WaitForMultipleObjects returned unexpected status {value:#x}"
+            ))),
         }
     }
 }
