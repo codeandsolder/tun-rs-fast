@@ -145,6 +145,78 @@ unsafe fn checksum_no_fold_sse41(mut b: &[u8], initial: u64) -> u64 {
     checksum_no_fold_scalar(b, accumulator)
 }
 
+/// AVX2 fast path for a *final* Internet checksum.
+///
+/// Unlike `checksum_no_fold_avx2()`, this intentionally accumulates 16-bit
+/// Internet-checksum words rather than preserving the raw u32-based no-fold
+/// representation. That lets us use VPSADBW to sum the high and low bytes of
+/// each network-order word independently, then combine them as
+/// `(sum(high) << 8) + sum(low)`.
+///
+/// The result after one's-complement folding is identical, but the intermediate
+/// accumulator is not part of the `checksum_no_fold()` contract and therefore
+/// this implementation is only used by `checksum()`.
+///
+/// A single accumulator pair is fastest on the measured Zen 2 target.
+/// The dispatch threshold stays conservative because short remainders can make
+/// the setup cost dominate even when nearby lengths benefit.
+///
+/// # Safety
+/// Caller must ensure AVX2 is available.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn checksum_folded_avx2(mut b: &[u8], initial: u64) -> u16 {
+    use std::arch::x86_64::{
+        _mm256_add_epi64, _mm256_and_si256, _mm256_extract_epi64, _mm256_loadu_si256,
+        _mm256_sad_epu8, _mm256_set1_epi16, _mm256_setzero_si256, _mm256_slli_epi64,
+        _mm256_srli_epi16,
+    };
+
+    let zero = _mm256_setzero_si256();
+    let low_byte_mask = _mm256_set1_epi16(0x00ff);
+
+    let mut even = zero;
+    let mut odd = zero;
+
+    while b.len() >= 32 {
+        // SAFETY: this loop only runs with at least 32 bytes remaining, so the
+        // unaligned 32-byte load is entirely within the initialized slice.
+        let data = unsafe { _mm256_loadu_si256(b.as_ptr().cast()) };
+        let low = _mm256_and_si256(data, low_byte_mask);
+        let high = _mm256_srli_epi16(data, 8);
+
+        even = _mm256_add_epi64(even, _mm256_sad_epu8(low, zero));
+        odd = _mm256_add_epi64(odd, _mm256_sad_epu8(high, zero));
+
+        b = &b[32..];
+    }
+
+    let sums = _mm256_add_epi64(_mm256_slli_epi64(even, 8), odd);
+
+    let mut accumulator = initial;
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 0).to_ne_bytes());
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 1).to_ne_bytes());
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 2).to_ne_bytes());
+    accumulator += u64::from_ne_bytes(_mm256_extract_epi64(sums, 3).to_ne_bytes());
+
+    // The SIMD prefix ends on a 16-bit boundary, so the tail can be added
+    // directly as network-order 16-bit words.
+    while b.len() >= 2 {
+        accumulator += u64::from(u16::from_be_bytes([b[0], b[1]]));
+        b = &b[2..];
+    }
+    if let Some(&byte) = b.first() {
+        accumulator += u64::from(byte) << 8;
+    }
+
+    while accumulator > 0xffff {
+        accumulator = (accumulator >> 16) + (accumulator & 0xffff);
+    }
+
+    let folded = accumulator.to_be_bytes();
+    u16::from_be_bytes([folded[6], folded[7]])
+}
+
 /// Calculates a checksum accumulator over a byte slice without the final fold.
 ///
 /// This function dispatches to the optimal implementation at runtime (AVX2, SSE4.1,
@@ -185,6 +257,17 @@ pub fn checksum_no_fold(b: &[u8], initial: u64) -> u64 {
     reason = "the fold loop guarantees the accumulator is at most u16::MAX"
 )]
 pub fn checksum(b: &[u8], initial: u64) -> u16 {
+    #[cfg(target_arch = "x86_64")]
+    {
+        // VPSADBW is substantially faster for packet-sized payloads, but
+        // short inputs have remainder-dependent setup costs. Benchmarks show
+        // 256 bytes is a conservative crossover with no sampled regressions.
+        if b.len() >= 256 && is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 support was checked immediately above.
+            return unsafe { checksum_folded_avx2(b, initial) };
+        }
+    }
+
     let mut accumulator = checksum_no_fold(b, initial);
 
     // Fold the 64-bit accumulator into 16 bits.
@@ -221,7 +304,8 @@ mod tests {
     use rand::RngExt;
     // Assuming these paths are correct for your project structure
     use crate::platform::linux::checksum::{
-        checksum_no_fold_avx2, checksum_no_fold_scalar, checksum_no_fold_sse41,
+        checksum_folded_avx2, checksum_no_fold_avx2, checksum_no_fold_scalar,
+        checksum_no_fold_sse41,
     };
 
     #[test]
@@ -284,5 +368,38 @@ mod tests {
             }
         }
         println!("\nAll output comparison tests passed (assuming expected mismatch is handled by design).");
+    }
+
+    #[test]
+    fn test_folded_avx2_checksum_matches_scalar() {
+        #[cfg(target_arch = "x86_64")]
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        let mut rng = rand::rng();
+        let lengths = [
+            0usize, 1, 2, 3, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257, 511, 512, 513,
+            1200, 1500, 4096, 16384, 65535,
+        ];
+        let initial_values = [0u64, 1, 0xffff, 0x12345, 0x1234_5678, 0xffff_ffff];
+
+        for len in lengths {
+            let mut data = vec![0u8; len];
+            rng.fill(&mut data[..]);
+
+            for initial in initial_values {
+                let mut expected = checksum_no_fold_scalar(&data, initial);
+                while expected > 0xffff {
+                    expected = (expected >> 16) + (expected & 0xffff);
+                }
+
+                // SAFETY: the runtime feature check above proves AVX2 is available.
+                let actual = unsafe { checksum_folded_avx2(&data, initial) };
+                let expected_bytes = expected.to_be_bytes();
+                let expected = u16::from_be_bytes([expected_bytes[6], expected_bytes[7]]);
+                assert_eq!(actual, expected, "length={len}, initial={initial:#x}");
+            }
+        }
     }
 }
