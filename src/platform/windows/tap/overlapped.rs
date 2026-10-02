@@ -102,13 +102,13 @@ impl WriteOverlapped {
         })
     }
     pub fn try_write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if !self.finish_pending_nonblocking() {
+        if !self.finish_pending_nonblocking()? {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
         }
         self.submit(buf)
     }
     pub fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.finish_pending_blocking();
+        self.finish_pending_blocking()?;
         self.submit(buf)
     }
     #[cfg(any(
@@ -148,36 +148,31 @@ impl WriteOverlapped {
             }
         }
     }
-    fn finish_pending_nonblocking(&mut self) -> bool {
+    fn finish_pending_nonblocking(&mut self) -> io::Result<bool> {
         let inner = &mut self.inner;
         if inner.no_pending_io {
-            return true;
+            return Ok(true);
         }
         match ffi::try_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped) {
             Ok(_) => {
                 inner.no_pending_io = true;
-                true
+                Ok(true)
             }
-            Err(e) if e.kind() == io::ErrorKind::WouldBlock => false,
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
             Err(e) => {
                 inner.no_pending_io = true;
-                log::warn!("previous TAP write completed with error: {e}");
-                true
+                Err(e)
             }
         }
     }
-    fn finish_pending_blocking(&mut self) {
+    fn finish_pending_blocking(&mut self) -> io::Result<()> {
         let inner = &mut self.inner;
         if inner.no_pending_io {
-            return;
+            return Ok(());
         }
-        match ffi::wait_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped) {
-            Ok(_) => {}
-            Err(e) => {
-                log::warn!("previous TAP write completed with error: {e}");
-            }
-        }
+        let result = ffi::wait_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped);
         inner.no_pending_io = true;
+        result.map(|_| ())
     }
     #[cfg(any(
         feature = "interruptible",
@@ -190,8 +185,7 @@ impl WriteOverlapped {
         }
         self.overlapped_event()
             .wait_interruptible(interrupt_event, None)?;
-        self.finish_pending_blocking();
-        Ok(())
+        self.finish_pending_blocking()
     }
     #[cfg(any(
         feature = "interruptible",

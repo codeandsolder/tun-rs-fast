@@ -132,6 +132,12 @@ impl DeviceImpl {
             let iff_multi_queue = IFF_MULTI_QUEUE_SHORT;
             let packet_information = config.packet_information.unwrap_or(false);
             let offload = config.offload.unwrap_or(false);
+            if packet_information && offload {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Linux packet_information and offload cannot be enabled together",
+                ));
+            }
             req.ifr_ifru.ifru_flags = device_type
                 | if packet_information { 0 } else { iff_no_pi }
                 | if multi_queue { iff_multi_queue } else { 0 }
@@ -146,16 +152,11 @@ impl DeviceImpl {
                 // tunTCPOffloads were added in Linux v2.6. We require their support if IFF_VNET_HDR is set.
                 let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
                 let tun_udp_offloads = libc::TUN_F_USO4 | libc::TUN_F_USO6;
-                if let Err(err) = tunsetoffload(tun_fd.inner, tun_tcp_offloads as _) {
-                    log::warn!("unsupported offload: {err:?}");
-                    (false, false)
-                } else {
-                    // tunUDPOffloads were added in Linux v6.2. We do not return an
-                    // error if they are unsupported at runtime.
-                    let rs =
-                        tunsetoffload(tun_fd.inner, (tun_tcp_offloads | tun_udp_offloads) as _);
-                    (true, rs.is_ok())
-                }
+                tunsetoffload(tun_fd.inner, tun_tcp_offloads as _).map_err(io::Error::from)?;
+                // tunUDPOffloads were added in Linux v6.2. We do not return an
+                // error if they are unsupported at runtime.
+                let rs = tunsetoffload(tun_fd.inner, (tun_tcp_offloads | tun_udp_offloads) as _);
+                (true, rs.is_ok())
             } else {
                 // The TUN_F_* offload mask is device-wide state, not
                 // per-fd. When attaching to a persistent TUN that a
@@ -166,12 +167,11 @@ impl DeviceImpl {
                 // unaware caller will read them as oversized single
                 // packets (ping survives, TCP bulk transfer fails).
                 // Explicitly reset the mask. No-op on a freshly
-                // created device (mask is already zero). Failure is
-                // logged but not propagated, mirroring the
-                // best-effort treatment of UDP offload above.
-                if let Err(err) = tunsetoffload(tun_fd.inner, 0 as _) {
-                    log::warn!("failed to clear TUN offload mask: {err:?}");
-                }
+                // created device (mask is already zero). If this fails we
+                // cannot safely expose the fd as an offload-unaware device:
+                // stale device-wide GSO state can otherwise deliver packets
+                // whose framing this instance does not understand.
+                tunsetoffload(tun_fd.inner, 0 as _).map_err(io::Error::from)?;
                 (false, false)
             };
 
@@ -185,7 +185,7 @@ impl DeviceImpl {
             Ok(device)
         }
     }
-    unsafe fn set_tcp_offloads(&self) -> io::Result<()> {
+    fn set_tcp_offloads(&self) -> io::Result<()> {
         // SAFETY: self owns a live TUN descriptor and the offload mask is an ABI-defined integer consumed synchronously by TUNSETOFFLOAD.
         unsafe {
             let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
@@ -194,7 +194,7 @@ impl DeviceImpl {
                 .map_err(io::Error::from)
         }
     }
-    unsafe fn set_tcp_udp_offloads(&self) -> io::Result<()> {
+    fn set_tcp_udp_offloads(&self) -> io::Result<()> {
         // SAFETY: self owns a live TUN descriptor and the offload mask is an ABI-defined integer consumed synchronously by TUNSETOFFLOAD.
         unsafe {
             let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
@@ -204,18 +204,31 @@ impl DeviceImpl {
                 .map_err(io::Error::from)
         }
     }
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "all platform DeviceImpl::from_tun constructors share a fallible signature"
-    )]
     pub(crate) fn from_tun(tun: Tun) -> io::Result<Self> {
-        Ok(Self {
+        let flags = tun_flags(tun.as_raw_fd())?;
+        let vnet_hdr = flags & IFF_VNET_HDR_SHORT != 0;
+        let has_packet_information = flags & IFF_NO_PI_SHORT == 0;
+        if vnet_hdr && has_packet_information {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Linux raw fd combines packet-information and virtio headers, which the offload APIs do not support",
+            ));
+        }
+        let mut dev = Self {
             tun,
-            vnet_hdr: false,
+            vnet_hdr,
             udp_gso: false,
-            flags: 0,
+            flags,
             op_lock: Arc::new(RwLock::new(())),
-        })
+        };
+        if vnet_hdr {
+            // IFF_VNET_HDR changes the packet framing contract. Ensure the
+            // TCP offloads this implementation emits are accepted by the fd;
+            // otherwise returning a vnet-capable Device would be misleading.
+            dev.set_tcp_offloads()?;
+            dev.udp_gso = dev.set_tcp_udp_offloads().is_ok();
+        }
+        Ok(dev)
     }
 
     /// # Prerequisites
@@ -1295,7 +1308,8 @@ impl DeviceImpl {
                     if let Some(ip_addr) = x.address.ip_addr() {
                         if ip_addr == addr {
                             if let Some(netmask) = x.address.netmask() {
-                                let prefix = ipnet::ip_mask_to_prefix(netmask).unwrap_or(0);
+                                let prefix = ipnet::ip_mask_to_prefix(netmask)
+                                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                                 self.remove_address_v6_impl(addr_v6, prefix)?;
                             }
                         }
@@ -1492,6 +1506,16 @@ impl DeviceImpl {
 
             Ok(mac)
         }
+    }
+}
+
+fn tun_flags(fd: RawFd) -> io::Result<c_short> {
+    // SAFETY: req is writable ifreq storage; TUNGETIFF only borrows the raw
+    // descriptor and initializes the flags union member on success.
+    unsafe {
+        let mut req: ifreq = mem::zeroed();
+        tungetiff(fd, (&raw mut req).cast()).map_err(io::Error::from)?;
+        Ok(req.ifr_ifru.ifru_flags)
     }
 }
 

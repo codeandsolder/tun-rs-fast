@@ -57,7 +57,7 @@ impl Fd {
             Ok((flags & O_NONBLOCK) != 0)
         }
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", feature = "interruptible"))]
     pub(crate) fn set_cloexec(&self) -> io::Result<()> {
         // SAFETY: self owns or borrows a live descriptor; both fcntl calls are
         // synchronous value-only operations and do not retain Rust memory.
@@ -193,7 +193,6 @@ impl Fd {
     target_os = "freebsd",
     target_os = "openbsd",
     target_os = "netbsd",
-    target_os = "openbsd",
     target_vendor = "apple",
 ))]
 pub(crate) const fn max_iov() -> usize {

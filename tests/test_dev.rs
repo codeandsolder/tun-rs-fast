@@ -674,6 +674,52 @@ fn netbsd_tun_mtu_matches_kernel_limits() -> TestResult {
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[test]
+fn linux_rejects_packet_information_with_vnet_offload() -> TestResult {
+    let error = DeviceBuilder::new()
+        .packet_information(true)
+        .offload(true)
+        .build_sync()
+        .err()
+        .ok_or_else(|| {
+            std::io::Error::other("unsupported PI + vnet-header combination was accepted")
+        })?;
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+#[expect(
+    unsafe_code,
+    reason = "the test round-trips ownership through the public raw-fd constructor"
+)]
+fn linux_from_fd_recovers_queue_and_vnet_state() -> TestResult {
+    use std::os::fd::IntoRawFd;
+
+    let device = DeviceBuilder::new()
+        .multi_queue(true)
+        .offload(true)
+        .build_sync()?;
+    let name = device.name()?;
+    assert!(device.tcp_gso());
+
+    let fd = device.into_raw_fd();
+    // SAFETY: IntoRawFd transferred ownership of the live TUN descriptor and
+    // from_fd immediately takes that ownership back.
+    let restored = unsafe { SyncDevice::from_fd(fd)? };
+    assert_eq!(restored.name()?, name);
+    assert!(restored.tcp_gso());
+
+    // TUNGETIFF state must also restore IFF_MULTI_QUEUE, otherwise a raw-fd
+    // round-trip silently breaks try_clone().
+    let clone = restored.try_clone()?;
+    assert_eq!(clone.name()?, name);
+    assert_eq!(clone.if_index()?, restored.if_index()?);
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
 fn linux_multiqueue_clone_preserves_device_identity() -> TestResult {
     let device = DeviceBuilder::new().multi_queue(true).build_sync()?;
     let clone = device.try_clone()?;

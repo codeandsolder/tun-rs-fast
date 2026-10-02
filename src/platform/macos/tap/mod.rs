@@ -121,7 +121,7 @@ fn open_ndrv() -> io::Result<Fd> {
     // SAFETY: socket has no pointer arguments and returns a new descriptor or -1.
     let raw_fd = unsafe { libc::socket(libc::AF_NDRV, libc::SOCK_RAW, 0) };
     let fd = Fd::new(raw_fd)?;
-    _ = fd.set_cloexec();
+    fd.set_cloexec()?;
     Ok(fd)
 }
 
@@ -493,7 +493,7 @@ fn open_bpf() -> io::Result<Fd> {
         let bpf_fd = unsafe { libc::open(path.as_ptr(), libc::O_RDWR) };
         match Fd::new(bpf_fd) {
             Ok(fd) => {
-                _ = fd.set_cloexec();
+                fd.set_cloexec()?;
                 return Ok(fd);
             }
             Err(e) => {
