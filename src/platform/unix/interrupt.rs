@@ -491,6 +491,8 @@ impl InterruptEvent {
             }
             let read_fd = Fd::new_unchecked(fds[0]);
             let write_fd = Fd::new_unchecked(fds[1]);
+            read_fd.set_cloexec()?;
+            write_fd.set_cloexec()?;
             write_fd.set_nonblocking(true)?;
             read_fd.set_nonblocking(true)?;
             Ok(Self {
@@ -736,6 +738,21 @@ mod tests {
             return Err(io::Error::last_os_error());
         }
         Ok((Fd::new(raw[0])?, Fd::new(raw[1])?))
+    }
+
+    #[test]
+    fn interrupt_pipe_is_close_on_exec() -> io::Result<()> {
+        let event = InterruptEvent::new()?;
+        // SAFETY: both descriptors are live for the lifetime of event and F_GETFD
+        // only queries descriptor flags.
+        let read_flags = unsafe { libc::fcntl(event.read_fd.as_raw_fd(), libc::F_GETFD) };
+        // SAFETY: same as above for the write end.
+        let write_flags = unsafe { libc::fcntl(event.write_fd.as_raw_fd(), libc::F_GETFD) };
+        assert!(read_flags >= 0);
+        assert!(write_flags >= 0);
+        assert_ne!(read_flags & libc::FD_CLOEXEC, 0);
+        assert_ne!(write_flags & libc::FD_CLOEXEC, 0);
+        Ok(())
     }
 
     #[test]

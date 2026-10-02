@@ -398,11 +398,6 @@ impl WinTunSession {
         feature = "async_tokio",
         feature = "async_io"
     ))]
-    #[cfg(any(
-        feature = "interruptible",
-        feature = "async_tokio",
-        feature = "async_io"
-    ))]
     fn wait_readable_interruptible(
         &self,
         inner_event: &OwnedHandle,

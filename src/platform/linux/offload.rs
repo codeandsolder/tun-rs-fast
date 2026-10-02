@@ -814,20 +814,32 @@ fn checksum_valid(pkt: &[u8], iph_len: u8, proto: u8, is_v6: bool) -> bool {
     } else {
         (IPV4_SRC_ADDR_OFFSET, 4)
     };
+    let iph_len = usize::from(iph_len);
+    let Some(addresses_end) = src_addr_at.checked_add(addr_size * 2) else {
+        return false;
+    };
+    if iph_len > pkt.len() || addresses_end > pkt.len() {
+        return false;
+    }
 
     let Ok(pkt_len) = u16::try_from(pkt.len()) else {
         return false;
     };
-    let len_for_pseudo = pkt_len.saturating_sub(u16::from(iph_len));
+    let Ok(iph_len_u16) = u16::try_from(iph_len) else {
+        return false;
+    };
+    let Some(len_for_pseudo) = pkt_len.checked_sub(iph_len_u16) else {
+        return false;
+    };
 
     let c_sum = pseudo_header_checksum_no_fold(
         proto,
         &pkt[src_addr_at..src_addr_at + addr_size],
-        &pkt[src_addr_at + addr_size..src_addr_at + addr_size * 2],
+        &pkt[src_addr_at + addr_size..addresses_end],
         len_for_pseudo,
     );
 
-    (!checksum(&pkt[iph_len as usize..], c_sum)) == 0
+    (!checksum(&pkt[iph_len..], c_sum)) == 0
 }
 
 /// coalesceResult represents the result of attempting to coalesce two TCP

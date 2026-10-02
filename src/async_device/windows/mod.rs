@@ -396,7 +396,9 @@ impl ExitSignalGuard {
         if let Some(device) = &self.device {
             op(device, &self.cancel_event_handle)
         } else {
-            unreachable!()
+            Err(io::Error::other(
+                "Windows async cancellation guard lost its device",
+            ))
         }
     }
 }

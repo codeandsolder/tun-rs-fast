@@ -82,6 +82,40 @@ pub(crate) fn generate_packet_information(ipv6: bool) -> [u8; PIL] {
     }
 }
 
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "openbsd",
+    target_os = "freebsd",
+    target_os = "netbsd",
+))]
+fn strip_packet_info_read_len(len: usize) -> io::Result<usize> {
+    len.checked_sub(PIL).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "TUN/TAP read returned fewer bytes than the packet-information header",
+        )
+    })
+}
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "openbsd",
+    target_os = "freebsd",
+    target_os = "netbsd",
+))]
+fn strip_packet_info_write_len(len: usize) -> io::Result<usize> {
+    len.checked_sub(PIL).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::WriteZero,
+            "TUN/TAP write consumed fewer bytes than the packet-information header",
+        )
+    })
+}
+
 pub(crate) struct Tun {
     pub(crate) fd: Fd,
     #[cfg(any(
@@ -144,7 +178,7 @@ impl Tun {
             let len = self
                 .fd
                 .writev(&[IoSlice::new(&header), IoSlice::new(buf)])?;
-            return Ok(len.saturating_sub(PIL));
+            return strip_packet_info_write_len(len);
         }
         self.fd.write(buf)
     }
@@ -184,7 +218,7 @@ impl Tun {
             iov_block.push(IoSlice::new(&head));
             iov_block.extend(bufs.iter().copied());
             let len = self.fd.writev(&iov_block)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_write_len(len)
         } else {
             self.fd.writev(bufs)
         }
@@ -228,7 +262,7 @@ impl Tun {
             let mut head = [0u8; PIL];
             let bufs = &mut [IoSliceMut::new(&mut head), IoSliceMut::new(buf)];
             let len = self.fd.readv(bufs)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_read_len(len)
         } else {
             self.fd.read(buf)
         }
@@ -257,7 +291,7 @@ impl Tun {
                 },
             ];
             let len = self.fd.readv_raw(&mut bufs)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_read_len(len)
         } else {
             self.fd.read_uninit(buf)
         }
@@ -295,7 +329,7 @@ impl Tun {
                 iov_block.push(IoSliceMut::new(buf.as_mut()));
             }
             let len = self.fd.readv(&mut iov_block)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_read_len(len)
         } else {
             self.fd.readv(bufs)
         }
@@ -364,7 +398,7 @@ impl Tun {
             let mut head = [0u8; PIL];
             let bufs = &mut [IoSliceMut::new(&mut head), IoSliceMut::new(buf)];
             let len = self.fd.readv_interruptible(bufs, event, timeout)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_read_len(len)
         } else {
             self.fd.read_interruptible(buf, event, timeout)
         }
@@ -419,7 +453,7 @@ impl Tun {
             let len = self
                 .fd
                 .readv_interruptible(&mut iov_block, event, timeout)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_read_len(len)
         } else {
             self.fd.readv_interruptible(bufs, event, timeout)
         }
@@ -474,7 +508,7 @@ impl Tun {
             let len = self
                 .fd
                 .writev_interruptible(&[IoSlice::new(&head), IoSlice::new(buf)], event)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_write_len(len)
         } else {
             self.fd.write_interruptible(buf, event)
         }
@@ -528,7 +562,7 @@ impl Tun {
             iov_block.push(IoSlice::new(&head));
             iov_block.extend(bufs.iter().copied());
             let len = self.fd.writev_interruptible(&iov_block, event)?;
-            Ok(len.saturating_sub(PIL))
+            strip_packet_info_write_len(len)
         } else {
             self.fd.writev_interruptible(bufs, event)
         }
@@ -567,8 +601,28 @@ impl IntoRawFd for Tun {
     )
 ))]
 mod packet_information_tests {
-    use super::{generate_packet_information, is_ipv6};
+    use super::{
+        generate_packet_information, is_ipv6, strip_packet_info_read_len,
+        strip_packet_info_write_len, PIL,
+    };
     use std::io;
+
+    #[test]
+    fn packet_information_length_helpers_reject_short_io() {
+        assert_eq!(strip_packet_info_read_len(PIL).unwrap_or(usize::MAX), 0);
+        assert_eq!(
+            strip_packet_info_write_len(PIL + 7).unwrap_or(usize::MAX),
+            7
+        );
+        assert!(matches!(
+            strip_packet_info_read_len(PIL - 1),
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof
+        ));
+        assert!(matches!(
+            strip_packet_info_write_len(PIL - 1),
+            Err(error) if error.kind() == io::ErrorKind::WriteZero
+        ));
+    }
 
     #[test]
     fn packet_information_uses_network_order_address_family() {
