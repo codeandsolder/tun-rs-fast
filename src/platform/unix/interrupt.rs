@@ -728,6 +728,7 @@ impl InterruptEvent {
 mod tests {
     use super::{poll_timeout_ms, Fd, InterruptEvent};
     use std::io;
+    use std::os::fd::AsRawFd;
     use std::time::Duration;
 
     fn pipe_pair() -> io::Result<(Fd, Fd)> {
