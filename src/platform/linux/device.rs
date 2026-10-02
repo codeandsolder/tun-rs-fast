@@ -185,7 +185,7 @@ impl DeviceImpl {
             Ok(device)
         }
     }
-    unsafe fn set_tcp_offloads(&self) -> io::Result<()> {
+    fn set_tcp_offloads(&self) -> io::Result<()> {
         // SAFETY: self owns a live TUN descriptor and the offload mask is an ABI-defined integer consumed synchronously by TUNSETOFFLOAD.
         unsafe {
             let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
@@ -194,7 +194,7 @@ impl DeviceImpl {
                 .map_err(io::Error::from)
         }
     }
-    unsafe fn set_tcp_udp_offloads(&self) -> io::Result<()> {
+    fn set_tcp_udp_offloads(&self) -> io::Result<()> {
         // SAFETY: self owns a live TUN descriptor and the offload mask is an ABI-defined integer consumed synchronously by TUNSETOFFLOAD.
         unsafe {
             let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
@@ -225,8 +225,8 @@ impl DeviceImpl {
             // IFF_VNET_HDR changes the packet framing contract. Ensure the
             // TCP offloads this implementation emits are accepted by the fd;
             // otherwise returning a vnet-capable Device would be misleading.
-            unsafe { dev.set_tcp_offloads()? };
-            dev.udp_gso = unsafe { dev.set_tcp_udp_offloads().is_ok() };
+            dev.set_tcp_offloads()?;
+            dev.udp_gso = dev.set_tcp_udp_offloads().is_ok();
         }
         Ok(dev)
     }
