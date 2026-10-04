@@ -132,6 +132,9 @@ impl SyncDevice {
     /// - The file descriptor (`fd`) must be an owned file descriptor.
     /// - It must be valid and open.
     /// - The file descriptor must refer to a TUN/TAP device.
+    /// - On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
+    ///   Linux does not expose enough read-only state to reconstruct arbitrary
+    ///   packet-information/offload framing safely from an adopted fd.
     /// - After calling this function, the `SyncDevice` takes ownership of the fd and will close it when dropped.
     ///
     /// This function is only available on Unix platforms.
@@ -985,6 +988,7 @@ impl Deref for BorrowedSyncDevice<'_> {
 impl BorrowedSyncDevice<'_> {
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
+    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
     /// Unlike [`SyncDevice::from_fd`], this function does **not** take ownership of `fd`,
     /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.

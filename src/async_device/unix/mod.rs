@@ -63,7 +63,8 @@ impl AsyncDevice {
     }
 
     /// # Safety
-    /// This method is safe if the provided fd is valid
+    /// The fd must be valid, open, and refer to a TUN/TAP device.
+    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
     /// Constructs an `AsyncDevice` from an existing file descriptor.
     ///
     /// # Errors
