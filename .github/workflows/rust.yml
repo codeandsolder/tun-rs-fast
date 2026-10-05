@@ -70,26 +70,26 @@ jobs:
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: dtolnay/rust-toolchain@1.98.1
+      - uses: dtolnay/rust-toolchain@1.99.0
         with:
           components: rustfmt,clippy
 
       - name: rustfmt
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
-        run: cargo +1.98.1 fmt --all -- --check
+        run: cargo +1.99.0 fmt --all -- --check
 
       - name: Stable compile checks
         if: ${{ !cancelled() }}
         run: |
-          cargo +1.98.1 check --all-targets
-          cargo +1.98.1 check --all-targets --features async_tokio,async_framed,interruptible,experimental
-          cargo +1.98.1 check --all-targets --features async_io,async_framed,interruptible,experimental
+          cargo +1.99.0 check --all-targets
+          cargo +1.99.0 check --all-targets --features async_tokio,async_framed,interruptible,experimental
+          cargo +1.99.0 check --all-targets --features async_io,async_framed,interruptible,experimental
 
       - name: Async runtime exclusivity contract
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
         shell: bash
         run: |
-          if cargo +1.98.1 check --no-default-features --features async_tokio,async_io; then
+          if cargo +1.99.0 check --no-default-features --features async_tokio,async_io; then
             echo "async_tokio + async_io unexpectedly compiled" >&2
             exit 1
           fi
@@ -125,16 +125,16 @@ jobs:
       - name: Unit tests
         if: ${{ !cancelled() }}
         run: |
-          cargo +1.98.1 test --lib
-          cargo +1.98.1 test --lib --features async_tokio,async_framed,interruptible,experimental
-          cargo +1.98.1 test --lib --features async_io,async_framed,interruptible,experimental
+          cargo +1.99.0 test --lib
+          cargo +1.99.0 test --lib --features async_tokio,async_framed,interruptible,experimental
+          cargo +1.99.0 test --lib --features async_io,async_framed,interruptible,experimental
 
       - name: Documentation tests
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
         run: |
-          cargo +1.98.1 test --doc
-          cargo +1.98.1 test --doc --features async_tokio,async_framed,interruptible,experimental
-          cargo +1.98.1 test --doc --features async_io,async_framed,interruptible,experimental
+          cargo +1.99.0 test --doc
+          cargo +1.99.0 test --doc --features async_tokio,async_framed,interruptible,experimental
+          cargo +1.99.0 test --doc --features async_io,async_framed,interruptible,experimental
 
       - name: Install Linux TUN test tools
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
@@ -148,7 +148,7 @@ jobs:
 
           build_and_run() {
             local features="$1"
-            local -a cmd=(cargo +1.98.1 test --test test_dev --no-run --message-format=json)
+            local -a cmd=(cargo +1.99.0 test --test test_dev --no-run --message-format=json)
             if [[ -n "$features" ]]; then
               cmd+=(--features "$features")
             fi
@@ -167,7 +167,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          exe="$(cargo +1.98.1 test --test test_dev --no-run --message-format=json |
+          exe="$(cargo +1.99.0 test --test test_dev --no-run --message-format=json |
             jq -r 'select(.executable != null and .target.name == "test_dev") | .executable' |
             tail -n1)"
           test -n "$exe"
@@ -187,10 +187,10 @@ jobs:
     uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@57216c70e71428e87eafafc721b7ee5a39caf29c # main
     with:
       command: |
-        cargo +1.98.1 test --lib
-        cargo +1.98.1 test --lib --features async_tokio,async_framed,interruptible,experimental
-        cargo +1.98.1 test --lib --features async_io,async_framed,interruptible,experimental
-      rust-toolchain: "1.98.1"
+        cargo +1.99.0 test --lib
+        cargo +1.99.0 test --lib --features async_tokio,async_framed,interruptible,experimental
+        cargo +1.99.0 test --lib --features async_io,async_framed,interruptible,experimental
+      rust-toolchain: "1.99.0"
       rustflags: "-C target-cpu=x86-64-v2"
 
   build_n_test_freebsd:
@@ -258,22 +258,22 @@ jobs:
             uname -a
             sudo pkgin -y install git curl clang jq
             curl --proto 'https' --tlsv1.2 -sSf https://sh.rustup.rs | \
-              sh -s -- -y --default-toolchain 1.98.1 --profile minimal
+              sh -s -- -y --default-toolchain 1.99.0 --profile minimal
             source "$HOME/.cargo/env"
             export CC=clang
             export CXX=clang++
             export CARGO_TERM_COLOR=always
 
-            cargo +1.98.1 check --all-targets
-            cargo +1.98.1 check --all-targets --features async_tokio,async_framed,interruptible,experimental
-            cargo +1.98.1 check --all-targets --features async_io,async_framed,interruptible,experimental
-            cargo +1.98.1 test --lib
-            cargo +1.98.1 test --lib --features async_tokio,async_framed,interruptible,experimental
-            cargo +1.98.1 test --lib --features async_io,async_framed,interruptible,experimental
+            cargo +1.99.0 check --all-targets
+            cargo +1.99.0 check --all-targets --features async_tokio,async_framed,interruptible,experimental
+            cargo +1.99.0 check --all-targets --features async_io,async_framed,interruptible,experimental
+            cargo +1.99.0 test --lib
+            cargo +1.99.0 test --lib --features async_tokio,async_framed,interruptible,experimental
+            cargo +1.99.0 test --lib --features async_io,async_framed,interruptible,experimental
 
             run_privileged() {
               local features="$1"
-              local -a cmd=(cargo +1.98.1 test --test test_dev --no-run --message-format=json)
+              local -a cmd=(cargo +1.99.0 test --test test_dev --no-run --message-format=json)
               if [[ -n "$features" ]]; then
                 cmd+=(--features "$features")
               fi
@@ -447,6 +447,6 @@ jobs:
       - uses: actions-rs/toolchain@16499b5e05bf2e26879000db0c1d13f7e13fa3af # v1
         with:
           profile: minimal
-          toolchain: stable
+          toolchain: 1.99.0
           override: true
       - uses: obi1kenobi/cargo-semver-checks-action@6b69fcf40e9b5fb17adeb57e4b6ecd020649a239 # v2
