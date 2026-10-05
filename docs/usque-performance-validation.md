@@ -7,9 +7,12 @@
 
 Do not compare the absolute numbers from those two benchmark families. Use the microbenchmark to understand tun-rs itself; use the downstream harness to prove that a tun-rs change actually makes the deployed tunnel cheaper.
 
-The canonical whole-stack methodology is documented at:
+The canonical whole-stack methodology and closed-candidate ledger are documented at:
 
 - https://github.com/codeandsolder/usque-rs-fast/blob/main/docs/BENCHMARKING.md
+- https://github.com/codeandsolder/usque-rs-fast/blob/main/docs/REJECTED_OPTIMIZATIONS.md
+
+Before proposing an obvious copy/checksum/batching cleanup, search the rejected-optimization ledger. Several changes that were very convincing in tun-rs microbenchmarks disappeared or reversed in the current whole-tunnel stack.
 
 ## Downstream headline metric
 
@@ -44,26 +47,26 @@ A retained adaptive candidate (`adaptive4` in the campaign artifacts) produced r
 
 The durable conclusion is not that four packets is universally optimal. It is that bounded aggregation can reduce real host cost, and the optimal policy depends on traffic/rate/architecture enough that it should be adaptive and latency-bounded rather than an unbounded “batch more” rule.
 
-## Checksum-path result
+## Checksum-path result — early positive screen, final rejection
 
-A checksum optimization independently improved the high-tier RX 100 Mbit/s matched point:
+An early high-tier RX 100 Mbit/s comparison made the checksum candidate look useful:
 
 - baseline: 3.319 host s/Gbit,
 - checksum candidate: 3.228 host s/Gbit,
 - approximately **-2.73%** raw host CPU/Gbit.
 
-Kernel CPU/Gbit also fell materially in that comparison. This is exactly the kind of change that should be judged at whole-host scope: the important saving is not necessarily visible as a proportional userspace saving.
+An early adaptive-TUN-write + checksum combination also measured 3.100 host s/Gbit against the 3.319 baseline (about **-6.59%**) with essentially unchanged inner throughput.
 
-## Combined result
+Those are historical screening results, **not the current disposition**. The later current-stack confirmation ran two independent five-pair RX100 campaigns. Across all ten accepted pairs, checksum SAD had:
 
-With adaptive TUN writing plus the checksum optimization at high-tier RX 100 Mbit/s:
+- **+2.17% median idle-adjusted host CPU/Gbit**,
+- +2.14% raw-host median,
+- only **2/10** host wins,
+- +0.84% median candidate-process CPU.
 
-- baseline: 3.319 host s/Gbit,
-- combined: 3.100 host s/Gbit,
-- approximately **-6.59%** raw host CPU/Gbit,
-- inner throughput was effectively unchanged.
+The final Rust 1.99 native profiles also put the checksum function at only about 0.7–1.2% self cycles in the relevant modes.
 
-The combined run also showed a substantial kernel-CPU reduction.
+**Current conclusion: reject the hand-written checksum/SAD path as an end-to-end tunnel optimization.** The local checksum microbenchmark improvement is real, but it does not survive the full-stack boundary.
 
 ## Direct/native write experiment
 
@@ -75,6 +78,28 @@ Profiler work suggested a more direct write path. The promotion evidence came fr
 - inner throughput was virtually identical (~212.2 Mbit/s).
 
 This is a useful template for future low-level tun-rs work: let profiling point at the code, but confirm the value with a native whole-stack run.
+
+## Closed / superseded tun-rs candidates
+
+### Removing the GRO packet `.to_vec()` — rejected
+
+The obvious allocation/copy removal was functionally correct but **slower in corrected standalone CPU probes**. Do not assume that deleting the visible allocation improves this path; buffer shape, aliasing, alignment, and generated copy code matter.
+
+### Checksum SAD / AVX2 — rejected end-to-end
+
+The local checksum microbenchmark win was large and real (roughly 24% at 1500 bytes and around 39-41% for larger buffers), but the current whole-tunnel ten-pair result above rejected it. This is now a textbook example of why tun-rs microbenchmarks are screening evidence rather than the promotion gate.
+
+### Fixed pseudo-header checksum specialization — deferred
+
+This looked promising in local work but whole-GRO attribution was unstable. It never reached a convincing current whole-tunnel result. Do not make it a first-pass candidate unless a fresh profile shows checksum construction has become materially hotter.
+
+### GRO flow-map lookup/hash variants — do not throw out the successful descendants
+
+The rejected copy-removal and checksum candidates should not be generalized into "GRO work never helps". Replacing `contains_key` + `get_mut` with one entry lookup and switching the flow table to AHash produced real surgical wins and were retained. Start from the maintained implementation rather than replaying the old intermediate map/hash probes.
+
+### Ready-drain policy tuning belongs above tun-rs
+
+The nonblocking `try_recv_multiple()` primitive was useful and became part of the accepted batching mechanism. The many rejected cap/threshold/deadline/hysteresis variants were **usque policy experiments**, not evidence that the tun-rs API was a mistake. The cross-repository rejected-optimization ledger records those policy variants in detail.
 
 ## Why the existing microbenchmark still matters
 
