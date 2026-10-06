@@ -4,6 +4,7 @@ use std::task::{Context, Poll};
 use crate::platform::DeviceImpl;
 use ::tokio::io::unix::AsyncFd as TokioAsyncFd;
 use ::tokio::io::Interest;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 
 /// An async Tun/Tap device wrapper around a Tun/Tap device.

@@ -9,6 +9,7 @@ use crate::platform::unix::Fd;
 ))]
 use crate::PACKET_INFORMATION_LENGTH as PIL;
 #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::io::{self, IoSlice, IoSliceMut};
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
@@ -245,6 +246,7 @@ impl Tun {
     )))]
     #[inline]
     #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.fd.read_uninit(buf)
     }
@@ -277,6 +279,7 @@ impl Tun {
     ))]
     #[inline]
     #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         if self.ignore_packet_info() {
             let mut head = [0u8; PIL];

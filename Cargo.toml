@@ -32,7 +32,6 @@ pedantic = "deny"
 
 [dependencies]
 bytes = { version = "1" }
-log = "0.4"
 tokio = { version = "1.49", features = [
     "net",
     "macros",
@@ -95,6 +94,9 @@ windows-sys = { version = "0.61", features = [
 ] }
 libloading = "0.9"
 
+[target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "windows"))'.dependencies]
+log = "0.4"
+
 [target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd",target_os = "netbsd"))'.dependencies]
 route_manager = "0.2.9"
 
@@ -102,6 +104,7 @@ route_manager = "0.2.9"
 bindgen = { version = "0.73.1", optional = true }
 
 [dev-dependencies]
+log = "0.4"
 criterion = "0.8"
 ctrlc2 = { version = "4.0", features = ["termination"] }
 env_logger = "0.11"
