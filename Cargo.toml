@@ -61,7 +61,7 @@ ahash = "0.8"
 byteorder = "1.5.0"
 
 [target.'cfg(any(target_os = "linux",target_os = "windows"))'.dependencies]
-netconfig-rs = "0.1.5"
+netconfig-rs = { version = "0.1.5", optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 encoding_rs = "0.8.35"
@@ -108,6 +108,8 @@ async-ctrlc = "1.2.0"
 rand = "0.10"
 
 [features]
+default = ["address-management"]
+address-management = ["dep:netconfig-rs"]
 async = ["async_tokio"]
 async_std = ["async_io"]
 async_tokio = ["blocking", "tokio"]
