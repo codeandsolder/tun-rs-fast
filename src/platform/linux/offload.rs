@@ -97,12 +97,12 @@ use libc::{IPPROTO_TCP, IPPROTO_UDP};
 use std::io;
 
 #[inline]
-fn read_be_u16(bytes: &[u8]) -> u16 {
+const fn read_be_u16(bytes: &[u8]) -> u16 {
     u16::from_be_bytes([bytes[0], bytes[1]])
 }
 
 #[inline]
-fn read_be_u32(bytes: &[u8]) -> u32 {
+const fn read_be_u32(bytes: &[u8]) -> u32 {
     u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
 }
 
