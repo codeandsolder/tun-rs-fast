@@ -33,7 +33,6 @@ pedantic = "deny"
 [dependencies]
 bytes = { version = "1" }
 log = "0.4"
-blocking = { version = "1.6", optional = true }
 tokio = { version = "1.49", features = [
     "net",
     "macros",
@@ -62,6 +61,9 @@ byteorder = "1.5.0"
 
 [target.'cfg(any(target_os = "linux",target_os = "windows"))'.dependencies]
 netconfig-rs = { version = "0.1.5", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+blocking = "1.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 encoding_rs = "0.8.35"
@@ -112,8 +114,8 @@ default = ["address-management"]
 address-management = ["dep:netconfig-rs"]
 async = ["async_tokio"]
 async_std = ["async_io"]
-async_tokio = ["blocking", "tokio"]
-async_io = ["blocking", "async-io"]
+async_tokio = ["tokio"]
+async_io = ["async-io"]
 async_framed = ["futures", "futures-core"]
 bindgen = ["dep:bindgen"]
 interruptible = []
