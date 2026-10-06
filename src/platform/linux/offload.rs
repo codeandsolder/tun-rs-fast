@@ -92,10 +92,29 @@ loop {
 
 /// <https://github.com/WireGuard/wireguard-go/blob/master/tun/offload_linux.go>
 use crate::platform::linux::checksum::{checksum, pseudo_header_checksum_no_fold};
-use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use libc::{IPPROTO_TCP, IPPROTO_UDP};
 use std::io;
+
+#[inline]
+fn read_be_u16(bytes: &[u8]) -> u16 {
+    u16::from_be_bytes([bytes[0], bytes[1]])
+}
+
+#[inline]
+fn read_be_u32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+#[inline]
+fn write_be_u16(bytes: &mut [u8], value: u16) {
+    bytes[..2].copy_from_slice(&value.to_be_bytes());
+}
+
+#[inline]
+fn write_be_u32(bytes: &mut [u8], value: u32) {
+    bytes[..4].copy_from_slice(&value.to_be_bytes());
+}
 
 /// GSO type: Not a GSO frame (normal packet).
 ///
@@ -574,9 +593,9 @@ impl TcpFlowKey {
         key.src_addr[..addr_size].copy_from_slice(&pkt[src_addr_offset..dst_addr_offset]);
         key.dst_addr[..addr_size]
             .copy_from_slice(&pkt[dst_addr_offset..dst_addr_offset + addr_size]);
-        key.src_port = BigEndian::read_u16(&pkt[tcph_offset..]);
-        key.dst_port = BigEndian::read_u16(&pkt[tcph_offset + 2..]);
-        key.rx_ack = BigEndian::read_u32(&pkt[tcph_offset + 8..]);
+        key.src_port = read_be_u16(&pkt[tcph_offset..]);
+        key.dst_port = read_be_u16(&pkt[tcph_offset + 2..]);
+        key.rx_ack = read_be_u32(&pkt[tcph_offset + 8..]);
         key.is_v6 = addr_size == 16;
         key
     }
@@ -694,8 +713,8 @@ impl UdpFlowKey {
         key.src_addr[..addr_size].copy_from_slice(&pkt[src_addr_offset..dst_addr_offset]);
         key.dst_addr[..addr_size]
             .copy_from_slice(&pkt[dst_addr_offset..dst_addr_offset + addr_size]);
-        key.src_port = BigEndian::read_u16(&pkt[udph_offset..]);
-        key.dst_port = BigEndian::read_u16(&pkt[udph_offset + 2..]);
+        key.src_port = read_be_u16(&pkt[udph_offset..]);
+        key.dst_port = read_be_u16(&pkt[udph_offset + 2..]);
         key.is_v6 = addr_size == 16;
         key
     }
@@ -1319,14 +1338,14 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the (IPv4) header checksum.
                 if item.key.is_v6 {
                     hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV6;
-                    BigEndian::write_u16(&mut pkt[4..6], transport_len);
+                    write_be_u16(&mut pkt[4..6], transport_len);
                 } else {
                     hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
                     pkt[10] = 0;
                     pkt[11] = 0;
-                    BigEndian::write_u16(&mut pkt[2..4], pkt_len_u16);
+                    write_be_u16(&mut pkt[2..4], pkt_len_u16);
                     let iph_csum = !checksum(&pkt[..item.iph_len as usize], 0);
-                    BigEndian::write_u16(&mut pkt[10..12], iph_csum);
+                    write_be_u16(&mut pkt[10..12], iph_csum);
                 }
 
                 hdr.encode(&mut buf[offset - VIRTIO_NET_HDR_LEN..])?;
@@ -1340,7 +1359,7 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                     transport_len,
                 );
                 let tcp_csum = checksum(&[], psum);
-                BigEndian::write_u16(
+                write_be_u16(
                     &mut pkt[(hdr.csum_start + hdr.csum_offset) as usize..],
                     tcp_csum,
                 );
@@ -1412,20 +1431,20 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the total len (IPv4) or payload len (IPv6).
                 // Recalculate the (IPv4) header checksum.
                 if item.key.is_v6 {
-                    BigEndian::write_u16(&mut pkt[4..6], transport_len);
+                    write_be_u16(&mut pkt[4..6], transport_len);
                     // set new IPv6 header payload len
                 } else {
                     pkt[10] = 0;
                     pkt[11] = 0;
-                    BigEndian::write_u16(&mut pkt[2..4], pkt_len_u16); // set new total length
+                    write_be_u16(&mut pkt[2..4], pkt_len_u16); // set new total length
                     let iph_csum = !checksum(&pkt[..item.iph_len as usize], 0);
-                    BigEndian::write_u16(&mut pkt[10..12], iph_csum); // set IPv4 header checksum field
+                    write_be_u16(&mut pkt[10..12], iph_csum); // set IPv4 header checksum field
                 }
 
                 hdr.encode(&mut buf[offset - VIRTIO_NET_HDR_LEN..])?;
                 let pkt = &mut buf[offset..];
                 // Recalculate the UDP len field value
-                BigEndian::write_u16(
+                write_be_u16(
                     &mut pkt[(item.iph_len as usize + 4)..(item.iph_len as usize + 6)],
                     transport_len,
                 );
@@ -1438,7 +1457,7 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 );
 
                 let udp_csum = checksum(&[], psum);
-                BigEndian::write_u16(
+                write_be_u16(
                     &mut pkt[(hdr.csum_start + hdr.csum_offset) as usize..],
                     udp_csum,
                 );
@@ -1913,7 +1932,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 "TCP header is too short",
             ));
         }
-        BigEndian::read_u32(&input[hdr.csum_start as usize + 4..])
+        read_be_u32(&input[hdr.csum_start as usize + 4..])
     } else {
         if (hdr.hdr_len as usize) < hdr.csum_start as usize + UDP_H_LEN {
             return Err(io::Error::new(
@@ -2019,7 +2038,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 payload_len,
                 "segmented IPv6 payload exceeds 16-bit payload length",
             )?;
-            BigEndian::write_u16(&mut out[4..6], payload_len);
+            write_be_u16(&mut out[4..6], payload_len);
         } else {
             // For IPv4 we are responsible for incrementing the ID field,
             // updating the total len field, and recalculating the header
@@ -2028,16 +2047,16 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 let segment_index = u16::try_from(i).map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidInput, "too many GSO segments")
                 })?;
-                let id = BigEndian::read_u16(&out[4..]).wrapping_add(segment_index);
-                BigEndian::write_u16(&mut out[4..6], id);
+                let id = read_be_u16(&out[4..]).wrapping_add(segment_index);
+                write_be_u16(&mut out[4..6], id);
             }
             let total_len_u16 = checked_u16_len(
                 total_len,
                 "segmented IPv4 packet exceeds 16-bit total length",
             )?;
-            BigEndian::write_u16(&mut out[2..4], total_len_u16);
+            write_be_u16(&mut out[2..4], total_len_u16);
             let ipv4_csum = !checksum(&out[..iph_len], 0);
-            BigEndian::write_u16(&mut out[10..12], ipv4_csum);
+            write_be_u16(&mut out[10..12], ipv4_csum);
         }
 
         out[hdr.csum_start as usize..hdr.hdr_len as usize]
@@ -2048,7 +2067,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 io::Error::new(io::ErrorKind::InvalidInput, "too many GSO segments")
             })?;
             let tcp_seq = first_tcp_seq_num.wrapping_add(u32::from(hdr.gso_size) * segment_index);
-            BigEndian::write_u32(
+            write_be_u32(
                 &mut out[(hdr.csum_start + 4) as usize..(hdr.csum_start + 8) as usize],
                 tcp_seq,
             );
@@ -2066,7 +2085,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 segment_data_len + usize::from(hdr.hdr_len - hdr.csum_start),
                 "segmented UDP datagram exceeds 16-bit UDP length",
             )?;
-            BigEndian::write_u16(
+            write_be_u16(
                 &mut out[(hdr.csum_start + 4) as usize..(hdr.csum_start + 6) as usize],
                 udp_len,
             );
@@ -2080,7 +2099,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
             &out[hdr.csum_start as usize..total_len],
             transport_csum_no_fold,
         );
-        BigEndian::write_u16(
+        write_be_u16(
             &mut out[transport_csum_at..transport_csum_at + 2],
             transport_csum,
         );
@@ -2122,11 +2141,11 @@ pub fn gso_none_checksum(in_buf: &mut [u8], csum_start: u16, csum_offset: u16) {
     let csum_at = usize::from(csum_start) + usize::from(csum_offset);
     // The initial value at the checksum offset should be summed with the
     // checksum we compute. This is typically the pseudo-header checksum.
-    let initial = BigEndian::read_u16(&in_buf[csum_at..]);
+    let initial = read_be_u16(&in_buf[csum_at..]);
     in_buf[csum_at] = 0;
     in_buf[csum_at + 1] = 0;
     let computed_checksum = checksum(&in_buf[csum_start as usize..], u64::from(initial));
-    BigEndian::write_u16(&mut in_buf[csum_at..], !computed_checksum);
+    write_be_u16(&mut in_buf[csum_at..], !computed_checksum);
 }
 
 /// Generic Receive Offload (GRO) table for managing packet coalescing.
