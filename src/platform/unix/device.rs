@@ -210,6 +210,7 @@ impl DeviceImpl {
     /// # Errors
     ///
     /// Returns an I/O error if the underlying descriptor or interface operation fails.
+    #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
     pub fn addresses(&self) -> io::Result<Vec<std::net::IpAddr>> {
         Ok(crate::platform::get_if_addrs_by_name(&self.name_impl()?)?
             .iter()
