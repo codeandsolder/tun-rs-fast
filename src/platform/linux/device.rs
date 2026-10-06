@@ -21,8 +21,11 @@ use crate::{
         unix::{ipaddr_to_sockaddr, sockaddr_union, Fd, Tun},
         ETHER_ADDR_LEN,
     },
-    ToIpv4Address, ToIpv4Netmask, ToIpv6Address, ToIpv6Netmask,
+    ToIpv6Address, ToIpv6Netmask,
 };
+#[cfg(feature = "address-management")]
+use crate::{ToIpv4Address, ToIpv4Netmask};
+#[cfg(feature = "address-management")]
 use ipnet::IpNet;
 use libc::{
     self, c_char, c_short, ifreq, in6_ifreq, ARPHRD_ETHER, IFF_MULTI_QUEUE, IFF_NO_PI, IFF_RUNNING,
@@ -892,6 +895,7 @@ impl DeviceImpl {
     fn request(&self) -> io::Result<ifreq> {
         request(&self.name_impl()?)
     }
+    #[cfg(feature = "address-management")]
     fn set_address_v4(&self, addr: Ipv4Addr) -> io::Result<()> {
         // SAFETY: req owns the address sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
@@ -903,6 +907,7 @@ impl DeviceImpl {
         }
         Ok(())
     }
+    #[cfg(feature = "address-management")]
     fn set_netmask(&self, value: Ipv4Addr) -> io::Result<()> {
         // SAFETY: req owns the netmask sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
@@ -915,6 +920,7 @@ impl DeviceImpl {
         }
     }
 
+    #[cfg(feature = "address-management")]
     fn set_destination(&self, value: Ipv4Addr) -> io::Result<()> {
         // SAFETY: req owns the destination sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
@@ -946,6 +952,7 @@ impl DeviceImpl {
         }
     }
 
+    #[cfg(feature = "address-management")]
     fn remove_all_address_v4(&self) -> io::Result<()> {
         let interface = netconfig_rs::Interface::try_from_index(self.if_index_impl()?)
             .map_err(io::Error::from)?;
@@ -1182,6 +1189,7 @@ impl DeviceImpl {
     /// # Errors
     ///
     /// Returns an error if the underlying TUN/TAP ioctl, socket operation, address conversion, or interface lookup fails.
+    #[cfg(feature = "address-management")]
     pub fn set_network_address<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -1230,6 +1238,7 @@ impl DeviceImpl {
     /// # Errors
     ///
     /// Returns an error if the underlying TUN/TAP ioctl, socket operation, address conversion, or interface lookup fails.
+    #[cfg(feature = "address-management")]
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -1277,6 +1286,7 @@ impl DeviceImpl {
     /// # Errors
     ///
     /// Returns an error if the underlying TUN/TAP ioctl, socket operation, address conversion, or interface lookup fails.
+    #[cfg(feature = "address-management")]
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
         let _guard = self
             .op_lock

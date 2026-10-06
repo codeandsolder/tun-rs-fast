@@ -1403,7 +1403,16 @@ impl DeviceBuilder {
             let prefix = prefix?;
             let address = address?;
             let destination = destination.transpose()?;
+            #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
             device.set_network_address(address, prefix, destination)?;
+            #[cfg(all(target_os = "linux", not(feature = "address-management")))]
+            {
+                let _ = (address, prefix, destination);
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "IPv4 address configuration requires the address-management feature",
+                ));
+            }
         }
         if let Some(ipv6) = self.ipv6 {
             for (address, prefix) in ipv6 {

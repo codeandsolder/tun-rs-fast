@@ -8,6 +8,7 @@ use crate::{Layer, ToIpv4Address, ToIpv4Netmask, ToIpv6Address, ToIpv6Netmask};
 #[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use getifaddrs::Interface;
+#[cfg(feature = "address-management")]
 use ipnet::IpNet;
 use std::collections::HashSet;
 use std::io;
@@ -443,6 +444,7 @@ impl DeviceImpl {
         clippy::needless_pass_by_value,
         reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
     )]
+    #[cfg(feature = "address-management")]
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
