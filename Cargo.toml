@@ -32,8 +32,6 @@ pedantic = "deny"
 
 [dependencies]
 bytes = { version = "1" }
-log = "0.4"
-blocking = { version = "1.6", optional = true }
 tokio = { version = "1.49", features = [
     "net",
     "macros",
@@ -42,8 +40,6 @@ tokio = { version = "1.49", features = [
 ], optional = true }
 async-io = { version = "2.3", optional = true }
 
-ipnet = "2"
-getifaddrs = "0.6.0"
 
 futures-core = { version = "0.3", optional = true }
 futures = { version = "0.3", optional = true }
@@ -57,11 +53,18 @@ nix = { version = "0.31", features = ["ioctl", "net"] }
 
 
 [target.'cfg(target_os = "linux")'.dependencies]
-ahash = "0.8"
-byteorder = "1.5.0"
+ipnet = { version = "2", optional = true }
+getifaddrs = { version = "0.6.0", optional = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+ipnet = "2"
+getifaddrs = "0.6.0"
 
 [target.'cfg(any(target_os = "linux",target_os = "windows"))'.dependencies]
 netconfig-rs = { version = "0.1.5", optional = true }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+blocking = "1.7"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 encoding_rs = "0.8.35"
@@ -90,6 +93,9 @@ windows-sys = { version = "0.61", features = [
 ] }
 libloading = "0.9"
 
+[target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "windows"))'.dependencies]
+log = "0.4"
+
 [target.'cfg(any(target_os = "macos", target_os = "freebsd", target_os = "openbsd",target_os = "netbsd"))'.dependencies]
 route_manager = "0.2.9"
 
@@ -97,6 +103,7 @@ route_manager = "0.2.9"
 bindgen = { version = "0.73.1", optional = true }
 
 [dev-dependencies]
+log = "0.4"
 criterion = "0.8"
 ctrlc2 = { version = "4.0", features = ["termination"] }
 env_logger = "0.11"
@@ -109,11 +116,11 @@ rand = "0.10"
 
 [features]
 default = ["address-management"]
-address-management = ["dep:netconfig-rs"]
+address-management = ["dep:netconfig-rs", "dep:ipnet", "dep:getifaddrs"]
 async = ["async_tokio"]
 async_std = ["async_io"]
-async_tokio = ["blocking", "tokio"]
-async_io = ["blocking", "async-io"]
+async_tokio = ["tokio"]
+async_io = ["async-io"]
 async_framed = ["futures", "futures-core"]
 bindgen = ["dep:bindgen"]
 interruptible = []

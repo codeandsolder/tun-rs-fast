@@ -895,7 +895,6 @@ impl DeviceImpl {
     fn request(&self) -> io::Result<ifreq> {
         request(&self.name_impl()?)
     }
-    #[cfg(feature = "address-management")]
     fn set_address_v4(&self, addr: Ipv4Addr) -> io::Result<()> {
         // SAFETY: req owns the address sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
@@ -907,7 +906,6 @@ impl DeviceImpl {
         }
         Ok(())
     }
-    #[cfg(feature = "address-management")]
     fn set_netmask(&self, value: Ipv4Addr) -> io::Result<()> {
         // SAFETY: req owns the netmask sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
@@ -920,7 +918,6 @@ impl DeviceImpl {
         }
     }
 
-    #[cfg(feature = "address-management")]
     fn set_destination(&self, value: Ipv4Addr) -> io::Result<()> {
         // SAFETY: req owns the destination sockaddr storage filled below; ctl() owns a live control socket and the ioctl only borrows req synchronously.
         unsafe {
@@ -931,6 +928,31 @@ impl DeviceImpl {
             }
             Ok(())
         }
+    }
+
+    pub(crate) fn configure_initial_ipv4(
+        &self,
+        address: Ipv4Addr,
+        prefix: u8,
+        destination: Option<Ipv4Addr>,
+    ) -> io::Result<()> {
+        if prefix > 32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "IPv4 prefix length exceeds 32",
+            ));
+        }
+        let mask = if prefix == 0 {
+            0
+        } else {
+            u32::MAX << (32 - u32::from(prefix))
+        };
+        self.set_address_v4(address)?;
+        self.set_netmask(Ipv4Addr::from(mask))?;
+        if let Some(destination) = destination {
+            self.set_destination(destination)?;
+        }
+        Ok(())
     }
 
     /// Retrieves the name of the network interface.

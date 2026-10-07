@@ -6,6 +6,7 @@
 use crate::platform::unix::{Fd, Tun};
 use crate::platform::DeviceImpl;
 #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "ohos")),
@@ -85,6 +86,7 @@ impl DeviceImpl {
     }
     #[inline]
     #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.tun.recv_uninit(buf)
     }
@@ -210,6 +212,7 @@ impl DeviceImpl {
     /// # Errors
     ///
     /// Returns an I/O error if the underlying descriptor or interface operation fails.
+    #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
     pub fn addresses(&self) -> io::Result<Vec<std::net::IpAddr>> {
         Ok(crate::platform::get_if_addrs_by_name(&self.name_impl()?)?
             .iter()

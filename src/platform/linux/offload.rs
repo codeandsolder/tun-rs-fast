@@ -92,19 +92,167 @@ loop {
 
 /// <https://github.com/WireGuard/wireguard-go/blob/master/tun/offload_linux.go>
 use crate::platform::linux::checksum::{checksum, pseudo_header_checksum_no_fold};
-use ahash::RandomState as AHashState;
-use byteorder::{BigEndian, ByteOrder};
 use bytes::BytesMut;
 use libc::{IPPROTO_TCP, IPPROTO_UDP};
-use std::collections::hash_map::Entry;
-use std::collections::HashMap;
 use std::io;
+
+#[inline]
+const fn read_be_u16(bytes: &[u8]) -> u16 {
+    u16::from_be_bytes([bytes[0], bytes[1]])
+}
+
+#[inline]
+const fn read_be_u32(bytes: &[u8]) -> u32 {
+    u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+}
+
+#[inline]
+fn write_be_u16(bytes: &mut [u8], value: u16) {
+    bytes[..2].copy_from_slice(&value.to_be_bytes());
+}
+
+#[inline]
+fn write_be_u32(bytes: &mut [u8], value: u32) {
+    bytes[..4].copy_from_slice(&value.to_be_bytes());
+}
 
 /// GSO type: Not a GSO frame (normal packet).
 ///
 /// This indicates a regular packet without Generic Segmentation Offload applied.
 /// See: <https://github.com/torvalds/linux/blob/master/include/uapi/linux/virtio_net.h>
 pub const VIRTIO_NET_HDR_GSO_NONE: u8 = 0;
+
+const GRO_FLOW_TABLE_SLOTS: usize = IDEAL_BATCH_SIZE * 2;
+
+const fn mix_flow_word(mut value: u64) -> u64 {
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94d0_49bb_1331_11eb);
+    value ^ (value >> 31)
+}
+
+fn mix_flow_bytes(bytes: &[u8; 16]) -> u64 {
+    let lo = u64::from_ne_bytes(bytes[..8].try_into().unwrap_or_default());
+    let hi = u64::from_ne_bytes(bytes[8..].try_into().unwrap_or_default());
+    mix_flow_word(lo ^ hi.rotate_left(23))
+}
+
+trait GroFlowKey: Copy + Eq {
+    fn flow_hash(self) -> u64;
+}
+
+enum GroLookup {
+    Occupied(usize),
+    Vacant(usize),
+    Full,
+}
+
+struct GroFlowTable<K, I> {
+    slots: Vec<Option<(K, Vec<I>)>>,
+    occupied: Vec<usize>,
+    items_pool: Vec<Vec<I>>,
+}
+
+impl<K: GroFlowKey, I> GroFlowTable<K, I> {
+    fn empty_slots(count: usize) -> Vec<Option<(K, Vec<I>)>> {
+        let mut slots = Vec::with_capacity(count);
+        slots.resize_with(count, || None);
+        slots
+    }
+
+    fn new() -> Self {
+        let mut items_pool = Vec::with_capacity(IDEAL_BATCH_SIZE);
+        for _ in 0..IDEAL_BATCH_SIZE {
+            items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
+        }
+        Self {
+            slots: Self::empty_slots(GRO_FLOW_TABLE_SLOTS),
+            occupied: Vec::with_capacity(IDEAL_BATCH_SIZE),
+            items_pool,
+        }
+    }
+
+    fn find(&self, key: K) -> GroLookup {
+        let mask = self.slots.len() - 1;
+        let hash = key.flow_hash().to_le_bytes();
+        let start = usize::from(u16::from_le_bytes([hash[0], hash[1]])) & mask;
+        for probe in 0..self.slots.len() {
+            let index = (start + probe) & mask;
+            match &self.slots[index] {
+                Some((existing, _)) if *existing == key => return GroLookup::Occupied(index),
+                Some(_) => {}
+                None => return GroLookup::Vacant(index),
+            }
+        }
+        GroLookup::Full
+    }
+
+    fn grow(&mut self) {
+        let new_len = self.slots.len().saturating_mul(2);
+        let old_slots = std::mem::replace(&mut self.slots, Self::empty_slots(new_len));
+        self.occupied.clear();
+        for entry in old_slots.into_iter().flatten() {
+            let index = match self.find(entry.0) {
+                GroLookup::Vacant(index) => index,
+                GroLookup::Occupied(_) | GroLookup::Full => {
+                    unreachable!("freshly grown GRO flow table must have a vacant slot")
+                }
+            };
+            self.slots[index] = Some(entry);
+            self.occupied.push(index);
+        }
+    }
+
+    fn lookup_or_insert(&mut self, key: K, item: I) -> Option<&mut Vec<I>> {
+        let index = loop {
+            match self.find(key) {
+                GroLookup::Occupied(index) => {
+                    return self.slots[index].as_mut().map(|(_, items)| items);
+                }
+                GroLookup::Vacant(index) => break index,
+                GroLookup::Full => self.grow(),
+            }
+        };
+        let mut items = self.items_pool.pop().unwrap_or_default();
+        items.push(item);
+        self.slots[index] = Some((key, items));
+        self.occupied.push(index);
+        None
+    }
+
+    fn insert(&mut self, key: K, item: I) {
+        let index = loop {
+            match self.find(key) {
+                GroLookup::Occupied(index) | GroLookup::Vacant(index) => break index,
+                GroLookup::Full => self.grow(),
+            }
+        };
+        if self.slots[index].is_none() {
+            let items = self.items_pool.pop().unwrap_or_default();
+            self.slots[index] = Some((key, items));
+            self.occupied.push(index);
+        }
+        if let Some((_, items)) = &mut self.slots[index] {
+            items.push(item);
+        }
+    }
+
+    fn reset(&mut self) {
+        for index in self.occupied.drain(..) {
+            if let Some((_, mut items)) = self.slots[index].take() {
+                items.clear();
+                self.items_pool.push(items);
+            }
+        }
+    }
+
+    fn values(&self) -> impl Iterator<Item = &Vec<I>> {
+        self.occupied
+            .iter()
+            .filter_map(|&index| self.slots[index].as_ref().map(|(_, items)| items))
+    }
+}
 
 /// Flag: Use `csum_start` and `csum_offset` fields for checksum calculation.
 ///
@@ -408,13 +556,12 @@ pub struct TcpFlowKey {
 ///
 /// # Performance Considerations
 ///
-/// - Maintains a hash map of active flows
+/// - Maintains a compact open-addressed table of active flows
 /// - Preallocates buffers for [`IDEAL_BATCH_SIZE`] flows
 /// - Memory pooling reduces allocations
 /// - State is maintained across multiple `recv_multiple` calls
 pub struct TcpGROTable {
-    items_by_flow: HashMap<TcpFlowKey, Vec<TcpGROItem>, AHashState>,
-    items_pool: Vec<Vec<TcpGROItem>>,
+    items_by_flow: GroFlowTable<TcpFlowKey, TcpGROItem>,
 }
 
 impl Default for TcpGROTable {
@@ -425,13 +572,8 @@ impl Default for TcpGROTable {
 
 impl TcpGROTable {
     fn new() -> Self {
-        let mut items_pool = Vec::with_capacity(IDEAL_BATCH_SIZE);
-        for _ in 0..IDEAL_BATCH_SIZE {
-            items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
-        }
         Self {
-            items_by_flow: HashMap::with_capacity_and_hasher(IDEAL_BATCH_SIZE, AHashState::new()),
-            items_pool,
+            items_by_flow: GroFlowTable::new(),
         }
     }
 }
@@ -451,11 +593,24 @@ impl TcpFlowKey {
         key.src_addr[..addr_size].copy_from_slice(&pkt[src_addr_offset..dst_addr_offset]);
         key.dst_addr[..addr_size]
             .copy_from_slice(&pkt[dst_addr_offset..dst_addr_offset + addr_size]);
-        key.src_port = BigEndian::read_u16(&pkt[tcph_offset..]);
-        key.dst_port = BigEndian::read_u16(&pkt[tcph_offset + 2..]);
-        key.rx_ack = BigEndian::read_u32(&pkt[tcph_offset + 8..]);
+        key.src_port = read_be_u16(&pkt[tcph_offset..]);
+        key.dst_port = read_be_u16(&pkt[tcph_offset + 2..]);
+        key.rx_ack = read_be_u32(&pkt[tcph_offset + 8..]);
         key.is_v6 = addr_size == 16;
         key
+    }
+}
+
+impl GroFlowKey for TcpFlowKey {
+    fn flow_hash(self) -> u64 {
+        let ports = (u64::from(self.src_port) << 48)
+            | (u64::from(self.dst_port) << 32)
+            | u64::from(self.rx_ack);
+        let version = u64::from(self.is_v6);
+        let hash = mix_flow_bytes(&self.src_addr)
+            ^ mix_flow_bytes(&self.dst_addr).rotate_left(17)
+            ^ mix_flow_word(ports ^ version);
+        mix_flow_word(hash)
     }
 }
 
@@ -465,26 +620,12 @@ impl TcpGROTable {
     /// Returns the existing items for an occupied flow, or `None` after
     /// inserting the first item for a new flow.
     fn lookup_or_insert(&mut self, item: TcpGROItem) -> Option<&mut Vec<TcpGROItem>> {
-        let key = item.key;
-        match self.items_by_flow.entry(key) {
-            Entry::Occupied(entry) => Some(entry.into_mut()),
-            Entry::Vacant(entry) => {
-                let mut items = self.items_pool.pop().unwrap_or_default();
-                items.push(item);
-                entry.insert(items);
-                None
-            }
-        }
+        self.items_by_flow.lookup_or_insert(item.key, item)
     }
 
     /// Inserts an additional item for an existing or newly recreated flow.
     fn insert(&mut self, item: TcpGROItem) {
-        let key = item.key;
-        let items = self
-            .items_by_flow
-            .entry(key)
-            .or_insert_with(|| self.items_pool.pop().unwrap_or_default());
-        items.push(item);
+        self.items_by_flow.insert(item.key, item);
     }
 }
 // func (t *tcpGROTable) updateAt(item tcpGROItem, i int) {
@@ -519,10 +660,7 @@ pub struct TcpGROItem {
 // }
 impl TcpGROTable {
     fn reset(&mut self) {
-        for (_key, mut items) in self.items_by_flow.drain() {
-            items.clear();
-            self.items_pool.push(items);
-        }
+        self.items_by_flow.reset();
     }
 }
 
@@ -538,8 +676,7 @@ pub struct UdpFlowKey {
 
 ///  udpGROTable holds flow and coalescing information for the purposes of UDP GRO.
 pub struct UdpGROTable {
-    items_by_flow: HashMap<UdpFlowKey, Vec<UdpGROItem>, AHashState>,
-    items_pool: Vec<Vec<UdpGROItem>>,
+    items_by_flow: GroFlowTable<UdpFlowKey, UdpGROItem>,
 }
 
 impl Default for UdpGROTable {
@@ -551,13 +688,8 @@ impl Default for UdpGROTable {
 impl UdpGROTable {
     #[must_use]
     pub fn new() -> Self {
-        let mut items_pool = Vec::with_capacity(IDEAL_BATCH_SIZE);
-        for _ in 0..IDEAL_BATCH_SIZE {
-            items_pool.push(Vec::with_capacity(IDEAL_BATCH_SIZE));
-        }
         Self {
-            items_by_flow: HashMap::with_capacity_and_hasher(IDEAL_BATCH_SIZE, AHashState::new()),
-            items_pool,
+            items_by_flow: GroFlowTable::new(),
         }
     }
 }
@@ -581,10 +713,21 @@ impl UdpFlowKey {
         key.src_addr[..addr_size].copy_from_slice(&pkt[src_addr_offset..dst_addr_offset]);
         key.dst_addr[..addr_size]
             .copy_from_slice(&pkt[dst_addr_offset..dst_addr_offset + addr_size]);
-        key.src_port = BigEndian::read_u16(&pkt[udph_offset..]);
-        key.dst_port = BigEndian::read_u16(&pkt[udph_offset + 2..]);
+        key.src_port = read_be_u16(&pkt[udph_offset..]);
+        key.dst_port = read_be_u16(&pkt[udph_offset + 2..]);
         key.is_v6 = addr_size == 16;
         key
+    }
+}
+
+impl GroFlowKey for UdpFlowKey {
+    fn flow_hash(self) -> u64 {
+        let ports = (u64::from(self.src_port) << 16) | u64::from(self.dst_port);
+        let version = u64::from(self.is_v6);
+        let hash = mix_flow_bytes(&self.src_addr)
+            ^ mix_flow_bytes(&self.dst_addr).rotate_left(17)
+            ^ mix_flow_word(ports ^ version);
+        mix_flow_word(hash)
     }
 }
 
@@ -594,26 +737,12 @@ impl UdpGROTable {
     /// Returns the existing items for an occupied flow, or `None` after
     /// inserting the first item for a new flow.
     fn lookup_or_insert(&mut self, item: UdpGROItem) -> Option<&mut Vec<UdpGROItem>> {
-        let key = item.key;
-        match self.items_by_flow.entry(key) {
-            Entry::Occupied(entry) => Some(entry.into_mut()),
-            Entry::Vacant(entry) => {
-                let mut items = self.items_pool.pop().unwrap_or_default();
-                items.push(item);
-                entry.insert(items);
-                None
-            }
-        }
+        self.items_by_flow.lookup_or_insert(item.key, item)
     }
 
     /// Inserts an additional item for an existing or newly recreated flow.
     fn insert(&mut self, item: UdpGROItem) {
-        let key = item.key;
-        let items = self
-            .items_by_flow
-            .entry(key)
-            .or_insert_with(|| self.items_pool.pop().unwrap_or_default());
-        items.push(item);
+        self.items_by_flow.insert(item.key, item);
     }
 }
 // func (u *udpGROTable) updateAt(item udpGROItem, i int) {
@@ -640,10 +769,7 @@ pub struct UdpGROItem {
 
 impl UdpGROTable {
     fn reset(&mut self) {
-        for (_key, mut items) in self.items_by_flow.drain() {
-            items.clear();
-            self.items_pool.push(items);
-        }
+        self.items_by_flow.reset();
     }
 }
 
@@ -1212,14 +1338,14 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the (IPv4) header checksum.
                 if item.key.is_v6 {
                     hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV6;
-                    BigEndian::write_u16(&mut pkt[4..6], transport_len);
+                    write_be_u16(&mut pkt[4..6], transport_len);
                 } else {
                     hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
                     pkt[10] = 0;
                     pkt[11] = 0;
-                    BigEndian::write_u16(&mut pkt[2..4], pkt_len_u16);
+                    write_be_u16(&mut pkt[2..4], pkt_len_u16);
                     let iph_csum = !checksum(&pkt[..item.iph_len as usize], 0);
-                    BigEndian::write_u16(&mut pkt[10..12], iph_csum);
+                    write_be_u16(&mut pkt[10..12], iph_csum);
                 }
 
                 hdr.encode(&mut buf[offset - VIRTIO_NET_HDR_LEN..])?;
@@ -1233,7 +1359,7 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                     transport_len,
                 );
                 let tcp_csum = checksum(&[], psum);
-                BigEndian::write_u16(
+                write_be_u16(
                     &mut pkt[(hdr.csum_start + hdr.csum_offset) as usize..],
                     tcp_csum,
                 );
@@ -1305,20 +1431,20 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the total len (IPv4) or payload len (IPv6).
                 // Recalculate the (IPv4) header checksum.
                 if item.key.is_v6 {
-                    BigEndian::write_u16(&mut pkt[4..6], transport_len);
+                    write_be_u16(&mut pkt[4..6], transport_len);
                     // set new IPv6 header payload len
                 } else {
                     pkt[10] = 0;
                     pkt[11] = 0;
-                    BigEndian::write_u16(&mut pkt[2..4], pkt_len_u16); // set new total length
+                    write_be_u16(&mut pkt[2..4], pkt_len_u16); // set new total length
                     let iph_csum = !checksum(&pkt[..item.iph_len as usize], 0);
-                    BigEndian::write_u16(&mut pkt[10..12], iph_csum); // set IPv4 header checksum field
+                    write_be_u16(&mut pkt[10..12], iph_csum); // set IPv4 header checksum field
                 }
 
                 hdr.encode(&mut buf[offset - VIRTIO_NET_HDR_LEN..])?;
                 let pkt = &mut buf[offset..];
                 // Recalculate the UDP len field value
-                BigEndian::write_u16(
+                write_be_u16(
                     &mut pkt[(item.iph_len as usize + 4)..(item.iph_len as usize + 6)],
                     transport_len,
                 );
@@ -1331,7 +1457,7 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 );
 
                 let udp_csum = checksum(&[], psum);
-                BigEndian::write_u16(
+                write_be_u16(
                     &mut pkt[(hdr.csum_start + hdr.csum_offset) as usize..],
                     udp_csum,
                 );
@@ -1806,7 +1932,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 "TCP header is too short",
             ));
         }
-        BigEndian::read_u32(&input[hdr.csum_start as usize + 4..])
+        read_be_u32(&input[hdr.csum_start as usize + 4..])
     } else {
         if (hdr.hdr_len as usize) < hdr.csum_start as usize + UDP_H_LEN {
             return Err(io::Error::new(
@@ -1912,7 +2038,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 payload_len,
                 "segmented IPv6 payload exceeds 16-bit payload length",
             )?;
-            BigEndian::write_u16(&mut out[4..6], payload_len);
+            write_be_u16(&mut out[4..6], payload_len);
         } else {
             // For IPv4 we are responsible for incrementing the ID field,
             // updating the total len field, and recalculating the header
@@ -1921,16 +2047,16 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 let segment_index = u16::try_from(i).map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidInput, "too many GSO segments")
                 })?;
-                let id = BigEndian::read_u16(&out[4..]).wrapping_add(segment_index);
-                BigEndian::write_u16(&mut out[4..6], id);
+                let id = read_be_u16(&out[4..]).wrapping_add(segment_index);
+                write_be_u16(&mut out[4..6], id);
             }
             let total_len_u16 = checked_u16_len(
                 total_len,
                 "segmented IPv4 packet exceeds 16-bit total length",
             )?;
-            BigEndian::write_u16(&mut out[2..4], total_len_u16);
+            write_be_u16(&mut out[2..4], total_len_u16);
             let ipv4_csum = !checksum(&out[..iph_len], 0);
-            BigEndian::write_u16(&mut out[10..12], ipv4_csum);
+            write_be_u16(&mut out[10..12], ipv4_csum);
         }
 
         out[hdr.csum_start as usize..hdr.hdr_len as usize]
@@ -1941,7 +2067,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 io::Error::new(io::ErrorKind::InvalidInput, "too many GSO segments")
             })?;
             let tcp_seq = first_tcp_seq_num.wrapping_add(u32::from(hdr.gso_size) * segment_index);
-            BigEndian::write_u32(
+            write_be_u32(
                 &mut out[(hdr.csum_start + 4) as usize..(hdr.csum_start + 8) as usize],
                 tcp_seq,
             );
@@ -1959,7 +2085,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
                 segment_data_len + usize::from(hdr.hdr_len - hdr.csum_start),
                 "segmented UDP datagram exceeds 16-bit UDP length",
             )?;
-            BigEndian::write_u16(
+            write_be_u16(
                 &mut out[(hdr.csum_start + 4) as usize..(hdr.csum_start + 6) as usize],
                 udp_len,
             );
@@ -1973,7 +2099,7 @@ pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
             &out[hdr.csum_start as usize..total_len],
             transport_csum_no_fold,
         );
-        BigEndian::write_u16(
+        write_be_u16(
             &mut out[transport_csum_at..transport_csum_at + 2],
             transport_csum,
         );
@@ -2015,11 +2141,11 @@ pub fn gso_none_checksum(in_buf: &mut [u8], csum_start: u16, csum_offset: u16) {
     let csum_at = usize::from(csum_start) + usize::from(csum_offset);
     // The initial value at the checksum offset should be summed with the
     // checksum we compute. This is typically the pseudo-header checksum.
-    let initial = BigEndian::read_u16(&in_buf[csum_at..]);
+    let initial = read_be_u16(&in_buf[csum_at..]);
     in_buf[csum_at] = 0;
     in_buf[csum_at + 1] = 0;
     let computed_checksum = checksum(&in_buf[csum_start as usize..], u64::from(initial));
-    BigEndian::write_u16(&mut in_buf[csum_at..], !computed_checksum);
+    write_be_u16(&mut in_buf[csum_at..], !computed_checksum);
 }
 
 /// Generic Receive Offload (GRO) table for managing packet coalescing.
@@ -2255,6 +2381,39 @@ mod tests {
     use super::*;
 
     type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
+
+    #[derive(Clone, Copy, Eq, PartialEq)]
+    struct CollidingFlowKey(u16);
+
+    impl GroFlowKey for CollidingFlowKey {
+        fn flow_hash(self) -> u64 {
+            0
+        }
+    }
+
+    #[test]
+    fn flow_table_resolves_collisions_and_grows() -> TestResult {
+        let mut table = GroFlowTable::<CollidingFlowKey, u16>::new();
+        let batch_size = u16::try_from(GRO_FLOW_TABLE_SLOTS + 17)?;
+        for value in 0..batch_size {
+            assert!(table
+                .lookup_or_insert(CollidingFlowKey(value), value)
+                .is_none());
+        }
+        assert_eq!(table.values().count(), usize::from(batch_size));
+
+        for value in 0..batch_size {
+            let items = table
+                .lookup_or_insert(CollidingFlowKey(value), u16::MAX)
+                .ok_or("existing colliding flow disappeared after table growth")?;
+            assert_eq!(items.as_slice(), &[value]);
+        }
+
+        table.reset();
+        assert_eq!(table.values().count(), 0);
+        assert!(table.lookup_or_insert(CollidingFlowKey(7), 7).is_none());
+        Ok(())
+    }
 
     fn make_ipv4_tcp_packet(seq: u32, payload_len: usize) -> TestResult<Vec<u8>> {
         const IPH_LEN: usize = 20;
