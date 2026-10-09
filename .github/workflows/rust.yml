@@ -96,20 +96,20 @@ jobs:
 
       - name: Strict rust-skills2 — default
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
-        uses: codeandsolder/rust-skills2/.github/actions/rust-strict@main
+        uses: codeandsolder/rust-skills2/.github/actions/rust-strict@e322feb3976f35d181d671c57eed73787d3c0610 # main
         with:
           cargo-args: "--all-targets"
 
       - name: Strict rust-skills2 — Tokio
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
-        uses: codeandsolder/rust-skills2/.github/actions/rust-strict@main
+        uses: codeandsolder/rust-skills2/.github/actions/rust-strict@e322feb3976f35d181d671c57eed73787d3c0610 # main
         with:
           cargo-args: "--all-targets --features async_tokio,async_framed,interruptible,experimental"
           install-toolchain: "false"
 
       - name: Strict rust-skills2 — async-io
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
-        uses: codeandsolder/rust-skills2/.github/actions/rust-strict@main
+        uses: codeandsolder/rust-skills2/.github/actions/rust-strict@e322feb3976f35d181d671c57eed73787d3c0610 # main
         with:
           cargo-args: "--all-targets --features async_io,async_framed,interruptible,experimental"
           install-toolchain: "false"
