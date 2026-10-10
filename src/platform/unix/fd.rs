@@ -58,7 +58,7 @@ impl Fd {
             Ok((flags & O_NONBLOCK) != 0)
         }
     }
-    #[cfg(any(target_os = "macos", feature = "interruptible"))]
+    #[cfg(target_os = "macos")]
     pub(crate) fn set_cloexec(&self) -> io::Result<()> {
         // SAFETY: self owns or borrows a live descriptor; both fcntl calls are
         // synchronous value-only operations and do not retain Rust memory.
