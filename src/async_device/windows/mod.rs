@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "the Windows async backend copies into caller-provided uninitialized storage after checked blocking I/O"
+)]
+
 use crate::platform::windows::{ffi, InterruptEvent};
 use crate::platform::DeviceImpl;
 use crate::SyncDevice;
@@ -82,11 +87,17 @@ impl Drop for AsyncDevice {
     }
 }
 impl AsyncDevice {
-    /// Creates a new async wrapper around a TUN/TAP device
+    /// Creates a new async wrapper around a TUN/TAP device.
+    ///
+    /// # Errors
+    /// Returns an I/O error if the Windows interrupt event cannot be created.
     pub fn new(device: SyncDevice) -> io::Result<AsyncDevice> {
         AsyncDevice::new_dev(device.0)
     }
     /// Create a new `AsyncDevice` wrapping around a `Device`.
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn new_dev(device: DeviceImpl) -> io::Result<AsyncDevice> {
         let inner = Arc::new(device);
 
@@ -137,7 +148,10 @@ impl AsyncDevice {
     ///
     /// This function may encounter any standard I/O error except `WouldBlock`.
     pub fn poll_recv(&self, cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<io::Result<usize>> {
-        let mut guard = self.recv_task_lock.lock().unwrap();
+        let mut guard = self
+            .recv_task_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut task = if let Some(task) = guard.take() {
             task
         } else {
@@ -170,13 +184,19 @@ impl AsyncDevice {
             }
         }
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
         buf: &mut UninitSlice,
     ) -> Poll<io::Result<usize>> {
-        let mut guard = self.recv_task_lock.lock().unwrap();
+        let mut guard = self
+            .recv_task_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut task = if let Some(task) = guard.take() {
             task
         } else {
@@ -197,6 +217,8 @@ impl AsyncDevice {
                                 "receive buffer too small",
                             )));
                         }
+                        // SAFETY: n <= buf.len() above, packet contains at least n
+                        // initialized bytes, and the source/destination do not overlap.
                         unsafe {
                             std::ptr::copy_nonoverlapping(packet.as_ptr(), buf.as_mut_ptr(), n);
                         }
@@ -230,7 +252,10 @@ impl AsyncDevice {
     ///
     /// This function may encounter any standard I/O error except `WouldBlock`.
     pub fn poll_send(&self, cx: &mut Context<'_>, src: &[u8]) -> Poll<io::Result<usize>> {
-        let mut guard = self.send_task_lock.lock().unwrap();
+        let mut guard = self
+            .send_task_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let mut task = if let Some(task) = guard.take() {
             task
         } else {
@@ -268,6 +293,9 @@ impl AsyncDevice {
     /// will continue to return immediately until the readiness event is
     /// consumed by an attempt to read that fails with `WouldBlock` or
     /// `Poll::Pending`.
+    /// # Errors
+    /// Returns an I/O error if creating the cancellation event or waiting for
+    /// device readiness fails.
     pub async fn readable(&self) -> io::Result<()> {
         let mut canceller = Canceller::new_cancelable()?;
         let device = self.inner.clone();
@@ -282,7 +310,10 @@ impl AsyncDevice {
         Ok(())
     }
 
-    /// Recv a packet from the device
+    /// Receives a packet from the device.
+    ///
+    /// # Errors
+    /// Returns an I/O error if readiness waiting or packet reception fails.
     pub async fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         loop {
             match self.try_recv(buf) {
@@ -293,7 +324,13 @@ impl AsyncDevice {
         }
     }
     /// Attempts to read a packet without blocking.
+    ///
+    /// # Errors
+    /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.inner.try_recv(buf)
     }
@@ -303,6 +340,9 @@ impl AsyncDevice {
     /// # Cancel safety
     /// This method is not cancellation safe.
     /// After cancellation, it is uncertain whether the data has been written or not.
+    ///
+    /// # Errors
+    /// Returns an I/O error if cancellation setup or packet transmission fails.
     pub async fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match self.inner.try_send(buf) {
             Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
@@ -322,7 +362,13 @@ impl AsyncDevice {
         result
     }
     /// Attempts to write a packet without blocking.
+    ///
+    /// # Errors
+    /// Returns the underlying device error, including `WouldBlock` when not ready.
     #[inline]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         self.inner.try_send(buf)
     }
@@ -340,6 +386,9 @@ impl Drop for ExitSignalGuard {
     }
 }
 impl ExitSignalGuard {
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub fn call<R>(
         &self,
         mut op: impl FnMut(&DeviceImpl, &InterruptEvent) -> io::Result<R>,
@@ -347,7 +396,9 @@ impl ExitSignalGuard {
         if let Some(device) = &self.device {
             op(device, &self.cancel_event_handle)
         } else {
-            unreachable!()
+            Err(io::Error::other(
+                "Windows async cancellation guard lost its device",
+            ))
         }
     }
 }

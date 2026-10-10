@@ -8,6 +8,8 @@ use crate::platform::unix::Fd;
     target_os = "netbsd",
 ))]
 use crate::PACKET_INFORMATION_LENGTH as PIL;
+#[cfg(any(feature = "async_tokio", feature = "async_io"))]
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::io::{self, IoSlice, IoSliceMut};
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
@@ -49,7 +51,7 @@ pub(crate) fn is_ipv6(buf: &[u8]) -> std::io::Result<bool> {
     target_os = "freebsd",
     target_os = "netbsd",
 ))]
-pub(crate) fn generate_packet_information(_ipv6: bool) -> [u8; PIL] {
+pub(crate) fn generate_packet_information(ipv6: bool) -> [u8; PIL] {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     const TUN_PROTO_IP6: [u8; PIL] = (libc::ETH_P_IPV6 as u32).to_be_bytes();
     #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -74,7 +76,7 @@ pub(crate) fn generate_packet_information(_ipv6: bool) -> [u8; PIL] {
     ))]
     const TUN_PROTO_IP4: [u8; PIL] = (libc::AF_INET as u32).to_be_bytes();
 
-    if _ipv6 {
+    if ipv6 {
         TUN_PROTO_IP6
     } else {
         TUN_PROTO_IP4
@@ -129,7 +131,7 @@ pub(crate) struct Tun {
 }
 
 impl Tun {
-    pub(crate) fn new(fd: Fd) -> Self {
+    pub(crate) const fn new(fd: Fd) -> Self {
         Self {
             fd,
             #[cfg(any(
@@ -143,10 +145,10 @@ impl Tun {
             ignore_packet_information: AtomicBool::new(true),
         }
     }
-    pub fn is_nonblocking(&self) -> io::Result<bool> {
+    pub(in crate::platform) fn is_nonblocking(&self) -> io::Result<bool> {
         self.fd.is_nonblocking()
     }
-    pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
+    pub(in crate::platform) fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.fd.set_nonblocking(nonblocking)
     }
     #[cfg(not(any(
@@ -243,7 +245,8 @@ impl Tun {
         target_os = "netbsd",
     )))]
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.fd.read_uninit(buf)
     }
@@ -275,17 +278,18 @@ impl Tun {
         target_os = "netbsd",
     ))]
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         if self.ignore_packet_info() {
             let mut head = [0u8; PIL];
             let mut bufs = [
                 libc::iovec {
-                    iov_base: head.as_mut_ptr() as *mut _,
+                    iov_base: head.as_mut_ptr().cast(),
                     iov_len: head.len(),
                 },
                 libc::iovec {
-                    iov_base: buf.as_mut_ptr() as *mut _,
+                    iov_base: buf.as_mut_ptr().cast(),
                     iov_len: buf.len(),
                 },
             ];
@@ -599,12 +603,15 @@ impl IntoRawFd for Tun {
         target_os = "netbsd",
     )
 ))]
-mod packet_information_length_tests {
-    use super::{strip_packet_info_read_len, strip_packet_info_write_len, PIL};
+mod packet_information_tests {
+    use super::{
+        generate_packet_information, is_ipv6, strip_packet_info_read_len,
+        strip_packet_info_write_len, PIL,
+    };
     use std::io;
 
     #[test]
-    fn rejects_short_packet_information_io() {
+    fn packet_information_length_helpers_reject_short_io() {
         assert_eq!(strip_packet_info_read_len(PIL).unwrap_or(usize::MAX), 0);
         assert_eq!(
             strip_packet_info_write_len(PIL + 7).unwrap_or(usize::MAX),
@@ -618,5 +625,26 @@ mod packet_information_length_tests {
             strip_packet_info_write_len(PIL - 1),
             Err(error) if error.kind() == io::ErrorKind::WriteZero
         ));
+    }
+
+    #[test]
+    fn packet_information_uses_network_order_address_family() {
+        assert_eq!(
+            generate_packet_information(false),
+            (libc::AF_INET as u32).to_be_bytes()
+        );
+        assert_eq!(
+            generate_packet_information(true),
+            (libc::AF_INET6 as u32).to_be_bytes()
+        );
+    }
+
+    #[test]
+    fn packet_version_detection_accepts_only_ipv4_and_ipv6() -> io::Result<()> {
+        assert!(!is_ipv6(&[0x45])?);
+        assert!(is_ipv6(&[0x60])?);
+        assert!(is_ipv6(&[]).is_err());
+        assert!(is_ipv6(&[0x50]).is_err());
+        Ok(())
     }
 }

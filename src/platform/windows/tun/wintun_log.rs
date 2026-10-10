@@ -1,16 +1,17 @@
-#![allow(dead_code)]
-use log::*;
+#![expect(
+    unsafe_code,
+    reason = "Wintun logging calls an FFI callback API and decodes a foreign UTF-16 pointer"
+)]
+
+use log::{error, info, warn};
 
 use crate::platform::windows::tun::wintun_raw;
 use widestring::U16CStr;
 
-/// Sets the logger wintun will use when logging. Maps to the WintunSetLogger C function
+/// Sets the logger wintun will use when logging. Maps to the `WintunSetLogger` C function
 pub fn set_logger(win_tun: &wintun_raw::wintun, f: wintun_raw::WINTUN_LOGGER_CALLBACK) {
+    // SAFETY: win_tun owns a loaded Wintun DLL and f has the generated callback ABI.
     unsafe { win_tun.WintunSetLogger(f) };
-}
-
-pub fn reset_logger(win_tun: &wintun_raw::wintun) {
-    set_logger(win_tun, None);
 }
 
 /// The logger that is active by default. Logs messages to the log crate
@@ -35,12 +36,11 @@ pub unsafe extern "C" fn default_logger(
     _timestamp: wintun_raw::DWORD64,
     message: *const wintun_raw::WCHAR,
 ) {
-    default_logger_(level, message)
+    default_logger_(level, message);
 }
 fn default_logger_(level: wintun_raw::WINTUN_LOGGER_LEVEL, message: *const wintun_raw::WCHAR) {
-    //Cant wait for RFC 2585
-    #[allow(unused_unsafe)]
-    //Wintun will always give us a valid UTF16 null termineted string
+    // SAFETY: this helper is called only from the Wintun logger callbacks whose
+    // contract guarantees message is a valid NUL-terminated UTF-16 pointer.
     let msg = unsafe { U16CStr::from_ptr_str(message) };
     let utf8_msg = msg.to_string_lossy();
     match level {

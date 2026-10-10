@@ -1,9 +1,31 @@
-#![allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use pnet_packet::Packet;
 use std::io;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -23,7 +45,15 @@ use tun_rs::DeviceBuilder;
 ))]
 use tun_rs::Layer;
 
-mod protocol_handle;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+pub mod protocol_handle;
 
 #[cfg(any(
     target_os = "windows",
@@ -65,7 +95,7 @@ async fn main() -> io::Result<()> {
                                 }
                             }
                             protocol=>{
-                                 println!("ignore ether protocol: {protocol}", )
+                                 println!("ignore ether protocol: {protocol}");
                             }
                         }
                 }
@@ -82,5 +112,8 @@ async fn main() -> io::Result<()> {
     target_os = "android",
 ))]
 fn main() -> io::Result<()> {
-    unimplemented!()
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "this example requires native TUN/TAP device creation",
+    ))
 }

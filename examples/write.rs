@@ -1,8 +1,22 @@
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::net::Ipv4Addr;
-#[allow(unused_imports)]
-use std::sync::{mpsc::Receiver, Arc};
-#[allow(unused_imports)]
+use std::sync::mpsc::Receiver;
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
+use std::sync::Arc;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -11,21 +25,30 @@ use std::sync::{mpsc::Receiver, Arc};
     target_os = "openbsd",
 ))]
 use tun_rs::DeviceBuilder;
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use tun_rs::SyncDevice;
-mod protocol_handle;
+pub mod protocol_handle;
 fn main() -> std::io::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
     let (tx, rx) = std::sync::mpsc::channel();
 
     let handle = ctrlc2::set_handler(move || {
-        tx.send(()).expect("Signal error.");
+        let _ = tx.send(());
         true
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
 
-    main_entry(rx)?;
-    handle.join().unwrap();
+    main_entry(&rx)?;
+    handle
+        .join()
+        .map_err(|_| std::io::Error::other("Ctrl-C handler thread panicked"))?;
     Ok(())
 }
 #[cfg(any(
@@ -35,8 +58,11 @@ fn main() -> std::io::Result<()> {
     target_os = "netbsd",
     all(target_os = "linux", target_env = "ohos")
 ))]
-fn main_entry(_quit: Receiver<()>) -> std::io::Result<()> {
-    unimplemented!()
+fn main_entry(_quit: &Receiver<()>) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this example requires native TUN/TAP device creation",
+    ))
 }
 #[cfg(any(
     target_os = "windows",
@@ -45,7 +71,7 @@ fn main_entry(_quit: Receiver<()>) -> std::io::Result<()> {
     target_os = "freebsd",
     target_os = "openbsd",
 ))]
-fn main_entry(quit: Receiver<()>) -> std::io::Result<()> {
+fn main_entry(quit: &Receiver<()>) -> std::io::Result<()> {
     let dev = Arc::new(
         DeviceBuilder::new()
             .ipv4(Ipv4Addr::new(10, 0, 0, 9), 24, None)
@@ -57,22 +83,20 @@ fn main_entry(quit: Receiver<()>) -> std::io::Result<()> {
 
     let mut buf = [0; 4096];
 
-    std::thread::spawn(move || {
+    std::thread::spawn(move || -> std::io::Result<()> {
         loop {
             let amount = dev.recv(&mut buf);
             println!("amount == {amount:?}");
             let amount = amount?;
             let pkt = &buf[0..amount];
-            handle_pkt(pkt, &dev).unwrap();
+            handle_pkt(pkt, &dev)?;
         }
-        #[allow(unreachable_code)]
-        Ok::<(), std::io::Error>(())
     });
-    quit.recv().expect("Quit error.");
+    quit.recv()
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
     Ok(())
 }
 
-#[allow(dead_code)]
 fn handle_pkt(pkt: &[u8], dev: &SyncDevice) -> std::io::Result<()> {
     if let Some(buf) = protocol_handle::ping(pkt) {
         dev.send(&buf)?;

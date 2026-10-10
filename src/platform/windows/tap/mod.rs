@@ -1,5 +1,11 @@
+#![expect(
+    unsafe_code,
+    reason = "the TAP backend owns Windows handles and explicitly asserts thread-safety for overlapped I/O"
+)]
+
 use crate::platform::windows::tap::overlapped::{ReadOverlapped, WriteOverlapped};
 use crate::platform::windows::{ffi, netsh};
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::{Arc, Mutex};
@@ -19,8 +25,14 @@ pub struct TapDevice {
     write_io_overlapped: Mutex<WriteOverlapped>,
 }
 pub(crate) const READ_BUFFER_SIZE: usize = 14 + 65536;
+// SAFETY: TapDevice owns its Windows handles, and the only mutable overlapped-I/O
+// state is behind per-direction Mutexes. Moving the wrapper between threads does
+// not move the boxed OVERLAPPED storage or invalidate its event/file handles.
 unsafe impl Send for TapDevice {}
 
+// SAFETY: all shared mutable access to the read/write OVERLAPPED state is
+// serialized by the corresponding Mutex; the remaining fields are immutable
+// owned handles/metadata whose Windows operations are safe to invoke cross-thread.
 unsafe impl Sync for TapDevice {}
 
 impl Drop for TapInterface {
@@ -40,7 +52,7 @@ fn get_version(handle: HANDLE) -> io::Result<[u64; 3]> {
     let in_version: [u64; 3] = [0; 3];
     let mut out_version: [u64; 3] = [0; 3];
     ffi::device_io_control(handle, TAP_IOCTL_GET_VERSION, &in_version, &mut out_version)
-        .map(|_| out_version)
+        .map(|()| out_version)
 }
 
 impl TapDevice {
@@ -51,7 +63,7 @@ impl TapDevice {
         self.index
     }
     /// Creates a new tap-windows device
-    pub fn create(component_id: &str, persist: bool, mut mac: Option<&String>) -> io::Result<Self> {
+    pub fn create(component_id: &str, persist: bool, mut mac: Option<&str>) -> io::Result<Self> {
         let luid = iface::create_interface(component_id)?;
         let mut tap_interface = TapInterface {
             luid,
@@ -71,28 +83,24 @@ impl TapDevice {
                 ));
             }
 
-            match ffi::luid_to_guid(&luid) {
-                Err(_) => {
-                    std::thread::sleep(time::Duration::from_millis(20));
-                    continue;
-                }
-                Ok(guid) => {
-                    if let Some(mac) = mac.take() {
-                        let guid = ffi::string_from_guid(&guid)?;
-                        iface::set_adapter_mac_by_guid(&guid, mac)?;
-                        std::thread::sleep(time::Duration::from_millis(20));
-                        iface::enable_adapter(component_id, &luid, false)?;
-                        std::thread::sleep(time::Duration::from_millis(20));
-                        iface::enable_adapter(component_id, &luid, true)?;
-                    }
-                    let handle = iface::open_interface(&luid)?;
-                    if get_version(handle.as_raw_handle()).is_err() {
-                        std::thread::sleep(time::Duration::from_millis(200));
-                        continue;
-                    }
-                    break handle;
-                }
+            let Ok(guid) = ffi::luid_to_guid(&luid) else {
+                std::thread::sleep(time::Duration::from_millis(20));
+                continue;
             };
+            if let Some(mac) = mac.take() {
+                let guid = ffi::string_from_guid(&guid)?;
+                iface::set_adapter_mac_by_guid(&guid, mac)?;
+                std::thread::sleep(time::Duration::from_millis(20));
+                iface::enable_adapter(component_id, &luid, false)?;
+                std::thread::sleep(time::Duration::from_millis(20));
+                iface::enable_adapter(component_id, &luid, true)?;
+            }
+            let handle = iface::open_interface(&luid)?;
+            if get_version(handle.as_raw_handle()).is_err() {
+                std::thread::sleep(time::Duration::from_millis(200));
+                continue;
+            }
+            break handle;
         };
 
         let index = match ffi::luid_to_index(&luid) {
@@ -118,7 +126,7 @@ impl TapDevice {
         component_id: &str,
         name: &str,
         persist: bool,
-        mac: Option<&String>,
+        mac: Option<&str>,
     ) -> io::Result<Self> {
         let luid = ffi::alias_to_luid(name)?;
         iface::check_interface(component_id, &luid)?;
@@ -166,10 +174,10 @@ impl TapDevice {
             &(),
             &mut mac,
         )
-        .map(|_| mac)
+        .map(|()| mac)
     }
-    pub fn set_mac(&self, _mac: &[u8; 6]) -> io::Result<()> {
-        Err(io::Error::from(io::ErrorKind::Unsupported))?
+    pub fn set_mac(_mac: [u8; 6]) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
     }
 
     /// Retrieve the version of the driver
@@ -211,7 +219,7 @@ impl TapDevice {
     /// Set the status of the interface, true for connected,
     /// false for disconnected.
     pub fn set_status(&self, status: bool) -> io::Result<()> {
-        let status: u32 = if status { 1 } else { 0 };
+        let status: u32 = u32::from(status);
         let mut out_status: u32 = 0;
         ffi::device_io_control(
             self.handle.as_raw_handle(),
@@ -230,13 +238,19 @@ impl TapDevice {
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
-        let guard = self.read_io_overlapped.lock().unwrap();
+        let guard = self
+            .read_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let event = guard.overlapped_event();
         drop(guard);
         event.wait_interruptible(interrupt_event, timeout)
     }
     pub fn wait_readable(&self) -> io::Result<()> {
-        let guard = self.read_io_overlapped.lock().unwrap();
+        let guard = self
+            .read_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let event_handle = guard.overlapped_event();
         drop(guard);
         event_handle.wait()
@@ -248,7 +262,7 @@ impl TapDevice {
         };
         guard.try_read(buf)
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub fn try_read_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let Ok(mut guard) = self.read_io_overlapped.try_lock() else {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
@@ -268,26 +282,36 @@ impl TapDevice {
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
-            self.wait_readable()?
+            self.wait_readable()?;
         }
     }
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        let mut guard = self.write_io_overlapped.lock().unwrap();
+        let mut guard = self
+            .write_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.write(buf)
     }
 
-    #[allow(dead_code)]
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub(crate) fn write_interruptible(
         &self,
         buf: &[u8],
         interrupt_event: &OwnedHandle,
     ) -> io::Result<usize> {
-        let mut guard = self.write_io_overlapped.lock().unwrap();
+        let mut guard = self
+            .write_io_overlapped
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         guard.write_interruptible(buf, interrupt_event)
     }
 }
 
-#[allow(non_snake_case)]
+#[expect(non_snake_case, reason = "callback name mirrors the Windows TAP API")]
 #[inline]
 const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {
     (DeviceType << 16) | (Access << 14) | (Function << 2) | Method

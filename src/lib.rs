@@ -9,7 +9,7 @@ features like offload (TSO/GSO) on Linux and multi-queue support.
 
 ## Features
 
-- **Multi-platform Support**: Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, Android, iOS, tvOS, and OpenHarmony
+- **Multi-platform Support**: Windows, Linux, macOS, FreeBSD, OpenBSD, NetBSD, Android, iOS, tvOS, and `OpenHarmony`
 - **TUN and TAP Modes**: Support for both Layer 3 (TUN) and Layer 2 (TAP) interfaces
 - **Multiple IP Addresses**: Configure multiple IPv4 and IPv6 addresses on a single interface
 - **Async Runtime Integration**: Optional integration with Tokio or async-io/async-std
@@ -18,7 +18,7 @@ features like offload (TSO/GSO) on Linux and multi-queue support.
   - Multi-queue support for parallel packet processing
   - Generic Receive Offload (GRO) for packet coalescing
 - **Platform Consistency**: Uniform packet format across platforms (optional packet information header)
-- **Mobile Support**: Direct file descriptor support for iOS (PacketTunnelProvider) and Android (VpnService)
+- **Mobile Support**: Direct file descriptor support for iOS (`PacketTunnelProvider`) and Android (`VpnService`)
 
 ## Device Types
 
@@ -36,20 +36,21 @@ Create a TUN interface with IPv4 and IPv6 addresses:
 
 ```no_run
 use tun_rs::DeviceBuilder;
+# fn main() -> std::io::Result<()> {
 
 let dev = DeviceBuilder::new()
     .name("utun7")
     .ipv4("10.0.0.12", 24, None)
     .ipv6("CDCD:910A:2222:5498:8475:1111:3900:2021", 64)
     .mtu(1400)
-    .build_sync()
-    .unwrap();
+    .build_sync()?;
 
 let mut buf = [0; 65535];
 loop {
-    let len = dev.recv(&mut buf).unwrap();
+    let len = dev.recv(&mut buf)?;
     println!("Received packet: {:?}", &buf[..len]);
 }
+# }
 ```
 
 ### Asynchronous Example (with Tokio)
@@ -62,7 +63,9 @@ tun-rs = { version = "2", features = ["async"] }
 
 Then use async I/O:
 
-```no_run, ignore
+```no_run
+# #[cfg(not(feature = "async_tokio"))]
+# fn main() {}
 use tun_rs::DeviceBuilder;
 # #[cfg(feature = "async_tokio")]
 # #[tokio::main]
@@ -84,20 +87,26 @@ loop {
 For iOS and Android, use the file descriptor from the system VPN APIs:
 
 ```no_run
+# fn main() -> std::io::Result<()> {
 #[cfg(unix)]
 {
     use tun_rs::SyncDevice;
     // On iOS: from PacketTunnelProvider.packetFlow
     // On Android: from VpnService.Builder.establish()
     let fd = 7799; // Example value only - obtain from platform VPN APIs
-    let dev = unsafe { SyncDevice::from_fd(fd).unwrap() };
+    // SAFETY: the real descriptor must come from the platform VPN API and its
+    // ownership is transferred to SyncDevice.
+    let dev = unsafe { SyncDevice::from_fd(fd)? };
 
     let mut buf = [0; 65535];
     loop {
-        let len = dev.recv(&mut buf).unwrap();
+        let len = dev.recv(&mut buf)?;
         println!("Received packet: {:?}", &buf[..len]);
     }
 }
+# #[cfg(not(unix))]
+# Ok(())
+# }
 ```
 
 ## Advanced Features
@@ -108,14 +117,15 @@ You can add multiple IPv4 and IPv6 addresses to an interface:
 
 ```no_run
 # use tun_rs::DeviceBuilder;
-# fn main() {
+# fn main() -> std::io::Result<()> {
 let dev = DeviceBuilder::new()
     .ipv4("10.0.0.1", 24, None)
-    .build_sync().unwrap();
+    .build_sync()?;
 
-dev.add_address_v4("10.1.0.1", 24).unwrap();
-dev.add_address_v4("10.2.0.1", 24).unwrap();
-dev.add_address_v6("CDCD:910A:2222:5498:8475:1111:3900:2021", 64).unwrap();
+dev.add_address_v4("10.1.0.1", 24)?;
+dev.add_address_v4("10.2.0.1", 24)?;
+dev.add_address_v6("CDCD:910A:2222:5498:8475:1111:3900:2021", 64)?;
+# Ok(())
 # }
 ```
 
@@ -124,6 +134,7 @@ dev.add_address_v6("CDCD:910A:2222:5498:8475:1111:3900:2021", 64).unwrap();
 On Linux, enable offload for improved throughput:
 
 ```no_run
+# fn main() -> std::io::Result<()> {
 #[cfg(target_os = "linux")]
 {
     use tun_rs::{DeviceBuilder, GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
@@ -131,19 +142,22 @@ On Linux, enable offload for improved throughput:
     let dev = DeviceBuilder::new()
         .offload(true)  // Enable TSO/GSO
         .ipv4("10.0.0.1", 24, None)
-        .build_sync().unwrap();
+        .build_sync()?;
 
     let mut original_buffer = vec![0; VIRTIO_NET_HDR_LEN + 65535];
     let mut bufs = vec![vec![0u8; 1500]; IDEAL_BATCH_SIZE];
     let mut sizes = vec![0; IDEAL_BATCH_SIZE];
 
     loop {
-        let num = dev.recv_multiple(&mut original_buffer, &mut bufs, &mut sizes, 0).unwrap();
+        let num = dev.recv_multiple(&mut original_buffer, &mut bufs, &mut sizes, 0)?;
         for i in 0..num {
             println!("Packet {}: {:?}", i, &bufs[i][..sizes[i]]);
         }
     }
 }
+# #[cfg(not(target_os = "linux"))]
+# Ok(())
+# }
 ```
 
 ## Platform-Specific Notes
@@ -239,7 +253,7 @@ mod platform;
 /// protocol information header before each packet. This constant represents that header length.
 ///
 /// When `packet_information` is enabled in [`DeviceBuilder`], packets will include this header.
-/// The header typically contains the protocol family (e.g., AF_INET for IPv4, AF_INET6 for IPv6).
+/// The header typically contains the protocol family (e.g., `AF_INET` for IPv4, `AF_INET6` for IPv6).
 ///
 /// # Example
 ///

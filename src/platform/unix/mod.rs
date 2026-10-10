@@ -8,14 +8,7 @@ mod sockaddr;
 ))]
 pub(crate) use sockaddr::sockaddr_union;
 
-#[cfg(any(
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "macos",
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
-#[allow(unused_imports)]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub(crate) use sockaddr::ipaddr_to_sockaddr;
 
 mod fd;
@@ -43,7 +36,10 @@ pub(crate) mod device;
 /// A TUN device for Android/iOS/...
 pub struct DeviceImpl {
     pub(crate) tun: Tun,
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "generic mobile Unix backend keeps the shared locking field for Device API parity"
+    )]
     pub(crate) op_lock: std::sync::RwLock<()>,
 }
 #[cfg(all(

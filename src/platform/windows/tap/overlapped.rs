@@ -1,11 +1,23 @@
+#![expect(
+    unsafe_code,
+    reason = "Windows overlapped I/O requires raw OVERLAPPED pointers and wait APIs"
+)]
+
 use crate::platform::windows::ffi;
 use crate::platform::windows::tap::READ_BUFFER_SIZE;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use bytes::BytesMut;
 use std::io;
 use std::os::windows::io::{AsRawHandle, OwnedHandle};
 use std::sync::Arc;
-use windows_sys::Win32::System::Threading::{WaitForMultipleObjects, INFINITE};
+#[cfg(any(
+    feature = "interruptible",
+    feature = "async_tokio",
+    feature = "async_io"
+))]
+use windows_sys::Win32::System::Threading::WaitForMultipleObjects;
+use windows_sys::Win32::System::Threading::INFINITE;
 use windows_sys::Win32::System::IO::OVERLAPPED;
 pub(crate) struct ReadOverlapped {
     read_buffer: BytesMut,
@@ -22,7 +34,7 @@ impl ReadOverlapped {
     pub fn try_read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.try_read_raw(buf.as_mut_ptr(), buf.len())
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub fn try_read_uninit(&mut self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.try_read_raw(buf.as_mut_ptr(), buf.len())
     }
@@ -55,6 +67,9 @@ impl ReadOverlapped {
                         "receive buffer too small",
                     ));
                 }
+                // SAFETY: len <= dst_len above; read_buffer contains at least len
+                // initialized bytes from the completed ReadFile operation, and dst
+                // is caller-provided writable storage for dst_len bytes.
                 unsafe {
                     std::ptr::copy_nonoverlapping(self.read_buffer.as_ptr(), dst, len);
                 }
@@ -93,9 +108,14 @@ impl WriteOverlapped {
         self.submit(buf)
     }
     pub fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.finish_pending_blocking();
+        self.finish_pending_blocking()?;
         self.submit(buf)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn write_interruptible(
         &mut self,
         buf: &[u8],
@@ -141,33 +161,37 @@ impl WriteOverlapped {
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
             Err(e) => {
                 inner.no_pending_io = true;
-                log::warn!("previous TAP write completed with error: {e}");
-                Ok(true)
+                Err(e)
             }
         }
     }
-    fn finish_pending_blocking(&mut self) {
+    fn finish_pending_blocking(&mut self) -> io::Result<()> {
         let inner = &mut self.inner;
         if inner.no_pending_io {
-            return;
+            return Ok(());
         }
-        match ffi::wait_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped) {
-            Ok(_) => {}
-            Err(e) => {
-                log::warn!("previous TAP write completed with error: {e}");
-            }
-        }
+        let result = ffi::wait_io_overlapped(inner.file_handle.as_raw_handle(), &inner.overlapped);
         inner.no_pending_io = true;
+        result.map(|_| ())
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     fn finish_pending_interruptible(&mut self, interrupt_event: &OwnedHandle) -> io::Result<()> {
         if self.inner.no_pending_io {
             return Ok(());
         }
         self.overlapped_event()
             .wait_interruptible(interrupt_event, None)?;
-        self.finish_pending_blocking();
-        Ok(())
+        self.finish_pending_blocking()
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn overlapped_event(&self) -> OverlappedEvent {
         OverlappedEvent {
             event: self.inner.event_handle.clone(),
@@ -219,35 +243,50 @@ impl OverlappedEvent {
     pub fn wait(&self) -> io::Result<()> {
         ffi::wait_for_single_object(self.event.as_raw_handle(), INFINITE)
     }
+    #[cfg(any(
+        feature = "interruptible",
+        feature = "async_tokio",
+        feature = "async_io"
+    ))]
     pub fn wait_interruptible(
         &self,
         interrupt_event: &OwnedHandle,
         timeout: Option<std::time::Duration>,
     ) -> io::Result<()> {
         let handles = [self.event.as_raw_handle(), interrupt_event.as_raw_handle()];
-        unsafe {
-            let wait_ret = WaitForMultipleObjects(
-                2,
-                handles.as_ptr(),
-                0,
-                timeout
-                    .map(|t| t.as_millis().min(INFINITE as _) as _)
-                    .unwrap_or(INFINITE),
-            );
+        let mut remaining = timeout;
+        loop {
+            let timeout_ms = remaining.map_or(INFINITE, ffi::finite_wait_timeout_millis);
+            // SAFETY: handles is a live two-element array of valid wait handles;
+            // WaitForMultipleObjects borrows it synchronously and count matches.
+            let wait_ret = unsafe { WaitForMultipleObjects(2, handles.as_ptr(), 0, timeout_ms) };
             match wait_ret {
-                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => Ok(()),
+                windows_sys::Win32::Foundation::WAIT_OBJECT_0 => return Ok(()),
                 windows_sys::Win32::Foundation::WAIT_TIMEOUT => {
-                    Err(io::Error::from(io::ErrorKind::TimedOut))
-                }
-                _ => {
-                    if wait_ret == windows_sys::Win32::Foundation::WAIT_OBJECT_0 + 1 {
-                        Err(io::Error::new(
-                            io::ErrorKind::Interrupted,
-                            "trigger interrupt",
-                        ))
-                    } else {
-                        Err(io::Error::last_os_error())
+                    let Some(limit) = remaining else {
+                        return Err(io::Error::other(
+                            "infinite WaitForMultipleObjects unexpectedly timed out",
+                        ));
+                    };
+                    let waited = std::time::Duration::from_millis(u64::from(timeout_ms));
+                    if limit <= waited {
+                        return Err(io::Error::from(io::ErrorKind::TimedOut));
                     }
+                    remaining = Some(limit - waited);
+                }
+                value if value == windows_sys::Win32::Foundation::WAIT_OBJECT_0 + 1 => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "trigger interrupt",
+                    ));
+                }
+                windows_sys::Win32::Foundation::WAIT_FAILED => {
+                    return Err(io::Error::last_os_error());
+                }
+                value => {
+                    return Err(io::Error::other(format!(
+                        "WaitForMultipleObjects returned unexpected status {value:#x}"
+                    )));
                 }
             }
         }

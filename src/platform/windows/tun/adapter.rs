@@ -1,3 +1,8 @@
+#![expect(
+    unsafe_code,
+    reason = "Wintun adapter setup crosses Win32 SetupAPI/registry FFI boundaries"
+)]
+
 use std::{io, mem, ptr};
 
 use crate::windows::{
@@ -5,14 +10,15 @@ use crate::windows::{
     ffi::{decode_utf16, destroy_device_info_list, encode_utf16, enum_device_info},
 };
 use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
-use windows_sys::Win32::Foundation::{DEVPROPKEY, ERROR_INSUFFICIENT_BUFFER};
+use windows_sys::Win32::Foundation::{DEVPROPKEY, ERROR_GEN_FAILURE, ERROR_INSUFFICIENT_BUFFER};
 use windows_sys::{
     core::GUID,
     Win32::{
         Devices::{
             DeviceAndDriverInstallation::{
-                CM_Get_DevNode_Status, SetupDiGetClassDevsExW, SetupDiGetDevicePropertyW,
-                CM_DEVNODE_STATUS_FLAGS, CR_SUCCESS, DN_HAS_PROBLEM, HDEVINFO, SP_DEVINFO_DATA,
+                CM_Get_DevNode_Status, CM_MapCrToWin32Err, SetupDiGetClassDevsExW,
+                SetupDiGetDevicePropertyW, CM_DEVNODE_STATUS_FLAGS, CR_SUCCESS, DN_HAS_PROBLEM,
+                HDEVINFO, SP_DEVINFO_DATA,
             },
             Properties::DEVPROPID_FIRST_USABLE,
         },
@@ -20,10 +26,13 @@ use windows_sys::{
     },
 };
 
-#[allow(non_upper_case_globals)]
+#[expect(
+    non_upper_case_globals,
+    reason = "symbol names mirror Wintun generated bindings"
+)]
 pub const DEVPKEY_Wintun_Name: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID {
-        data1: 0x3361c968,
+        data1: 0x3361_c968,
         data2: 0x2f2e,
         data3: 0x4660,
         data4: [0xb4, 0x7e, 0x69, 0x9c, 0xdc, 0x4c, 0x32, 0xb9],
@@ -31,10 +40,13 @@ pub const DEVPKEY_Wintun_Name: DEVPROPKEY = DEVPROPKEY {
     pid: DEVPROPID_FIRST_USABLE + 1,
 };
 
-#[allow(non_upper_case_globals)]
+#[expect(
+    non_upper_case_globals,
+    reason = "symbol names mirror Wintun generated bindings"
+)]
 pub const DEVPKEY_Wintun_OwningProcess: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID {
-        data1: 0x3361c968,
+        data1: 0x3361_c968,
         data2: 0x2f2e,
         data3: 0x4660,
         data4: [0xb4, 0x7e, 0x69, 0x9c, 0xdc, 0x4c, 0x32, 0xb9],
@@ -48,6 +60,8 @@ pub fn check_adapter_if_orphaned_devices(adapter_name: &str) -> bool {
     }
 
     let device_name = encode_utf16("SWD\\Wintun");
+    // SAFETY: device_name is NUL-terminated and the remaining optional pointer
+    // arguments are null; SetupAPI returns a device-info-set handle on success.
     let dev_info = unsafe {
         SetupDiGetClassDevsExW(
             &GUID_NETWORK_ADAPTER,
@@ -66,31 +80,29 @@ pub fn check_adapter_if_orphaned_devices(adapter_name: &str) -> bool {
 
     let mut index = 0;
     let is_orphaned_adapter = loop {
-        match enum_device_info(dev_info, index) {
-            Some(ret) => {
-                let Ok(devinfo_data) = ret else {
-                    continue;
-                };
+        let Some(result) = enum_device_info(dev_info, index) else {
+            break false;
+        };
+        let Ok(devinfo_data) = result else {
+            index += 1;
+            continue;
+        };
 
-                let Ok(status) = dev_node_status(&devinfo_data) else {
-                    index += 1;
-                    continue;
-                };
-                if status & DN_HAS_PROBLEM == 0 {
-                    index += 1;
-                    continue;
-                }
+        let Ok(status) = dev_node_status(&devinfo_data) else {
+            index += 1;
+            continue;
+        };
+        if status & DN_HAS_PROBLEM == 0 {
+            index += 1;
+            continue;
+        }
 
-                let Ok(name) = get_device_name(dev_info, &devinfo_data) else {
-                    index += 1;
-                    continue;
-                };
-
-                if adapter_name == name {
-                    break true;
-                }
-            }
-            None => break false,
+        let Ok(name) = get_device_name(dev_info, &devinfo_data) else {
+            index += 1;
+            continue;
+        };
+        if adapter_name == name {
+            break true;
         }
 
         index += 1;
@@ -103,36 +115,48 @@ pub fn check_adapter_if_orphaned_devices(adapter_name: &str) -> bool {
 pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io::Result<String> {
     let mut prop_type: u32 = 0;
     let mut required_size: u32 = 0;
+    // SAFETY: devinfo/devinfo_data identify a live SetupAPI device and all
+    // out-pointers are valid writable storage for this size-query call.
+    // SAFETY: buf is allocated from required_size and remains writable/live;
+    // devinfo/devinfo_data and all out-pointers are valid for the synchronous call.
     let ok = unsafe {
         SetupDiGetDevicePropertyW(
             devinfo,
             devinfo_data,
             &DEVPKEY_Wintun_Name,
-            &mut prop_type,
+            &raw mut prop_type,
             ptr::null_mut(),
             0,
-            &mut required_size,
+            &raw mut required_size,
             0,
         )
     };
     if ok == 0 {
         let err = io::Error::last_os_error();
-        if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+        if err.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER.cast_signed()) {
             return Err(err);
         }
     }
 
-    let mut buf: Vec<u16> = vec![0; (required_size / 2) as usize];
+    let buffer_len = usize::try_from(required_size / 2).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "device property size exceeds usize",
+        )
+    })?;
+    let mut buf: Vec<u16> = vec![0; buffer_len];
 
+    // SAFETY: buf is allocated from required_size and remains writable/live;
+    // devinfo/devinfo_data and all out-pointers are valid for the synchronous call.
     let ok = unsafe {
         SetupDiGetDevicePropertyW(
             devinfo,
             devinfo_data,
             &DEVPKEY_Wintun_Name,
-            &mut prop_type,
-            buf.as_mut_ptr() as *mut u8,
+            &raw mut prop_type,
+            buf.as_mut_ptr().cast::<u8>(),
             required_size,
-            &mut required_size,
+            &raw mut required_size,
             0,
         )
     };
@@ -144,8 +168,11 @@ pub fn get_device_name(devinfo: HDEVINFO, devinfo_data: &SP_DEVINFO_DATA) -> io:
 }
 
 fn is_windows_seven() -> bool {
+    let Ok(version_info_size) = u32::try_from(mem::size_of::<OSVERSIONINFOA>()) else {
+        return false;
+    };
     let mut info = OSVERSIONINFOA {
-        dwOSVersionInfoSize: mem::size_of::<OSVERSIONINFOA>() as u32,
+        dwOSVersionInfoSize: version_info_size,
         dwMajorVersion: 0,
         dwMinorVersion: 0,
         dwBuildNumber: 0,
@@ -153,8 +180,10 @@ fn is_windows_seven() -> bool {
         szCSDVersion: [0; 128],
     };
 
+    // SAFETY: info is correctly sized writable OSVERSIONINFOA storage and the
+    // call is synchronous.
     unsafe {
-        if GetVersionExA(&mut info as *mut _) == 0 {
+        if GetVersionExA(&raw mut info) == 0 {
             return false;
         }
     }
@@ -166,17 +195,22 @@ fn dev_node_status(devinfo_data: &SP_DEVINFO_DATA) -> io::Result<CM_DEVNODE_STAT
     let mut pulstatus = 0;
     let mut pulproblemnumber = 0;
 
+    // SAFETY: both status outputs are live writable integers and DevInst comes
+    // from a valid SetupAPI SP_DEVINFO_DATA record.
     let cr = unsafe {
         CM_Get_DevNode_Status(
-            &mut pulstatus,
-            &mut pulproblemnumber,
+            &raw mut pulstatus,
+            &raw mut pulproblemnumber,
             devinfo_data.DevInst,
             0,
         )
     };
 
     if cr != CR_SUCCESS {
-        return Err(io::Error::last_os_error());
+        // SAFETY: CM_MapCrToWin32Err is a pure status-code conversion with no
+        // pointer or ownership preconditions.
+        let code = unsafe { CM_MapCrToWin32Err(cr, ERROR_GEN_FAILURE) };
+        return Err(io::Error::from_raw_os_error(code.cast_signed()));
     }
 
     Ok(pulstatus)

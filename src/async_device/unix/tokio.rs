@@ -4,6 +4,7 @@ use std::task::{Context, Poll};
 use crate::platform::DeviceImpl;
 use ::tokio::io::unix::AsyncFd as TokioAsyncFd;
 use ::tokio::io::Interest;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 
 /// An async Tun/Tap device wrapper around a Tun/Tap device.
@@ -103,7 +104,7 @@ impl AsyncDevice {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
@@ -187,6 +188,10 @@ impl AsyncDevice {
         device.set_nonblocking(true)?;
         Ok(Self(TokioAsyncFd::new(device)?))
     }
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "runtime adapters share a fallible signature; async-io into_inner can fail"
+    )]
     pub(crate) fn into_device(self) -> io::Result<DeviceImpl> {
         Ok(self.0.into_inner())
     }

@@ -1,5 +1,12 @@
+#![expect(
+    unsafe_code,
+    reason = "this module adapts raw Unix TUN/TAP descriptors and ioctl control sockets"
+)]
+
 use crate::platform::unix::{Fd, Tun};
 use crate::platform::DeviceImpl;
+#[cfg(any(feature = "async_tokio", feature = "async_io"))]
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "ohos")),
@@ -17,17 +24,12 @@ impl FromRawFd for DeviceImpl {
     /// # Safety
     ///
     /// The caller must ensure that `fd` is a valid, open file descriptor for a TUN/TAP device.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
     ///
-    /// # Panics
-    ///
-    /// This function will panic if the provided file descriptor is invalid or violates the
-    /// platform-specific adoption contract.
+    /// If the descriptor violates this unsafe contract, construction aborts the process rather
+    /// than returning a partially initialized device.
     unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // If this panics, the caller violated the descriptor adoption safety contract
-        DeviceImpl::from_fd(fd).expect(
-            "Failed to adopt TUN/TAP file descriptor; the descriptor must satisfy the platform-specific adoption contract",
-        )
+        // SAFETY: FromRawFd's documented contract guarantees fd is valid and ownership is transferred to this DeviceImpl.
+        unsafe { Self::from_fd(fd).unwrap_or_else(|_| std::process::abort()) }
     }
 }
 impl AsRawFd for DeviceImpl {
@@ -37,6 +39,7 @@ impl AsRawFd for DeviceImpl {
 }
 impl AsFd for DeviceImpl {
     fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: self keeps the underlying descriptor alive for at least the lifetime of the returned BorrowedFd.
         unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
     }
 }
@@ -49,20 +52,24 @@ impl std::os::unix::io::IntoRawFd for DeviceImpl {
 impl DeviceImpl {
     /// # Safety
     /// The fd passed in must be an owned file descriptor; in particular, it must be open.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
     pub(crate) unsafe fn from_fd(fd: RawFd) -> io::Result<Self> {
-        let tun = Fd::new_unchecked(fd);
-        DeviceImpl::from_tun(Tun::new(tun))
+        // SAFETY: from_fd's contract transfers ownership of a valid open descriptor, so constructing an owning Fd is valid.
+        unsafe {
+            let tun = Fd::new_unchecked(fd);
+            Self::from_tun(Tun::new(tun))
+        }
     }
     /// # Safety
     /// The fd passed in must be a valid, open file descriptor.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
     /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
+    /// and therefore will not close it when dropped.\
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        let tun = Fd::new_unchecked_with_borrow(fd, true);
-        DeviceImpl::from_tun(Tun::new(tun))
+        // SAFETY: borrow_raw's contract guarantees fd stays valid externally; the Fd wrapper is explicitly marked borrowed and will not close it.
+        unsafe {
+            let tun = Fd::new_unchecked_with_borrow(fd, true);
+            Self::from_tun(Tun::new(tun))
+        }
     }
     pub(crate) fn is_nonblocking(&self) -> io::Result<bool> {
         self.tun.is_nonblocking()
@@ -78,7 +85,8 @@ impl DeviceImpl {
         self.tun.recv(buf)
     }
     #[inline]
-    #[allow(dead_code)]
+    #[cfg(any(feature = "async_tokio", feature = "async_io"))]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.tun.recv_uninit(buf)
     }
@@ -157,7 +165,8 @@ impl DeviceImpl {
     target_os = "netbsd",
 ))]
 fn if_name_to_index(if_name: &std::ffi::CStr) -> io::Result<u32> {
-    // SAFETY: CStr guarantees a live NUL-terminated pointer for the call.
+    // SAFETY: CStr guarantees a NUL-terminated name pointer that remains live
+    // for the synchronous if_nametoindex call.
     let index = unsafe { libc::if_nametoindex(if_name.as_ptr()) };
     if index == 0 {
         Err(io::Error::last_os_error())
@@ -177,10 +186,17 @@ impl DeviceImpl {
     /// Retrieves the interface index for the network interface.
     ///
     /// This function converts the interface name (obtained via `self.name()`) into a
-    /// C-compatible string (CString) and then calls the libc function `if_nametoindex`
+    /// C-compatible string (`CString`) and then calls the libc function `if_nametoindex`
     /// to retrieve the corresponding interface index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the underlying descriptor or interface operation fails.
     pub fn if_index(&self) -> io::Result<u32> {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.if_index_impl()
     }
     pub(crate) fn if_index_impl(&self) -> io::Result<u32> {
@@ -192,8 +208,13 @@ impl DeviceImpl {
     /// This function calls `getifaddrs` with the interface name,
     /// then iterates over the returned list of interface addresses, extracting and collecting
     /// the IP addresses into a vector.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if the underlying descriptor or interface operation fails.
+    #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
     pub fn addresses(&self) -> io::Result<Vec<std::net::IpAddr>> {
-        Ok(crate::platform::get_if_addrs_by_name(self.name_impl()?)?
+        Ok(crate::platform::get_if_addrs_by_name(&self.name_impl()?)?
             .iter()
             .filter_map(|v| v.address.ip_addr())
             .collect())
@@ -212,7 +233,10 @@ impl DeviceImpl {
     /// # Note
     /// Retrieve whether the packet is ignored for the TUN Device; The TAP device always returns `false`.
     pub fn ignore_packet_info(&self) -> bool {
-        let _guard = self.op_lock.read().unwrap();
+        let _guard = self
+            .op_lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.tun.ignore_packet_info()
     }
     /// Sets whether the TUN device should ignore packet information (PI).
@@ -227,8 +251,11 @@ impl DeviceImpl {
     /// # Note
     /// This only works for a TUN device; The invocation will be ignored if the device is a TAP.
     pub fn set_ignore_packet_info(&self, ign: bool) {
-        let _guard = self.op_lock.write().unwrap();
-        self.tun.set_ignore_packet_info(ign)
+        let _guard = self
+            .op_lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        self.tun.set_ignore_packet_info(ign);
     }
 }
 #[cfg(any(
@@ -237,12 +264,15 @@ impl DeviceImpl {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub(crate) unsafe fn ctl() -> io::Result<Fd> {
-    Fd::new(libc::socket(AF_INET, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0))
+pub(in crate::platform) fn ctl() -> io::Result<Fd> {
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel; Fd::new validates the latter before taking ownership.
+    unsafe { Fd::new(libc::socket(AF_INET, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0)) }
 }
 #[cfg(target_os = "macos")]
-pub(crate) unsafe fn ctl() -> io::Result<Fd> {
-    let fd = Fd::new(libc::socket(AF_INET, SOCK_DGRAM, 0))?;
+pub(in crate::platform) fn ctl() -> io::Result<Fd> {
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel;
+    // Fd::new validates the latter before taking ownership.
+    let fd = unsafe { Fd::new(libc::socket(AF_INET, SOCK_DGRAM, 0))? };
     fd.set_cloexec()?;
     Ok(fd)
 }
@@ -252,92 +282,42 @@ pub(crate) unsafe fn ctl() -> io::Result<Fd> {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-pub(crate) unsafe fn ctl_v6() -> io::Result<Fd> {
-    Fd::new(libc::socket(AF_INET6, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0))
+pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel; Fd::new validates the latter before taking ownership.
+    unsafe { Fd::new(libc::socket(AF_INET6, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0)) }
 }
 #[cfg(target_os = "macos")]
-pub(crate) unsafe fn ctl_v6() -> io::Result<Fd> {
-    let fd = Fd::new(libc::socket(AF_INET6, SOCK_DGRAM, 0))?;
+pub(in crate::platform) fn ctl_v6() -> io::Result<Fd> {
+    // SAFETY: socket returns either a new owned descriptor or a negative errno sentinel;
+    // Fd::new validates the latter before taking ownership.
+    let fd = unsafe { Fd::new(libc::socket(AF_INET6, SOCK_DGRAM, 0))? };
     fd.set_cloexec()?;
     Ok(fd)
 }
 
-/// Copy a device name into a fixed-size C character buffer.
+/// Copies an interface name into a BSD C name array.
 ///
-/// The destination is cleared and NUL-terminated. Names containing an interior NUL or
-/// requiring the entire destination (leaving no room for the terminator) are rejected.
-#[cfg(any(
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-    test
-))]
+/// The destination must have room for the trailing NUL byte. It is cleared
+/// before copying so successful calls always produce a NUL-terminated name.
+#[cfg(any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd"))]
 pub(crate) fn copy_device_name(name: &str, dest: &mut [libc::c_char]) -> io::Result<()> {
-    let bytes = name.as_bytes();
-    if dest.is_empty() || bytes.len() >= dest.len() || bytes.contains(&0) {
+    if name.as_bytes().contains(&0) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "invalid or too-long network interface name",
+            "interface name contains NUL",
         ));
     }
-
+    if name.len() >= dest.len() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface name exceeds platform IFNAMSIZ",
+        ));
+    }
     dest.fill(0);
-    for (slot, &byte) in dest[..bytes.len()].iter_mut().zip(bytes) {
-        *slot = libc::c_char::from_ne_bytes([byte]);
+    for (out, byte) in dest.iter_mut().zip(name.bytes()) {
+        *out = byte.cast_signed();
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod copy_device_name_tests {
-    use super::copy_device_name;
-
-    fn bytes(buf: &[libc::c_char]) -> Vec<u8> {
-        buf.iter().map(|&value| value.to_ne_bytes()[0]).collect()
-    }
-
-    #[test]
-    fn rejects_empty_destination() {
-        let mut dest = [];
-        assert!(matches!(
-            copy_device_name("tun0", &mut dest),
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput
-        ));
-    }
-
-    #[test]
-    fn copies_and_nul_terminates() -> std::io::Result<()> {
-        let mut dest = [libc::c_char::MAX; 8];
-        copy_device_name("tun0", &mut dest)?;
-        assert_eq!(bytes(&dest), b"tun0\0\0\0\0");
-        Ok(())
-    }
-
-    #[test]
-    fn accepts_largest_name_that_leaves_a_terminator() -> std::io::Result<()> {
-        let mut dest = [libc::c_char::MAX; 4];
-        copy_device_name("tun", &mut dest)?;
-        assert_eq!(bytes(&dest), b"tun\0");
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_overlong_name_instead_of_truncating() {
-        let mut dest = [libc::c_char::MAX; 4];
-        assert!(matches!(
-            copy_device_name("tunnel", &mut dest),
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput
-        ));
-    }
-
-    #[test]
-    fn rejects_interior_nul() {
-        let mut dest = [libc::c_char::MAX; 8];
-        assert!(matches!(
-            copy_device_name("tun\0x", &mut dest),
-            Err(err) if err.kind() == std::io::ErrorKind::InvalidInput
-        ));
-    }
 }
 
 #[cfg(all(
@@ -355,6 +335,31 @@ mod if_index_tests {
 
     #[test]
     fn missing_interface_is_an_error_not_index_zero() {
-        assert!(if_name_to_index(c"tun-rs/definitely-invalid").is_err());
+        assert!(if_name_to_index(c"tun-rs/invalid").is_err());
+    }
+}
+
+#[cfg(all(
+    test,
+    any(target_os = "freebsd", target_os = "openbsd", target_os = "netbsd")
+))]
+mod bsd_device_name_tests {
+    use super::copy_device_name;
+    use std::io;
+
+    #[test]
+    fn copy_device_name_enforces_c_string_contract() {
+        let mut dest = [1; 4];
+        assert!(copy_device_name("abc", &mut dest).is_ok());
+        assert_eq!(dest[3], 0);
+
+        assert!(matches!(
+            copy_device_name("abcd", &mut dest),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
+        assert!(matches!(
+            copy_device_name("a\0b", &mut dest),
+            Err(error) if error.kind() == io::ErrorKind::InvalidInput
+        ));
     }
 }

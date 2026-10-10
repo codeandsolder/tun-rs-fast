@@ -5,8 +5,10 @@ use crate::platform::windows::tap::TapDevice;
 use crate::platform::windows::tun::{check_adapter_if_orphaned_devices, TunDevice};
 use crate::platform::ETHER_ADDR_LEN;
 use crate::{Layer, ToIpv4Address, ToIpv4Netmask, ToIpv6Address, ToIpv6Netmask};
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use getifaddrs::Interface;
+#[cfg(feature = "address-management")]
 use ipnet::IpNet;
 use std::collections::HashSet;
 use std::io;
@@ -16,7 +18,7 @@ use windows_sys::core::GUID;
 use windows_sys::Win32::NetworkManagement::Ndis::NET_LUID_LH;
 
 pub(crate) const GUID_NETWORK_ADAPTER: GUID = GUID {
-    data1: 0x4d36e972,
+    data1: 0x4d36_e972,
     data2: 0xe325,
     data3: 0x11ce,
     data4: [0xbf, 0xc1, 0x08, 0x00, 0x2b, 0xe1, 0x03, 0x18],
@@ -35,6 +37,10 @@ pub struct DeviceImpl {
 
 impl DeviceImpl {
     /// Create a new `Device` for the given `Configuration`.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "all platform constructors consume DeviceConfig through the shared builder API"
+    )]
     pub(crate) fn new(config: DeviceConfig) -> io::Result<Self> {
         let layer = config.layer.unwrap_or(Layer::L3);
         let mut count = 0;
@@ -84,7 +90,7 @@ impl DeviceImpl {
                     Ok(tun_device) => break tun_device,
                     Err(e) => {
                         if attempts > 3 {
-                            Err(e)?
+                            return Err(e);
                         }
                         attempts += 1;
                     }
@@ -97,7 +103,16 @@ impl DeviceImpl {
             }
         } else if layer == Layer::L2 {
             const HARDWARE_ID: &str = "tap0901";
+            const HEX: &[u8; 16] = b"0123456789ABCDEF";
             let persist = config.persist.unwrap_or(false);
+            let mac_address = config.mac_address.map(|mac| {
+                let mut encoded = String::with_capacity(mac.len() * 2);
+                for byte in mac {
+                    encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+                    encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+                }
+                encoded
+            });
 
             let tap = loop {
                 let default_name = format!("tap{count}");
@@ -107,18 +122,17 @@ impl DeviceImpl {
                         count += 1;
                         continue;
                     } else if !config.reuse_dev.unwrap_or(true) {
-                        Err(io::Error::other(format!(
+                        return Err(io::Error::other(format!(
                             "The network adapter [{name}] already exists."
-                        )))?
+                        )));
                     }
-                    let tap =
-                        TapDevice::open(HARDWARE_ID, name, persist, config.mac_address.as_ref())?;
+                    let tap = TapDevice::open(HARDWARE_ID, name, persist, mac_address.as_deref())?;
                     break tap;
                 }
-                let tap = TapDevice::create(HARDWARE_ID, persist, config.mac_address.as_ref())?;
+                let tap = TapDevice::create(HARDWARE_ID, persist, mac_address.as_deref())?;
                 if let Err(e) = tap.set_name(name) {
                     if config.dev_name.is_some() {
-                        Err(e)?
+                        return Err(e);
                     }
                 }
                 break tap;
@@ -128,7 +142,10 @@ impl DeviceImpl {
                 driver: Driver::Tap(tap),
             }
         } else {
-            panic!("unknown layer {layer:?}");
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("unsupported device layer {layer:?}"),
+            ));
         };
         Ok(device)
     }
@@ -137,6 +154,9 @@ impl DeviceImpl {
         feature = "async_tokio",
         feature = "async_io"
     ))]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn wait_readable_interruptible(
         &self,
         event: &crate::platform::windows::InterruptEvent,
@@ -148,6 +168,9 @@ impl DeviceImpl {
         }
     }
     #[cfg(feature = "interruptible")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn read_interruptible(
         &self,
         buf: &mut [u8],
@@ -160,27 +183,34 @@ impl DeviceImpl {
                 Ok(rs) => {
                     return Ok(rs);
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e),
             }
         }
     }
     /// Recv a packet from tun device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.read(buf),
             Driver::Tun(tun) => tun.recv(buf),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read(buf),
             Driver::Tun(tun) => tun.try_recv(buf),
         }
     }
-    #[allow(dead_code)]
+    #[cfg(feature = "async_framed")]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read_uninit(buf),
@@ -189,6 +219,9 @@ impl DeviceImpl {
     }
 
     /// Send a packet to tun device
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.write(buf),
@@ -200,6 +233,9 @@ impl DeviceImpl {
         feature = "async_tokio",
         feature = "async_io"
     ))]
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn write_interruptible(
         &self,
         buf: &[u8],
@@ -210,12 +246,18 @@ impl DeviceImpl {
             Driver::Tun(tun) => tun.send_interruptible(buf, &event.handle),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn try_send(&self, buf: &[u8]) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_write(buf),
             Driver::Tun(tun) => tun.try_send(buf),
         }
     }
+    ///
+    /// # Errors
+    /// Returns an error if the underlying Windows operation fails.
     pub(crate) fn shutdown(&self) -> io::Result<()> {
         match &self.driver {
             Driver::Tun(tun) => tun.shutdown(),
@@ -223,10 +265,10 @@ impl DeviceImpl {
         }
     }
 
-    fn if_index_impl(&self) -> io::Result<u32> {
+    fn if_index_impl(&self) -> u32 {
         match &self.driver {
-            Driver::Tun(tun) => Ok(tun.index()),
-            Driver::Tap(tap) => Ok(tap.index()),
+            Driver::Tun(tun) => tun.index(),
+            Driver::Tap(tap) => tap.index(),
         }
     }
     fn luid_impl(&self) -> NET_LUID_LH {
@@ -251,42 +293,69 @@ impl DeviceImpl {
     /// Retrieves the name of the device.
     ///
     /// Calls the appropriate method on the underlying driver (TUN or TAP) to obtain the device name.
+    /// # Errors
+    /// Returns an I/O error if the Windows interface name query fails.
     pub fn name(&self) -> io::Result<String> {
-        let _guard = self.lock.read().unwrap();
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         self.name_impl()
     }
     /// Sets a new name for the device.
     ///
     /// This method first checks if the current name is different from the desired one. If it is,
     /// it uses the `netsh` command to update the interface name.
+    ///
+    /// # Errors
+    /// Returns an I/O error if querying or renaming the Windows interface fails.
     pub fn set_name(&self, value: &str) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let name = self.name_impl()?;
         if value == name {
             return Ok(());
         }
         netsh::set_interface_name(&name, value)
     }
-    /// Retrieves the interface index (if_index) of the device.
+    /// Retrieves the interface index (`if_index`) of the device.
     ///
     /// This is used for various network configuration commands.
+    /// # Errors
+    /// The shared API is fallible; the Windows backend currently returns its cached index.
     pub fn if_index(&self) -> io::Result<u32> {
-        let _guard = self.lock.read().unwrap();
-        self.if_index_impl()
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(self.if_index_impl())
     }
     /// Retrieves the interface LUID (locally unique identifier) of the device.
     ///
     /// This is used for various network configuration APIs.
+    ///
+    /// # Errors
+    /// The shared API is fallible; the Windows backend currently returns its cached LUID.
     pub fn if_luid(&self) -> io::Result<NET_LUID_LH> {
-        let _guard = self.lock.read().unwrap();
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         Ok(self.luid_impl())
     }
     /// Enables or disables the device.
     ///
     /// For a TUN device, disabling is not supported and will return an error.
     /// For a TAP device, this calls the appropriate method to set the device status.
+    /// # Errors
+    /// Returns an I/O error if changing the underlying TUN/TAP device state fails.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
             Driver::Tun(tun) => tun.enabled(value),
             Driver::Tap(tap) => tap.set_status(value),
@@ -295,9 +364,14 @@ impl DeviceImpl {
     /// Retrieves all IP addresses associated with this device.
     ///
     /// Filters the adapter addresses by matching the device's interface index.
+    /// # Errors
+    /// Returns an I/O error if Windows interface enumeration fails.
     pub fn addresses(&self) -> io::Result<Vec<IpAddr>> {
-        let _guard = self.lock.read().unwrap();
-        let index = self.if_index_impl()?;
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = self.if_index_impl();
         let r = Self::get_all_adapter_address()?
             .into_iter()
             .filter(|v| v.index == Some(index))
@@ -307,21 +381,30 @@ impl DeviceImpl {
     }
     /// Sets the IPv4 network address, netmask, and an optional destination address.
     /// Remove all previous set IPv4 addresses and set the specified address.
+    /// # Errors
+    /// Returns an error if address conversion or Windows IPv4 configuration fails.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
+    )]
     pub fn set_network_address<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
         netmask: Netmask,
         destination: Option<IPv4>,
     ) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // NOTE: `destination` is the shared cross-platform parameter (the point-to-point
         // peer on Unix). On Windows it is used as the gateway for a default route, matching
         // the behavior of the previous `netsh ... set address gateway=` implementation.
         super::ffi::set_address(
-            self.if_index_impl()?,
+            self.if_index_impl(),
             address.ipv4()?.into(),
             netmask.prefix()?,
-            destination.map(|v| v.ipv4()).transpose()?.map(|v| v.into()),
+            destination.map(|v| v.ipv4()).transpose()?.map(Into::into),
         )
     }
     /// Add IPv4 network address and netmask to the interface.
@@ -355,22 +438,37 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    /// # Errors
+    /// Returns an error if address conversion or Windows IPv4 configuration fails.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
+    )]
+    #[cfg(feature = "address-management")]
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
         netmask: Netmask,
     ) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        let interface = netconfig_rs::Interface::try_from_index(self.if_index_impl()?)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let interface = netconfig_rs::Interface::try_from_index(self.if_index_impl())
             .map_err(io::Error::from)?;
         interface
             .add_address(IpNet::new_assert(address.ipv4()?.into(), netmask.prefix()?))
             .map_err(io::Error::from)
     }
     /// Removes the specified IP address from the device.
+    /// # Errors
+    /// Returns an I/O error if removing the address from the Windows interface fails.
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        super::ffi::remove_address(self.if_index_impl()?, addr)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::ffi::remove_address(self.if_index_impl(), addr)
     }
     /// Adds an IPv6 address and netmask to the device.
     ///
@@ -403,14 +501,23 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    /// # Errors
+    /// Returns an error if address conversion or Windows IPv6 configuration fails.
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "the cross-platform API accepts owned conversion inputs while conversion traits borrow them internally"
+    )]
     pub fn add_address_v6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         &self,
         addr: IPv6,
         netmask: Netmask,
     ) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         super::ffi::add_address(
-            self.if_index_impl()?,
+            self.if_index_impl(),
             addr.ipv6()?.into(),
             netmask.prefix()?,
             None,
@@ -419,30 +526,61 @@ impl DeviceImpl {
     /// Retrieves the MTU for the device (IPv4).
     ///
     /// This method uses a Windows-specific FFI function to query the MTU by interface index.
+    /// # Errors
+    /// Returns an error if querying the IPv4 MTU fails or the value exceeds u16.
     pub fn mtu(&self) -> io::Result<u16> {
-        let _guard = self.lock.read().unwrap();
-        let index = self.if_index_impl()?;
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = self.if_index_impl();
         let mtu = crate::platform::windows::ffi::get_mtu_by_index(index, true)?;
-        Ok(mtu as _)
+        u16::try_from(mtu).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("reported MTU {mtu} exceeds u16::MAX"),
+            )
+        })
     }
     /// Retrieves the MTU for the device (IPv6).
     ///
     /// This method uses a Windows-specific FFI function to query the IPv6 MTU by interface index.
+    /// # Errors
+    /// Returns an error if querying the IPv6 MTU fails or the value exceeds u16.
     pub fn mtu_v6(&self) -> io::Result<u16> {
-        let _guard = self.lock.read().unwrap();
-        let index = self.if_index_impl()?;
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let index = self.if_index_impl();
         let mtu = crate::platform::windows::ffi::get_mtu_by_index(index, false)?;
-        Ok(mtu as _)
+        u16::try_from(mtu).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("reported MTU {mtu} exceeds u16::MAX"),
+            )
+        })
     }
     /// Sets the MTU for the device (IPv4).
+    /// # Errors
+    /// Returns an I/O error if updating the Windows IPv4 MTU fails.
     pub fn set_mtu(&self, mtu: u16) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu as _, true)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::ffi::set_interface_mtu(self.if_index_impl(), u32::from(mtu), true)
     }
     /// Sets the MTU for the device (IPv6).
+    ///
+    /// # Errors
+    /// Returns an I/O error if updating the Windows IPv6 MTU fails.
     pub fn set_mtu_v6(&self, mtu: u16) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        super::ffi::set_interface_mtu(self.if_index_impl()?, mtu as _, false)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::ffi::set_interface_mtu(self.if_index_impl(), u32::from(mtu), false)
     }
     /// Sets the MAC address for the device.
     ///
@@ -450,18 +588,28 @@ impl DeviceImpl {
     ///
     /// #Note:
     /// set a MAC address is only supported when creating a TUN/TAP device.
+    /// # Errors
+    /// Returns Unsupported for TUN devices or an I/O error if TAP MAC configuration fails.
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
             Driver::Tun(_tun) => Err(io::Error::from(io::ErrorKind::Unsupported)),
-            Driver::Tap(tap) => tap.set_mac(&eth_addr),
+            Driver::Tap(_tap) => TapDevice::set_mac(eth_addr),
         }
     }
     /// Retrieves the MAC address of the device.
     ///
     /// This operation is only supported for TAP devices.
+    /// # Errors
+    /// Returns Unsupported for TUN devices or an I/O error if reading the TAP MAC address fails.
     pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
-        let _guard = self.lock.read().unwrap();
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
             Driver::Tun(_tun) => Err(io::Error::from(io::ErrorKind::Unsupported)),
             Driver::Tap(tap) => tap.get_mac(),
@@ -497,36 +645,56 @@ impl DeviceImpl {
     /// # Platform
     ///
     /// Windows only. Requires administrator privileges.
+    /// # Errors
+    /// Returns an I/O error if updating the Windows interface metric fails.
     pub fn set_metric(&self, metric: u16) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        super::ffi::set_interface_metric(self.if_index_impl()?, metric as u32)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        super::ffi::set_interface_metric(self.if_index_impl(), u32::from(metric))
     }
     /// Retrieves the version of the underlying driver.
     ///
     /// For TUN devices, this directly queries the driver version.
     /// For TAP devices, the version is composed of several components joined by dots.
+    /// # Errors
+    /// Returns an I/O error if querying the underlying driver version fails.
     pub fn version(&self) -> io::Result<String> {
-        let _guard = self.lock.read().unwrap();
+        let _guard = self
+            .lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &self.driver {
-            Driver::Tun(tun) => tun.version(),
+            Driver::Tun(tun) => Ok(tun.version()),
             Driver::Tap(tap) => tap.get_version().map(|v| {
                 v.iter()
-                    .map(|v| v.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<String>>()
                     .join(".")
             }),
         }
     }
     /// Set DNS servers for the current device (supports primary and secondary DNS)
-    /// dns_servers: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
+    /// `dns_servers`: A priority-ordered list of DNS servers (must be all IPv4 or all IPv6)
+    /// # Errors
+    /// Returns an I/O error if Windows DNS configuration fails.
     pub fn set_dns_servers(&self, dns_servers: &[IpAddr]) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        dns::set_dns_servers(self.if_index_impl()?, &self.luid_impl(), dns_servers)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        dns::set_dns_servers(self.if_index_impl(), self.luid_impl(), dns_servers)
     }
     /// Clear DNS configuration for the current device (restore to automatic acquisition)
-    /// is_ipv4: true to clear IPv4 DNS, false to clear IPv6 DNS
+    /// `is_ipv4`: true to clear IPv4 DNS, false to clear IPv6 DNS
+    /// # Errors
+    /// Returns an I/O error if clearing Windows DNS configuration fails.
     pub fn clear_dns_servers(&self, is_ipv4: bool) -> io::Result<()> {
-        let _guard = self.lock.write().unwrap();
-        dns::clear_dns_servers(self.if_index_impl()?, &self.luid_impl(), is_ipv4)
+        let _guard = self
+            .lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        dns::clear_dns_servers(self.if_index_impl(), self.luid_impl(), is_ipv4)
     }
 }

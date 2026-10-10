@@ -1,10 +1,23 @@
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "macos",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Receiver;
-#[allow(unused_imports)]
+#[cfg(any(
+    target_os = "windows",
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "freebsd",
+    target_os = "macos",
+    target_os = "openbsd",
+    target_os = "netbsd",
+))]
 use std::sync::Arc;
 
-#[allow(unused_imports)]
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -14,27 +27,20 @@ use std::sync::Arc;
     target_os = "netbsd",
 ))]
 use tun_rs::DeviceBuilder;
-#[cfg(any(
-    target_os = "windows",
-    all(target_os = "linux", not(target_env = "ohos")),
-    target_os = "freebsd",
-    target_os = "openbsd",
-    target_os = "netbsd",
-))]
-#[allow(unused_imports)]
-use tun_rs::Layer;
 fn main() -> Result<(), std::io::Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
     let (tx, rx) = std::sync::mpsc::channel();
 
     let handle = ctrlc2::set_handler(move || {
-        tx.send(()).expect("Signal error.");
+        let _ = tx.send(());
         true
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
 
-    main_entry(rx)?;
-    handle.join().unwrap();
+    main_entry(&rx)?;
+    handle
+        .join()
+        .map_err(|_| std::io::Error::other("Ctrl-C handler thread panicked"))?;
     Ok(())
 }
 #[cfg(any(
@@ -43,8 +49,11 @@ fn main() -> Result<(), std::io::Error> {
     target_os = "android",
     all(target_os = "linux", target_env = "ohos")
 ))]
-fn main_entry(_quit: Receiver<()>) -> Result<(), std::io::Error> {
-    unimplemented!()
+fn main_entry(_quit: &Receiver<()>) -> Result<(), std::io::Error> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this example requires native TUN/TAP device creation",
+    ))
 }
 #[cfg(any(
     target_os = "windows",
@@ -54,9 +63,7 @@ fn main_entry(_quit: Receiver<()>) -> Result<(), std::io::Error> {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-fn main_entry(quit: Receiver<()>) -> Result<(), std::io::Error> {
-    #[allow(unused_imports)]
-    use std::net::IpAddr;
+fn main_entry(quit: &Receiver<()>) -> Result<(), std::io::Error> {
     let dev = Arc::new(
         DeviceBuilder::new()
             // .name("utun7")
@@ -86,14 +93,12 @@ fn main_entry(quit: Receiver<()>) -> Result<(), std::io::Error> {
         println!("mtu ipv6 = {:?}", dev.mtu_v6());
         println!("version = {:?}", dev.version());
     }
-    let _join = std::thread::spawn(move || {
+    let _join = std::thread::spawn(move || -> std::io::Result<()> {
         let mut buf = [0; 4096];
         loop {
             let amount = dev.recv(&mut buf)?;
             println!("{:?}", &buf[0..amount]);
         }
-        #[allow(unreachable_code)]
-        std::io::Result::Ok(())
     });
     _ = quit.recv();
     Ok(())
