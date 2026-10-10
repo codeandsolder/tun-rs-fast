@@ -20,8 +20,7 @@ use crate::{
 
 use crate::platform::unix::device::{copy_device_name, ctl, ctl_v6};
 use libc::{
-    self, c_char, c_short, fcntl, ifreq, kinfo_file, AF_LINK, F_KINFO, IFF_UP, IFNAMSIZ,
-    KINFO_FILE_SIZE, O_RDWR,
+    self, c_char, c_short, fcntl, ifreq, kinfo_file, AF_LINK, F_KINFO, IFF_UP, IFNAMSIZ, O_RDWR,
 };
 use std::io::ErrorKind;
 use std::os::fd::{IntoRawFd, RawFd};
@@ -330,7 +329,7 @@ impl DeviceImpl {
         // kf_path is read as the NUL-terminated path returned by the kernel.
         unsafe {
             let mut path_info: kinfo_file = std::mem::zeroed();
-            path_info.kf_structsize = KINFO_FILE_SIZE;
+            path_info.kf_structsize = std::mem::size_of::<kinfo_file>() as libc::c_int;
             if fcntl(tun.as_raw_fd(), F_KINFO, &raw mut path_info) < 0 {
                 return Err(io::Error::last_os_error());
             }

@@ -2,6 +2,10 @@
     unused_imports,
     reason = "privileged integration-test imports vary by target and async runtime"
 )]
+#![expect(
+    unsafe_code,
+    reason = "privileged integration tests intentionally exercise raw-fd adoption and platform FFI contracts"
+)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -563,6 +567,25 @@ fn create_tun() -> TestResult {
             assert_eq!(dev_name, name);
         }
     }
+    Ok(())
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn adopted_raw_fd_rejects_virtio_header_framing() -> TestResult {
+    use std::io;
+    use std::os::fd::IntoRawFd;
+
+    let device = DeviceBuilder::new().offload(true).build_sync()?;
+    let fd = device.into_raw_fd();
+
+    // SAFETY: `fd` is an owned, live TUN descriptor transferred out of `device`.
+    // The test intentionally presents IFF_VNET_HDR framing to verify rejection.
+    let result = unsafe { SyncDevice::from_fd(fd) };
+    let error = result.err().ok_or_else(|| {
+        io::Error::other("adopting an IFF_VNET_HDR descriptor unexpectedly succeeded")
+    })?;
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
     Ok(())
 }
 
