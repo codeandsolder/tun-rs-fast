@@ -103,16 +103,16 @@ route_manager = "0.2.9"
 bindgen = { version = "0.73.1", optional = true }
 
 [dev-dependencies]
-log = "0.4"
-criterion = "0.8"
-ctrlc2 = { version = "4.0", features = ["termination"] }
-env_logger = "0.11"
-futures = "0.3"
-pnet_packet = "0.35.0"
-tokio = { version = "1", features = ["rt-multi-thread", "time", "signal"] }
-async-std = { version = "1", features = ["attributes", "unstable"] }
-async-ctrlc = "1.2.0"
-rand = "0.10"
+log = "=0.4.34"
+criterion = "=0.8.2"
+ctrlc2 = { version = "=4.0.0", features = ["termination"] }
+env_logger = "=0.11.11"
+futures = "=0.3.34"
+pnet_packet = "=0.35.0"
+tokio = { version = "=1.53.2", features = ["rt-multi-thread", "time", "signal"] }
+async-std = { version = "=1.13.2", features = ["attributes", "unstable"] }
+async-ctrlc = "=1.2.0"
+rand = "=0.10.3"
 
 [features]
 default = ["address-management"]
