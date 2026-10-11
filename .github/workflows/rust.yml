@@ -184,7 +184,7 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@57216c70e71428e87eafafc721b7ee5a39caf29c # main
+    uses: codeandsolder/ci-workflows/.github/workflows/rust-sccache.yml@67b13fe5fac98b5387cbbaa74ee4cff3013357c6 # main
     with:
       command: |
         cargo +1.99.0 test --lib
