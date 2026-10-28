@@ -253,7 +253,16 @@ impl TapDevice {
         };
         guard.try_read(buf)
     }
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(all(
+            feature = "async_framed",
+            any(feature = "async_io", feature = "async_tokio")
+        )),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O"
+        )
+    )]
     pub fn try_read_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let Ok(mut guard) = self.read_io_overlapped.try_lock() else {
             return Err(io::Error::from(io::ErrorKind::WouldBlock));
@@ -281,7 +290,17 @@ impl TapDevice {
         guard.write(buf)
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(any(
+            feature = "async_io",
+            feature = "async_tokio",
+            feature = "interruptible"
+        )),
+        expect(
+            dead_code,
+            reason = "interruptible I/O helpers are used by async cancellation or the interruptible sync API"
+        )
+    )]
     pub(crate) fn write_interruptible(
         &self,
         buf: &[u8],
@@ -292,7 +311,7 @@ impl TapDevice {
     }
 }
 
-#[allow(non_snake_case)]
+#[expect(non_snake_case, reason = "name mirrors the platform or Win32 ABI")]
 #[inline]
 const fn CTL_CODE(DeviceType: u32, Function: u32, Method: u32, Access: u32) -> u32 {
     (DeviceType << 16) | (Access << 14) | (Function << 2) | Method

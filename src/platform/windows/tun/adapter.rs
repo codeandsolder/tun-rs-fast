@@ -25,7 +25,10 @@ use windows_sys::{
     },
 };
 
-#[allow(non_upper_case_globals)]
+#[expect(
+    non_upper_case_globals,
+    reason = "name mirrors the upstream platform ABI constant"
+)]
 pub const DEVPKEY_Wintun_Name: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID {
         data1: 0x3361c968,
@@ -36,7 +39,10 @@ pub const DEVPKEY_Wintun_Name: DEVPROPKEY = DEVPROPKEY {
     pid: DEVPROPID_FIRST_USABLE + 1,
 };
 
-#[allow(non_upper_case_globals)]
+#[expect(
+    non_upper_case_globals,
+    reason = "name mirrors the upstream platform ABI constant"
+)]
 pub const DEVPKEY_Wintun_OwningProcess: DEVPROPKEY = DEVPROPKEY {
     fmtid: GUID {
         data1: 0x3361c968,

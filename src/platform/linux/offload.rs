@@ -899,7 +899,10 @@ fn udp_packets_can_coalesce<B: ExpandBuffer>(
 /// tcpPacketsCanCoalesce evaluates if pkt can be coalesced with the packet
 /// described by item. This function makes considerations that match the kernel's
 /// GRO self tests, which can be found in tools/testing/selftests/net/gro.c.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "signature mirrors the packet or platform API boundary"
+)]
 fn tcp_packets_can_coalesce<B: ExpandBuffer>(
     pkt: &[u8],
     iph_len: u8,
@@ -1061,7 +1064,10 @@ fn coalesce_udp_packets<B: ExpandBuffer>(
 /// item, and returns the outcome. This function may swap bufs elements in the
 /// event of a prepend as item's bufs index is already being tracked for writing
 /// to a Device.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "signature mirrors the packet or platform API boundary"
+)]
 fn coalesce_tcp_packets<B: ExpandBuffer>(
     mode: CanCoalesce,
     pkt: &[u8],
@@ -1936,7 +1942,10 @@ fn checked_segment_lengths(
         feature = "async_framed",
         any(feature = "async_io", feature = "async_tokio")
     )),
-    allow(dead_code)
+    expect(
+        dead_code,
+        reason = "capacity hint is used only by async framed runtime configurations"
+    )
 )]
 pub(crate) struct GsoOutputCapacity {
     pub(crate) segments: usize,

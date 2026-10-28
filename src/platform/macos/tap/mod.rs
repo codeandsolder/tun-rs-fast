@@ -313,7 +313,10 @@ impl Tap {
         }
         Ok(())
     }
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "item is used only on some supported target or feature combinations"
+    )]
     pub fn recv_multiple<B: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
         bufs: &mut [B],

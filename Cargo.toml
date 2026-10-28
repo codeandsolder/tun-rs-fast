@@ -16,9 +16,12 @@ crate-type = ["staticlib", "cdylib", "lib"]
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+unfulfilled_lint_expectations = "deny"
 
 [lints.clippy]
 missing_safety_doc = "deny"
+allow_attributes = "deny"
+allow_attributes_without_reason = "deny"
 
 [dependencies]
 bytes = { version = "1" }

@@ -317,7 +317,6 @@ impl BorrowedAsyncDevice<'_> {
         reason = "the caller guarantees the external descriptor outlives this borrowed async device"
     )]
     pub unsafe fn borrow_raw(fd: std::os::fd::RawFd) -> std::io::Result<Self> {
-        #[allow(unused_unsafe)]
         unsafe {
             Ok(Self {
                 dev: AsyncDevice::borrow_raw(fd)?,

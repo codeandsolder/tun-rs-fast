@@ -6,7 +6,7 @@ use nix::{ioctl_readwrite, ioctl_write_ptr};
 pub const UTUN_CONTROL_NAME: &str = "com.apple.net.utun_control";
 pub const IN6_IFF_NODAD: i32 = 0x0020;
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ctl_info {
@@ -14,7 +14,7 @@ pub struct ctl_info {
     pub ctl_name: [c_char; 96],
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ifaliasreq {
@@ -24,7 +24,7 @@ pub struct ifaliasreq {
     pub ifra_mask: sockaddr,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifaliasreq {
@@ -36,7 +36,7 @@ pub struct in6_ifaliasreq {
     pub in6_addrlifetime: in6_addrlifetime,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_addrlifetime {
@@ -46,7 +46,7 @@ pub struct in6_addrlifetime {
     pub ia6t_pltime: u32,       /* prefix lifetime */
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifreq {
@@ -54,7 +54,7 @@ pub struct in6_ifreq {
     pub ifr_ifru: ifr_ifru_in6,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifr_ifru_in6 {
@@ -69,9 +69,9 @@ pub union ifr_ifru_in6 {
     pub ifru_icmp6stat: icmp6_ifstat,
 }
 
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 type u_quad_t = u64;
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifstat {
@@ -107,7 +107,7 @@ pub struct in6_ifstat {
     pub ifs6_in_mcast: u_quad_t,  /* # of inbound multicast datagrams */
     pub ifs6_out_mcast: u_quad_t, /* # of outbound multicast datagrams */
 }
-#[allow(non_camel_case_types)]
+#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct icmp6_ifstat {

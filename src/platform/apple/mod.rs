@@ -1,5 +1,8 @@
 #[cfg(feature = "utun_fd")]
-#[allow(dead_code)]
+#[expect(
+    dead_code,
+    reason = "item is used only on some supported target or feature combinations"
+)]
 /// Finds and returns the utun file descriptor for the current process.
 ///
 /// This function searches through file descriptors 0-1024 to locate the utun

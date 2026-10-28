@@ -175,7 +175,6 @@ impl AsyncDevice {
             }
         }
     }
-    #[allow(dead_code)]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,

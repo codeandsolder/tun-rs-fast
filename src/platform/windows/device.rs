@@ -181,7 +181,16 @@ impl DeviceImpl {
             Driver::Tun(tun) => tun.try_recv(buf),
         }
     }
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(all(
+            feature = "async_framed",
+            any(feature = "async_io", feature = "async_tokio")
+        )),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O"
+        )
+    )]
     pub(crate) fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         match &self.driver {
             Driver::Tap(tap) => tap.try_read_uninit(buf),

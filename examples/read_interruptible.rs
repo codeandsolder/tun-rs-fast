@@ -1,10 +1,7 @@
-#[allow(unused_imports)]
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Receiver;
-#[allow(unused_imports)]
 use std::sync::Arc;
 
-#[allow(unused_imports)]
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -14,7 +11,6 @@ use std::sync::Arc;
     target_os = "macos"
 ))]
 use tun_rs::DeviceBuilder;
-#[allow(unused_imports)]
 use tun_rs::InterruptEvent;
 #[cfg(any(
     target_os = "windows",
@@ -23,8 +19,6 @@ use tun_rs::InterruptEvent;
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-#[allow(unused_imports)]
-use tun_rs::Layer;
 fn main() -> Result<(), std::io::Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -57,8 +51,6 @@ fn main_entry(_quit: Receiver<()>) -> Result<(), std::io::Error> {
     target_os = "netbsd",
 ))]
 fn main_entry(quit: Receiver<()>) -> Result<(), std::io::Error> {
-    #[allow(unused_imports)]
-    use std::net::IpAddr;
     let dev = Arc::new(
         DeviceBuilder::new()
             .ipv4(Ipv4Addr::new(10, 0, 0, 12), 24, None)

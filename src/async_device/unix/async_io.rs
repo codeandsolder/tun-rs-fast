@@ -102,7 +102,16 @@ impl AsyncDevice {
         }
     }
 
-    #[allow(dead_code)]
+    #[cfg_attr(
+        all(
+            not(feature = "async_framed"),
+            not(all(test, any(feature = "async_io", feature = "async_tokio")))
+        ),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O outside readiness tests"
+        )
+    )]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,

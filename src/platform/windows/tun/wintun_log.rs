@@ -2,7 +2,10 @@
     unsafe_code,
     reason = "Wintun logging calls an FFI callback API and decodes a foreign UTF-16 pointer"
 )]
-#![allow(dead_code)]
+#![expect(
+    dead_code,
+    reason = "item is used only on some supported target or feature combinations"
+)]
 use log::*;
 
 use crate::platform::windows::tun::wintun_raw;
@@ -43,7 +46,6 @@ pub unsafe extern "C" fn default_logger(
 }
 fn default_logger_(level: wintun_raw::WINTUN_LOGGER_LEVEL, message: *const wintun_raw::WCHAR) {
     //Cant wait for RFC 2585
-    #[allow(unused_unsafe)]
     //Wintun will always give us a valid UTF16 null termineted string
     let msg = unsafe { U16CStr::from_ptr_str(message) };
     let utf8_msg = msg.to_string_lossy();

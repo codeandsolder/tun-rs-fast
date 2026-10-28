@@ -1,10 +1,7 @@
-#[allow(unused_imports)]
 use std::net::Ipv4Addr;
 use std::sync::mpsc::Receiver;
-#[allow(unused_imports)]
 use std::sync::Arc;
 
-#[allow(unused_imports)]
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -21,8 +18,6 @@ use tun_rs::DeviceBuilder;
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-#[allow(unused_imports)]
-use tun_rs::Layer;
 fn main() -> Result<(), std::io::Error> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("trace")).init();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -55,8 +50,6 @@ fn main_entry(_quit: Receiver<()>) -> Result<(), std::io::Error> {
     target_os = "netbsd",
 ))]
 fn main_entry(quit: Receiver<()>) -> Result<(), std::io::Error> {
-    #[allow(unused_imports)]
-    use std::net::IpAddr;
     let dev = Arc::new(
         DeviceBuilder::new()
             // .name("utun7")
@@ -87,14 +80,12 @@ fn main_entry(quit: Receiver<()>) -> Result<(), std::io::Error> {
         println!("mtu ipv6 = {:?}", dev.mtu_v6());
         println!("version = {:?}", dev.version());
     }
-    let _join = std::thread::spawn(move || {
+    let _join = std::thread::spawn(move || -> std::io::Result<()> {
         let mut buf = [0; 4096];
         loop {
             let amount = dev.recv(&mut buf)?;
             println!("{:?}", &buf[0..amount]);
         }
-        #[allow(unreachable_code)]
-        std::io::Result::Ok(())
     });
     _ = quit.recv();
     Ok(())

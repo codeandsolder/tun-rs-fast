@@ -61,8 +61,7 @@ use windows_sys::{
     },
 };
 
-#[allow(non_camel_case_types)]
-#[allow(non_snake_case)]
+#[expect(non_snake_case, reason = "name mirrors the platform or Win32 ABI")]
 #[repr(C)]
 #[derive(Clone, Copy)]
 /// Custom type to handle variable size SP_DRVINFO_DETAIL_DATA_W
@@ -89,6 +88,18 @@ pub fn decode_utf16(string: &[u16]) -> String {
     String::from_utf16_lossy(&string[..end])
 }
 
+#[cfg_attr(
+    not(any(
+        test,
+        feature = "async_io",
+        feature = "async_tokio",
+        feature = "interruptible"
+    )),
+    expect(
+        dead_code,
+        reason = "finite timeout conversion is used by interruptible I/O paths and their tests"
+    )
+)]
 pub(crate) fn finite_wait_timeout_millis(duration: std::time::Duration) -> u32 {
     let whole_millis = duration.as_millis();
     let has_fraction = duration.subsec_nanos() != duration.subsec_millis() * 1_000_000;
@@ -280,7 +291,6 @@ pub fn try_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Resu
         }
     }
 }
-#[allow(dead_code)]
 pub fn cancel_io_overlapped(handle: HANDLE, io_overlapped: &OVERLAPPED) -> io::Result<u32> {
     unsafe {
         CancelIoEx(handle, io_overlapped);

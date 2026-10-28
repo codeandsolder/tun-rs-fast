@@ -1,13 +1,8 @@
-#[allow(unused_imports)]
 use bytes::BytesMut;
-#[allow(unused_imports)]
 use std::net::Ipv4Addr;
-#[allow(unused_imports)]
 use std::sync::Arc;
-#[allow(unused_imports)]
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-use tun_rs::{AsyncDevice, DeviceBuilder, SyncDevice};
-#[allow(unused_imports)]
+use tun_rs::DeviceBuilder;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use tun_rs::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
 mod protocol_handle;
