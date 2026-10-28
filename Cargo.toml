@@ -166,3 +166,6 @@ required-features = ["interruptible"]
 [[example]]
 name = "read_timeout"
 required-features = ["interruptible"]
+
+[package.metadata.rust-skills2]
+generated-lint-boundaries = ["src/platform/windows/tun/wintun_raw.rs"]

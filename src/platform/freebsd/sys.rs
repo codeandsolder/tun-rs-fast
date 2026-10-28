@@ -1,4 +1,4 @@
-use libc::{c_char, c_int, c_uint, ifreq, sockaddr, sockaddr_in6, time_t, IFNAMSIZ};
+use libc::{c_char, c_int, ifreq, sockaddr, sockaddr_in6, time_t, IFNAMSIZ};
 use nix::{ioctl_read, ioctl_readwrite, ioctl_write_ptr};
 use std::ffi::c_void;
 
@@ -6,19 +6,6 @@ use std::ffi::c_void;
 pub const IN6_IFF_NODAD: i32 = 0x100;
 pub const ND6_IFF_AUTO_LINKLOCAL: i32 = 0x20;
 
-#[expect(
-    dead_code,
-    reason = "item is used only on some supported target or feature combinations"
-)]
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct ctl_info {
-    pub ctl_id: c_uint,
-    pub ctl_name: [c_char; 96],
-}
-
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ifaliasreq {
@@ -29,7 +16,6 @@ pub struct ifaliasreq {
     pub ifra_vhid: c_int,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifaliasreq {
@@ -52,7 +38,6 @@ pub struct in6_ifaliasreq {
 // 	pub ifra_vhid:c_int
 // }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifreq {
@@ -60,7 +45,6 @@ pub struct in6_ifreq {
     pub ifr_ifru: ifr_ifru_in6,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifr_ifru_in6 {
@@ -76,7 +60,6 @@ pub union ifr_ifru_in6 {
     pub ifru_scope_id: [u32; 16],
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_addrlifetime {
@@ -88,7 +71,6 @@ pub struct in6_addrlifetime {
 
 #[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 type u_quad_t = u64;
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifstat {
@@ -125,7 +107,6 @@ pub struct in6_ifstat {
     pub ifs6_out_mcast: u_quad_t, /* # of outbound multicast datagrams */
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct icmp6_ifstat {
@@ -206,14 +187,12 @@ pub struct icmp6_ifstat {
     pub ifs6_out_mlddone: u_quad_t,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ndireq {
     pub ifra_name: [c_char; IFNAMSIZ],
     pub ndi: nd_ifinfo,
 }
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct nd_ifinfo {

@@ -16,7 +16,6 @@ env:
 
 jobs:
   check:
-    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -49,7 +48,15 @@ jobs:
           cargo check --features async_tokio,async_framed --target x86_64-unknown-netbsd
           cargo check --features async_io,async_framed --target x86_64-unknown-netbsd
           cargo check --features interruptible --target x86_64-unknown-netbsd
-          cargo clippy --target x86_64-unknown-netbsd  --features async_io -- -D warnings
+          cargo clippy --target x86_64-unknown-netbsd --features async_io -- -D warnings
+
+          rustup target add x86_64-unknown-freebsd
+          cargo check --target x86_64-unknown-freebsd
+          cargo check --features async_tokio --target x86_64-unknown-freebsd
+          cargo check --features async_tokio,async_framed --target x86_64-unknown-freebsd
+          cargo check --features async_io,async_framed --target x86_64-unknown-freebsd
+          cargo check --features interruptible --target x86_64-unknown-freebsd
+          cargo clippy --target x86_64-unknown-freebsd --features async_io -- -D warnings
           
           rustup target add i686-pc-windows-msvc
           cargo check --target i686-pc-windows-msvc
@@ -57,6 +64,7 @@ jobs:
           cargo check --features async_tokio,async_framed --target i686-pc-windows-msvc
           cargo check --features async_io,async_framed --target i686-pc-windows-msvc
           cargo check --features interruptible --target i686-pc-windows-msvc
+          cargo clippy --target i686-pc-windows-msvc --features async_tokio -- -D warnings
 
   build_n_test:
     strategy:
@@ -87,6 +95,10 @@ jobs:
             echo 'allow(...) attributes are forbidden in Rust sources; use a reasoned expect(...)' >&2
             exit 1
           fi
+
+      - name: Enforce source lint suppression policy
+        if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
+        uses: codeandsolder/rust-skills2/.github/actions/source-lint-policy@3382c6baeebc0b2ddde03652b60d6ef6719447bb
 
       - name: Stable compile checks
         if: ${{ !cancelled() }}

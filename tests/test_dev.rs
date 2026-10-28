@@ -2,21 +2,15 @@
     unsafe_code,
     reason = "integration tests explicitly exercise the raw-fd ownership API contract"
 )]
-#![expect(
-    clippy::unwrap_used,
-    clippy::expect_used,
-    clippy::panic,
-    reason = "assertive failure is appropriate in test code"
-)]
-#![expect(
-    unused_imports,
-    reason = "import is used only on some supported target or feature combinations"
-)]
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+#[cfg(not(feature = "async_io"))]
+use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(not(feature = "async_io"))]
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(not(feature = "async_io"))]
 use pnet_packet::ip::IpNextHeaderProtocols;
+#[cfg(not(feature = "async_io"))]
 use pnet_packet::Packet;
 #[cfg(any(
     target_os = "windows",
@@ -27,6 +21,7 @@ use pnet_packet::Packet;
     target_os = "netbsd",
 ))]
 use tun_rs::DeviceBuilder;
+#[cfg(unix)]
 use tun_rs::SyncDevice;
 
 #[cfg(any(
@@ -690,7 +685,7 @@ fn linux_rejects_packet_information_with_vnet_offload() {
 /// Run with:
 ///   cargo test --test test_dev -- --ignored offload_mask_cleared
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-#[cfg(not(any(feature = "async_tokio", feature = "async_io")))]
+#[cfg(not(feature = "async_io"))]
 #[test]
 #[ignore]
 fn test_offload_mask_cleared_on_reattach_without_offload() {

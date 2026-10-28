@@ -1,11 +1,10 @@
-use libc::{c_char, c_int, c_uint, sockaddr, sockaddr_in6, sockaddr_storage, time_t, IFNAMSIZ};
+use libc::{c_char, c_int, sockaddr, sockaddr_in6, sockaddr_storage, time_t, IFNAMSIZ};
 use nix::{ioctl_read, ioctl_readwrite, ioctl_write_ptr};
 use std::ffi::c_void;
 
 // https://github.com/justincormack/netbsd-src/blob/master/src/sys/sys/sockio.h
 // https://github.com/justincormack/netbsd-src/blob/master/src/sys/net/if.h
 pub const IN6_IFF_NODAD: i32 = 0x0020;
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ifreq {
@@ -13,7 +12,6 @@ pub struct ifreq {
     pub ifr_ifru: ifr_ifru,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifr_ifru {
@@ -31,7 +29,6 @@ pub union ifr_ifru {
     pub ifru_b: ifru_b,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ifru_b {
@@ -39,29 +36,6 @@ pub struct ifru_b {
     pub b_buf: *mut c_void,
 }
 
-#[expect(
-    dead_code,
-    reason = "item is used only on some supported target or feature combinations"
-)]
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct ctl_info {
-    pub ctl_id: c_uint,
-    pub ctl_name: [c_char; 96],
-}
-#[expect(
-    dead_code,
-    reason = "item is used only on some supported target or feature combinations"
-)]
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub union ifra_ifrau {
-    pub ifrau_addr: sockaddr,
-    pub ifrau_align: c_int,
-}
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct ifaliasreq {
@@ -71,7 +45,6 @@ pub struct ifaliasreq {
     pub ifra_mask: sockaddr,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_aliasreq {
@@ -83,7 +56,6 @@ pub struct in6_aliasreq {
     pub ifra_lifetime: in6_addrlifetime,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifreq {
@@ -91,7 +63,6 @@ pub struct in6_ifreq {
     pub ifr_ifru: ifr_ifru_in6,
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub union ifr_ifru_in6 {
@@ -107,7 +78,6 @@ pub union ifr_ifru_in6 {
     pub ifru_scope_id: [u32; 16],
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_addrlifetime {
@@ -119,7 +89,6 @@ pub struct in6_addrlifetime {
 
 #[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 type u_quad_t = u64;
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct in6_ifstat {
@@ -156,7 +125,6 @@ pub struct in6_ifstat {
     pub ifs6_out_mcast: u_quad_t, /* # of outbound multicast datagrams */
 }
 
-#[expect(non_camel_case_types, reason = "name mirrors the platform C ABI")]
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct icmp6_ifstat {

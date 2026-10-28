@@ -2,10 +2,6 @@
     unsafe_code,
     reason = "Wintun logging calls an FFI callback API and decodes a foreign UTF-16 pointer"
 )]
-#![expect(
-    dead_code,
-    reason = "item is used only on some supported target or feature combinations"
-)]
 use log::*;
 
 use crate::platform::windows::tun::wintun_raw;
@@ -14,10 +10,6 @@ use widestring::U16CStr;
 /// Sets the logger wintun will use when logging. Maps to the WintunSetLogger C function
 pub fn set_logger(win_tun: &wintun_raw::wintun, f: wintun_raw::WINTUN_LOGGER_CALLBACK) {
     unsafe { win_tun.WintunSetLogger(f) };
-}
-
-pub fn reset_logger(win_tun: &wintun_raw::wintun) {
-    set_logger(win_tun, None);
 }
 
 /// The logger that is active by default. Logs messages to the log crate
