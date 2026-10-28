@@ -1,0 +1,26 @@
+name: Python policy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  python-policy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Enforce CI-only Python
+        uses: codeandsolder/rust-skills2/.github/actions/python-strict@94a3b140fac9fc0b2d413871c247951afc660eff # main
+        with:
+          ban-python-outside-ci: "true"
