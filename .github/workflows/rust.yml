@@ -98,7 +98,7 @@ jobs:
 
       - name: Enforce source lint suppression policy
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
-        uses: codeandsolder/rust-skills2/.github/actions/source-lint-policy@3382c6baeebc0b2ddde03652b60d6ef6719447bb
+        uses: codeandsolder/rust-skills2/.github/actions/source-lint-policy@9449a52f9cfe2a4dfe511138e2fb688459314a9b
 
       - name: Stable compile checks
         if: ${{ !cancelled() }}
