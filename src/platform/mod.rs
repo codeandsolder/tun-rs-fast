@@ -59,11 +59,34 @@ use std::ops::Deref;
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 
-#[allow(dead_code)]
+#[cfg_attr(
+    any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "tvos",
+        all(target_os = "linux", target_env = "ohos")
+    ),
+    expect(
+        dead_code,
+        reason = "generic mobile and OHOS backends do not expose Ethernet address helpers"
+    )
+)]
 pub(crate) const ETHER_ADDR_LEN: u8 = 6;
 
 #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
-#[allow(dead_code)]
+#[cfg_attr(
+    any(
+        target_os = "windows",
+        target_os = "android",
+        target_os = "ios",
+        target_os = "tvos",
+        all(target_os = "linux", target_env = "ohos")
+    ),
+    expect(
+        dead_code,
+        reason = "these backends do not expose address enumeration through the shared getifaddrs helper"
+    )
+)]
 pub(crate) fn get_if_addrs_by_name(if_name: String) -> std::io::Result<Vec<Interface>> {
     let addrs = getifaddrs::getifaddrs()?;
     let ifs = addrs.filter(|v| v.name == if_name).collect();
@@ -884,7 +907,6 @@ impl BorrowedSyncDevice<'_> {
     /// and therefore will not close it when dropped.  
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
     pub unsafe fn borrow_raw(fd: RawFd) -> std::io::Result<Self> {
-        #[allow(unused_unsafe)]
         unsafe {
             Ok(Self {
                 dev: SyncDevice::borrow_raw(fd)?,

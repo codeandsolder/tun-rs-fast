@@ -2,13 +2,16 @@
     unsafe_code,
     reason = "integration tests explicitly exercise the raw-fd ownership API contract"
 )]
-#![allow(
+#![expect(
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
     reason = "assertive failure is appropriate in test code"
 )]
-#![allow(unused_imports)]
+#![expect(
+    unused_imports,
+    reason = "import is used only on some supported target or feature combinations"
+)]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

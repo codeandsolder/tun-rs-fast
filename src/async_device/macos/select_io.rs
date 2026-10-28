@@ -276,7 +276,10 @@ impl AsyncDevice {
             }
         }
     }
-    #[allow(dead_code)]
+    #[expect(
+        dead_code,
+        reason = "item is used only on some supported target or feature combinations"
+    )]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,

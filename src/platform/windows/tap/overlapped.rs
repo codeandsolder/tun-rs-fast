@@ -27,7 +27,16 @@ impl ReadOverlapped {
     pub fn try_read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.try_read_raw(buf.as_mut_ptr(), buf.len())
     }
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(all(
+            feature = "async_framed",
+            any(feature = "async_io", feature = "async_tokio")
+        )),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O"
+        )
+    )]
     pub fn try_read_uninit(&mut self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.try_read_raw(buf.as_mut_ptr(), buf.len())
     }
@@ -83,6 +92,17 @@ pub(crate) struct WriteOverlapped {
     read_buffer: BytesMut,
     inner: OwnedOVERLAPPED,
 }
+#[cfg_attr(
+    not(any(
+        feature = "async_io",
+        feature = "async_tokio",
+        feature = "interruptible"
+    )),
+    expect(
+        dead_code,
+        reason = "interruptible helpers are used by async cancellation or the interruptible sync API"
+    )
+)]
 impl WriteOverlapped {
     pub fn new(file_handle: Arc<OwnedHandle>) -> io::Result<WriteOverlapped> {
         let inner = OwnedOVERLAPPED::new(file_handle)?;
@@ -218,6 +238,17 @@ impl OverlappedEvent {
     pub fn wait(&self) -> io::Result<()> {
         ffi::wait_for_single_object(self.event.as_raw_handle(), INFINITE)
     }
+    #[cfg_attr(
+        not(any(
+            feature = "async_io",
+            feature = "async_tokio",
+            feature = "interruptible"
+        )),
+        expect(
+            dead_code,
+            reason = "interruptible helpers are used by async cancellation or the interruptible sync API"
+        )
+    )]
     pub fn wait_interruptible(
         &self,
         interrupt_event: &OwnedHandle,

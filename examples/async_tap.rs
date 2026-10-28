@@ -1,9 +1,7 @@
-#![allow(unused_imports)]
 use pnet_packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet_packet::Packet;
 use std::io;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -23,6 +21,8 @@ use tun_rs::DeviceBuilder;
 ))]
 use tun_rs::Layer;
 
+#[path = "protocol_handle/ethernet.rs"]
+mod ethernet_protocol;
 mod protocol_handle;
 
 #[cfg(any(
@@ -55,12 +55,12 @@ async fn main() -> io::Result<()> {
                 if let Some(packet) = EthernetPacket::new(&buf[..len?]){
                         match packet.get_ethertype(){
                             EtherTypes::Ipv4=>{
-                                if let Some(buf) = protocol_handle::ping_ethernet(packet.packet()){
+                                if let Some(buf) = ethernet_protocol::ping_ethernet(packet.packet()){
                                     dev.send(&buf).await?;
                                 }
                             }
                             EtherTypes::Arp=>{
-                                  if let Some(rs) = protocol_handle::arp(packet.packet()) {
+                                  if let Some(rs) = ethernet_protocol::arp(packet.packet()) {
                                     dev.send(&rs).await?;
                                 }
                             }

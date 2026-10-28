@@ -86,7 +86,16 @@ impl Fd {
         Ok(amount as usize)
     }
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(
+        all(
+            not(feature = "async_framed"),
+            not(all(test, any(feature = "async_io", feature = "async_tokio")))
+        ),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O outside readiness tests"
+        )
+    )]
     pub(crate) fn read_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let fd = self.as_raw_fd();
         let amount = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };

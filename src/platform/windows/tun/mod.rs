@@ -177,7 +177,16 @@ impl WinTunAdapter {
         }
         Err(io::Error::other("The interface has been disabled"))
     }
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(all(
+            feature = "async_framed",
+            any(feature = "async_io", feature = "async_tokio")
+        )),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O"
+        )
+    )]
     fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         let guard = self.session.read().unwrap();
         if let Some(session) = guard.as_ref() {
@@ -185,6 +194,17 @@ impl WinTunAdapter {
         }
         Err(io::Error::other("The interface has been disabled"))
     }
+    #[cfg_attr(
+        not(any(
+            feature = "async_io",
+            feature = "async_tokio",
+            feature = "interruptible"
+        )),
+        expect(
+            dead_code,
+            reason = "interruptible helpers are used by async cancellation or the interruptible sync API"
+        )
+    )]
     fn wait_readable_interruptible(
         &self,
         interrupt_event: &OwnedHandle,
@@ -292,7 +312,16 @@ impl WinTunSession {
     fn try_recv(&self, buf: &mut [u8]) -> io::Result<usize> {
         self.try_recv_raw(buf.as_mut_ptr(), buf.len())
     }
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(all(
+            feature = "async_framed",
+            any(feature = "async_io", feature = "async_tokio")
+        )),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O"
+        )
+    )]
     fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.try_recv_raw(buf.as_mut_ptr(), buf.len())
     }
@@ -321,6 +350,17 @@ impl WinTunSession {
         unsafe { win_tun.WintunReleaseReceivePacket(handle, ptr) };
         Ok(size)
     }
+    #[cfg_attr(
+        not(any(
+            feature = "async_io",
+            feature = "async_tokio",
+            feature = "interruptible"
+        )),
+        expect(
+            dead_code,
+            reason = "interruptible helpers are used by async cancellation or the interruptible sync API"
+        )
+    )]
     fn wait_readable_interruptible(
         &self,
         inner_event: &OwnedHandle,
@@ -543,13 +583,33 @@ impl TunDevice {
         self.win_tun_adapter.send(buf, None)
     }
 
-    #[allow(dead_code)]
     #[inline]
+    #[cfg_attr(
+        not(any(
+            feature = "async_io",
+            feature = "async_tokio",
+            feature = "interruptible"
+        )),
+        expect(
+            dead_code,
+            reason = "interruptible helpers are used by async cancellation or the interruptible sync API"
+        )
+    )]
     pub(crate) fn send_interruptible(&self, buf: &[u8], event: &OwnedHandle) -> io::Result<usize> {
         self.win_tun_adapter.send(buf, Some(event))
     }
-    #[allow(dead_code)]
     #[inline]
+    #[cfg_attr(
+        not(any(
+            feature = "async_io",
+            feature = "async_tokio",
+            feature = "interruptible"
+        )),
+        expect(
+            dead_code,
+            reason = "interruptible helpers are used by async cancellation or the interruptible sync API"
+        )
+    )]
     pub(crate) fn wait_readable_interruptible(
         &self,
         interrupt_event: &OwnedHandle,
@@ -571,7 +631,16 @@ impl TunDevice {
         self.win_tun_adapter.try_recv(buf)
     }
     #[inline]
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(all(
+            feature = "async_framed",
+            any(feature = "async_io", feature = "async_tokio")
+        )),
+        expect(
+            dead_code,
+            reason = "uninitialized reads are consumed only by async framed I/O"
+        )
+    )]
     pub(crate) fn try_recv_uninit(&self, buf: &mut UninitSlice) -> io::Result<usize> {
         self.win_tun_adapter.try_recv_uninit(buf)
     }

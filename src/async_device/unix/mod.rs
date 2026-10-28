@@ -74,7 +74,6 @@ impl Deref for AsyncDevice {
 }
 
 impl AsyncDevice {
-    #[allow(dead_code)]
     pub fn new(device: SyncDevice) -> io::Result<AsyncDevice> {
         AsyncDevice::new_dev(device.0)
     }
@@ -94,7 +93,6 @@ impl AsyncDevice {
     /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
     /// and therefore will not close it when dropped.  
     /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
-    #[allow(dead_code)]
     pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
         // SAFETY: borrow_raw forwards its documented borrowed-descriptor lifetime contract.
         AsyncDevice::new_dev(unsafe { DeviceImpl::borrow_raw(fd)? })

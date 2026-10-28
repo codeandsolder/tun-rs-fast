@@ -1,8 +1,5 @@
-#[allow(unused_imports)]
 use std::net::Ipv4Addr;
-#[allow(unused_imports)]
 use std::sync::{mpsc::Receiver, Arc};
-#[allow(unused_imports)]
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -11,7 +8,6 @@ use std::sync::{mpsc::Receiver, Arc};
     target_os = "openbsd",
 ))]
 use tun_rs::DeviceBuilder;
-#[allow(unused_imports)]
 use tun_rs::SyncDevice;
 mod protocol_handle;
 fn main() -> std::io::Result<()> {
@@ -57,7 +53,7 @@ fn main_entry(quit: Receiver<()>) -> std::io::Result<()> {
 
     let mut buf = [0; 4096];
 
-    std::thread::spawn(move || {
+    std::thread::spawn(move || -> std::io::Result<()> {
         loop {
             let amount = dev.recv(&mut buf);
             println!("amount == {amount:?}");
@@ -65,14 +61,11 @@ fn main_entry(quit: Receiver<()>) -> std::io::Result<()> {
             let pkt = &buf[0..amount];
             handle_pkt(pkt, &dev).unwrap();
         }
-        #[allow(unreachable_code)]
-        Ok::<(), std::io::Error>(())
     });
     quit.recv().expect("Quit error.");
     Ok(())
 }
 
-#[allow(dead_code)]
 fn handle_pkt(pkt: &[u8], dev: &SyncDevice) -> std::io::Result<()> {
     if let Some(buf) = protocol_handle::ping(pkt) {
         dev.send(&buf)?;

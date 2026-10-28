@@ -287,7 +287,18 @@ pub(crate) struct DeviceConfig {
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     pub(crate) persist: Option<bool>,
     /// Specifies whether the interface operates at L2 or L3.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        any(
+            target_os = "android",
+            target_os = "ios",
+            target_os = "tvos",
+            all(target_os = "linux", target_env = "ohos")
+        ),
+        expect(
+            dead_code,
+            reason = "generic mobile and OHOS backends do not consume the layer setting"
+        )
+    )]
     pub(crate) layer: Option<Layer>,
     /// Device GUID on Windows.
     #[cfg(windows)]

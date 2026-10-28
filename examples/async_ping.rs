@@ -1,8 +1,6 @@
-#[allow(unused_imports)]
 use std::net::Ipv4Addr;
-#[allow(unused_imports)]
 use std::sync::Arc;
-#[allow(unused_imports)]
+use tun_rs::AsyncDevice;
 #[cfg(any(
     target_os = "windows",
     all(target_os = "linux", not(target_env = "ohos")),
@@ -12,8 +10,6 @@ use std::sync::Arc;
     target_os = "netbsd",
 ))]
 use tun_rs::DeviceBuilder;
-#[allow(unused_imports)]
-use tun_rs::{AsyncDevice, SyncDevice};
 
 mod protocol_handle;
 
@@ -103,7 +99,6 @@ fn main() -> std::io::Result<()> {
     unimplemented!()
 }
 
-#[allow(dead_code)]
 async fn handle_pkt(pkt: &[u8], dev: &AsyncDevice) -> std::io::Result<()> {
     if let Some(buf) = protocol_handle::ping(pkt) {
         dev.send(&buf).await?;

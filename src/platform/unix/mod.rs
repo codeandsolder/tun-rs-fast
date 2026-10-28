@@ -15,7 +15,13 @@ pub(crate) use sockaddr::sockaddr_union;
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-#[allow(unused_imports)]
+#[cfg_attr(
+    not(all(target_os = "linux", not(target_env = "ohos"))),
+    expect(
+        unused_imports,
+        reason = "only the Linux backend imports this shared sockaddr conversion helper"
+    )
+)]
 pub(crate) use sockaddr::ipaddr_to_sockaddr;
 
 mod fd;
@@ -43,7 +49,13 @@ pub(crate) mod device;
 /// A TUN device for Android/iOS/...
 pub struct DeviceImpl {
     pub(crate) tun: Tun,
-    #[allow(dead_code)]
+    #[cfg_attr(
+        any(target_os = "android", all(target_os = "linux", target_env = "ohos")),
+        expect(
+            dead_code,
+            reason = "generic Android and OHOS backends do not expose operations that take the device lock"
+        )
+    )]
     pub(crate) op_lock: std::sync::RwLock<()>,
 }
 #[cfg(all(

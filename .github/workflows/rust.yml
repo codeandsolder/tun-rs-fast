@@ -79,6 +79,15 @@ jobs:
         if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
         run: cargo +1.99.1 fmt --all -- --check
 
+      - name: Reject allow attributes
+        if: ${{ matrix.os == 'ubuntu-latest' && !cancelled() }}
+        shell: bash
+        run: |
+          if git grep -n -E '(^|[^[:alnum:]_])allow[[:space:]]*\(' -- '*.rs'; then
+            echo 'allow(...) attributes are forbidden in Rust sources; use a reasoned expect(...)' >&2
+            exit 1
+          fi
+
       - name: Stable compile checks
         if: ${{ !cancelled() }}
         run: |

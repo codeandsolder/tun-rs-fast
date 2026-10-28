@@ -82,7 +82,13 @@ fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-#[allow(dead_code)]
+#[cfg_attr(
+    all(not(all(target_os = "linux", not(target_env = "ohos"))), not(test)),
+    expect(
+        dead_code,
+        reason = "non-Linux backends retain this shared conversion helper for tests only"
+    )
+)]
 pub(crate) unsafe fn ipaddr_to_sockaddr<T>(
     src_addr: T,
     src_port: u16,
