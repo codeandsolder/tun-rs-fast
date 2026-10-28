@@ -4,6 +4,7 @@
 )]
 
 use crate::DeviceImpl;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::future::Future;
 use std::io;
@@ -276,10 +277,7 @@ impl AsyncDevice {
             }
         }
     }
-    #[expect(
-        dead_code,
-        reason = "item is used only on some supported target or feature combinations"
-    )]
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,

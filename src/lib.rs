@@ -1,12 +1,3 @@
-#![cfg_attr(
-    test,
-    expect(
-        clippy::unwrap_used,
-        clippy::expect_used,
-        clippy::panic,
-        reason = "assertive failure is appropriate in test code"
-    )
-)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 /*!
@@ -244,6 +235,9 @@ pub use async_device::*;
 ))]
 mod builder;
 mod platform;
+
+#[cfg(all(target_vendor = "apple", feature = "utun_fd"))]
+pub use platform::apple::utun_fd;
 
 /// Length of the protocol information header used on some platforms.
 ///
