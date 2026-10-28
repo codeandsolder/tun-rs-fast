@@ -1,11 +1,15 @@
-#![expect(
-    unsafe_code,
-    reason = "the Windows async backend copies into caller-provided uninitialized storage after checked blocking I/O"
+#![cfg_attr(
+    feature = "async_framed",
+    expect(
+        unsafe_code,
+        reason = "the Windows framed receive path copies checked blocking I/O into caller-provided uninitialized storage"
+    )
 )]
 
 use crate::platform::windows::{ffi, InterruptEvent};
 use crate::platform::DeviceImpl;
 use crate::SyncDevice;
+#[cfg(feature = "async_framed")]
 use bytes::buf::UninitSlice;
 use std::future::Future;
 use std::io;
@@ -175,6 +179,7 @@ impl AsyncDevice {
             }
         }
     }
+    #[cfg(feature = "async_framed")]
     pub(crate) fn poll_recv_uninit(
         &self,
         cx: &mut Context<'_>,
