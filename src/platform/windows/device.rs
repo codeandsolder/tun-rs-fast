@@ -113,10 +113,10 @@ impl DeviceImpl {
                         )))?
                     }
                     let tap =
-                        TapDevice::open(HARDWARE_ID, name, persist, config.mac_address.as_ref())?;
+                        TapDevice::open(HARDWARE_ID, name, persist, config.mac_address.as_deref())?;
                     break tap;
                 }
-                let tap = TapDevice::create(HARDWARE_ID, persist, config.mac_address.as_ref())?;
+                let tap = TapDevice::create(HARDWARE_ID, persist, config.mac_address.as_deref())?;
                 if let Err(e) = tap.set_name(name) {
                     if config.dev_name.is_some() {
                         Err(e)?

@@ -56,7 +56,7 @@ impl TapDevice {
         self.index
     }
     /// Creates a new tap-windows device
-    pub fn create(component_id: &str, persist: bool, mut mac: Option<&String>) -> io::Result<Self> {
+    pub fn create(component_id: &str, persist: bool, mut mac: Option<&str>) -> io::Result<Self> {
         let luid = iface::create_interface(component_id)?;
         let mut tap_interface = TapInterface {
             luid,
