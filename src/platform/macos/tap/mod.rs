@@ -107,7 +107,7 @@ impl Tap {
             let s_ndrv_fd = libc::socket(libc::AF_NDRV, libc::SOCK_RAW, 0);
             let s_ndrv_fd = Fd::new(s_ndrv_fd)?;
             s_ndrv_fd.set_cloexec()?;
-            let mut ifr = new_ifreq(config.dev_name.as_ref())?;
+            let mut ifr = new_ifreq(config.dev_name.as_deref())?;
             if let Err(e) = siocifcreate(s_ndrv_fd.inner, &mut ifr) {
                 if e != Errno::EEXIST || !config.reuse_dev.unwrap_or(true) {
                     return Err(e.into());
@@ -122,7 +122,7 @@ impl Tap {
                 name: dev_name,
             };
             std::thread::sleep(std::time::Duration::from_millis(1));
-            let mut peer_ifr = new_ifreq(config.peer_feth.as_ref())?;
+            let mut peer_ifr = new_ifreq(config.peer_feth.as_deref())?;
             if let Err(e) = siocifcreate(s_ndrv_fd.inner, &mut peer_ifr) {
                 if e != Errno::EEXIST || !config.reuse_dev.unwrap_or(true) {
                     return Err(e.into());
@@ -213,10 +213,10 @@ impl Tap {
     // pub fn as_s_bpf_fd(&self) -> RawFd {
     //     self.s_bpf_fd.as_raw_fd()
     // }
-    pub fn name(&self) -> &String {
+    pub fn name(&self) -> &str {
         &self.dev_feth.name
     }
-    pub fn peer_name(&self) -> &String {
+    pub fn peer_name(&self) -> &str {
         &self.peer_feth.name
     }
     pub fn is_nonblocking(&self) -> io::Result<bool> {
@@ -481,9 +481,9 @@ fn open_bpf() -> io::Result<Fd> {
         "No available /dev/bpf",
     ))
 }
-fn new_ifreq(name: Option<&String>) -> io::Result<ifreq> {
+fn new_ifreq(name: Option<&str>) -> io::Result<ifreq> {
     if let Some(name) = name {
-        new_ifreq_str(name.as_str())
+        new_ifreq_str(name)
     } else {
         new_ifreq_str(FETH)
     }
