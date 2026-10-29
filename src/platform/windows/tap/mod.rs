@@ -123,7 +123,7 @@ impl TapDevice {
         component_id: &str,
         name: &str,
         persist: bool,
-        mac: Option<&String>,
+        mac: Option<&str>,
     ) -> io::Result<Self> {
         let luid = ffi::alias_to_luid(name)?;
         iface::check_interface(component_id, &luid)?;
