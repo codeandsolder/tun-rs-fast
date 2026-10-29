@@ -334,7 +334,7 @@ pub(crate) struct DeviceConfig {
     #[cfg(target_os = "linux")]
     pub(crate) multi_queue: Option<bool>,
 }
-type IPV4 = (
+type Ipv4Config = (
     io::Result<Ipv4Addr>,
     io::Result<u8>,
     Option<io::Result<Ipv4Addr>>,
@@ -863,7 +863,7 @@ pub struct DeviceBuilder {
     mtu: Option<u16>,
     #[cfg(windows)]
     mtu_v6: Option<u16>,
-    ipv4: Option<IPV4>,
+    ipv4: Option<Ipv4Config>,
     ipv6: Option<Vec<(io::Result<Ipv6Addr>, io::Result<u8>)>>,
     layer: Option<Layer>,
     #[cfg(any(
