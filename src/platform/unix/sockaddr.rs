@@ -31,6 +31,7 @@ unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAdd
     }
 }
 
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub(crate) fn sockaddr_v4_to_rs_addr(sa: &libc::sockaddr) -> Option<std::net::SocketAddr> {
     if libc::c_int::from(sa.sa_family) != libc::AF_INET {
         return None;

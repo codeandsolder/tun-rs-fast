@@ -22,7 +22,9 @@ pub(crate) use sockaddr::sockaddr_union;
         reason = "only the Linux backend imports this shared sockaddr conversion helper"
     )
 )]
-pub(crate) use sockaddr::{ipaddr_to_sockaddr, sockaddr_v4_to_rs_addr};
+pub(crate) use sockaddr::ipaddr_to_sockaddr;
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+pub(crate) use sockaddr::sockaddr_v4_to_rs_addr;
 
 mod fd;
 pub(crate) use self::fd::Fd;
