@@ -56,6 +56,43 @@ use getifaddrs::Interface;
 #[cfg(unix)]
 use std::io::{IoSlice, IoSliceMut};
 use std::ops::Deref;
+
+pub(crate) fn read_operation_lock(
+    lock: &std::sync::RwLock<()>,
+) -> std::sync::RwLockReadGuard<'_, ()> {
+    lock.read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+pub(crate) fn write_operation_lock(
+    lock: &std::sync::RwLock<()>,
+) -> std::sync::RwLockWriteGuard<'_, ()> {
+    lock.write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod operation_lock_tests {
+    use super::{read_operation_lock, write_operation_lock};
+    use std::sync::RwLock;
+
+    #[test]
+    fn operation_locks_recover_after_writer_panics() {
+        let lock = RwLock::new(());
+        assert!(std::panic::catch_unwind(|| {
+            let _guard = match lock.write() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            std::panic::resume_unwind(Box::new(()));
+        })
+        .is_err());
+        assert!(lock.is_poisoned());
+
+        drop(read_operation_lock(&lock));
+        drop(write_operation_lock(&lock));
+    }
+}
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
 
