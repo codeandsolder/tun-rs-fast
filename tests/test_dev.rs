@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "integration tests explicitly exercise the raw-fd ownership API contract"
+    reason = "integration tests explicitly exercise Unix typed-fd ownership and adoption contracts"
 )]
 #[cfg(not(feature = "async_io"))]
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -434,30 +434,40 @@ fn create_tun() {
     assert_eq!(dev_name.as_str(), name);
     #[cfg(unix)]
     {
-        use std::os::fd::IntoRawFd;
-        let fd = device.into_raw_fd();
-        unsafe {
-            let sync_device = SyncDevice::from_fd(fd).unwrap();
-            let dev_name = sync_device.name().unwrap();
-            assert_eq!(dev_name, name);
+        use std::os::fd::AsFd;
+        use tun_rs::BorrowedSyncDevice;
+
+        {
+            let borrowed = BorrowedSyncDevice::from_fd(device.as_fd()).unwrap();
+            assert_eq!(borrowed.name().unwrap(), name);
         }
+        assert_eq!(device.name().unwrap(), name);
+
+        let fd = device.into_fd();
+        let sync_device = SyncDevice::from_fd(fd).unwrap();
+        let dev_name = sync_device.name().unwrap();
+        assert_eq!(dev_name, name);
     }
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[test]
-fn adopted_raw_fd_rejects_virtio_header_framing() {
+fn adopted_fd_rejects_virtio_header_framing_and_consumes_ownership() {
     use std::io;
-    use std::os::fd::IntoRawFd;
+    use std::os::fd::AsRawFd;
 
     let device = DeviceBuilder::new().offload(true).build_sync().unwrap();
-    let fd = device.into_raw_fd();
+    let fd = device.into_fd();
+    let raw_fd = fd.as_raw_fd();
 
-    let error = match unsafe { SyncDevice::from_fd(fd) } {
+    let error = match SyncDevice::from_fd(fd) {
         Ok(_) => panic!("adopting an IFF_VNET_HDR descriptor unexpectedly succeeded"),
         Err(error) => error,
     };
     assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+    // Ownership moved into from_fd even though platform validation rejected it.
+    assert_eq!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) }, -1);
+    assert_eq!(io::Error::last_os_error().raw_os_error(), Some(libc::EBADF));
 }
 
 #[cfg(any(
@@ -484,13 +494,10 @@ fn create_tap() {
     assert_eq!(dev_name.as_str(), name);
     #[cfg(all(unix, not(target_os = "macos")))]
     {
-        use std::os::fd::IntoRawFd;
-        let fd = device.into_raw_fd();
-        unsafe {
-            let sync_device = SyncDevice::from_fd(fd).unwrap();
-            let dev_name = sync_device.name().unwrap();
-            assert_eq!(dev_name, name);
-        }
+        let fd = device.into_fd();
+        let sync_device = SyncDevice::from_fd(fd).unwrap();
+        let dev_name = sync_device.name().unwrap();
+        assert_eq!(dev_name, name);
     }
 }
 

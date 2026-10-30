@@ -18,7 +18,7 @@ On iOS and tvOS, you cannot create TUN interfaces directly. Instead, you must:
 1. Use `NEPacketTunnelProvider` to establish a VPN tunnel
 2. Get the file descriptor from the packet flow
 3. Pass the file descriptor to your Rust code via FFI
-4. Use `tun_rs::SyncDevice::from_fd()` or `tun_rs::AsyncDevice::from_fd()` to manage the tunnel
+4. Wrap the framework-owned descriptor as `BorrowedFd` at the FFI boundary and use `BorrowedSyncDevice::from_fd()` or `BorrowedAsyncDevice::from_fd()`
 
 ## Getting the File Descriptor
 
@@ -271,7 +271,7 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 ### Rust Side (FFI + tun-rs)
 
 ```rust
-use std::os::unix::io::RawFd;
+use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tun_rs::SyncDevice;
@@ -284,14 +284,15 @@ pub extern "C" fn start_tun(fd: std::os::raw::c_int) {
     // Relaxed ordering is sufficient for a simple flag with no dependent variables
     SHOULD_STOP.store(false, Ordering::Relaxed);
     
-    // Create device from file descriptor
-    let tun = unsafe {
-        match SyncDevice::from_fd(fd as RawFd) {
-            Ok(device) => device,
-            Err(e) => {
-                eprintln!("Failed to create device from fd {}: {:?}", fd, e);
-                return;
-            }
+    // NetworkExtension retains ownership. The only unsafe operation is translating
+    // the foreign integer into Rust's lifetime-carrying borrowed descriptor.
+    // SAFETY: PacketTunnelProvider keeps the tunnel fd open for this processing loop.
+    let fd_ref = unsafe { BorrowedFd::borrow_raw(fd) };
+    let tun = match tun_rs::BorrowedSyncDevice::from_fd(fd_ref) {
+        Ok(device) => device,
+        Err(e) => {
+            eprintln!("Failed to create device from fd {}: {:?}", fd, e);
+            return;
         }
     };
     
@@ -346,10 +347,10 @@ pub extern "C" fn stop_tun() {
 If you prefer async operations:
 
 ```rust
-use std::os::unix::io::RawFd;
+use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Runtime;
-use tun_rs::AsyncDevice;
+use tun_rs::BorrowedAsyncDevice;
 
 static SHOULD_STOP: AtomicBool = AtomicBool::new(false);
 
@@ -368,14 +369,13 @@ pub extern "C" fn start_tun(fd: std::os::raw::c_int) {
     };
     
     rt.block_on(async move {
-        // Create async device from file descriptor
-        let tun = unsafe {
-            match AsyncDevice::from_fd(fd as RawFd) {
-                Ok(device) => device,
-                Err(e) => {
-                    eprintln!("Failed to create device from fd {}: {:?}", fd, e);
-                    return;
-                }
+        // SAFETY: PacketTunnelProvider keeps the tunnel fd open for this processing loop.
+        let fd_ref = unsafe { BorrowedFd::borrow_raw(fd) };
+        let tun = match BorrowedAsyncDevice::from_fd(fd_ref) {
+            Ok(device) => device,
+            Err(e) => {
+                eprintln!("Failed to create device from fd {}: {:?}", fd, e);
+                return;
             }
         };
         

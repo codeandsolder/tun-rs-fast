@@ -62,9 +62,9 @@
 | **iOS**      | ✅  | -   | Via NEPacketTunnelProvider |
 | **tvOS**     | ✅  | -   | Via NEPacketTunnelProvider |
 | **OpenHarmony** | ✅ | -  | TUN support |
-| **Other Unix*** | ✅ | -  | Via raw file descriptor |
+| **Other Unix*** | ✅ | -  | Via typed Unix file descriptor |
 
-> **Note**: For unlisted Unix-like platforms, you can use the raw file descriptor API to integrate with platform-specific TUN implementations.
+> **Note**: For unlisted Unix-like platforms, you can use the `OwnedFd` / `BorrowedFd` API to integrate with platform-specific TUN implementations.
 
 ## 🚀 Performance Benchmarks
 
@@ -224,47 +224,32 @@ async fn main() -> std::io::Result<()> {
 }
 ````
 
-### Using Raw File Descriptor (Unix)
+### Using Existing File Descriptors (Unix)
 
-Create a device from an existing file descriptor (useful for iOS, Android, or custom TUN implementations):
+Unix adoption uses Rust's typed descriptor types. Use `OwnedFd` when ownership is transferred to tun-rs, or `BorrowedFd` when another framework retains ownership:
 
 ```rust
-use tun_rs::SyncDevice;
-use std::os::unix::io::RawFd;
+use std::os::fd::{BorrowedFd, OwnedFd};
+use tun_rs::{BorrowedSyncDevice, SyncDevice};
 
-fn main() -> std::io::Result<()> {
-    // The fd must be a valid file descriptor obtained from:
-    // - iOS: Use getTunnelFileDescriptor() - see iOS section (KVO method deprecated on iOS 16+)
-    // - Android: VpnService.Builder().establish().getFd()
-    // - Linux: open("/dev/net/tun", O_RDWR)
-    // - Or any other platform-specific TUN device API
-    let fd: RawFd = get_tun_fd_from_platform(); // Your platform-specific function
-    
-    // Take ownership of the file descriptor
-    let dev = unsafe { SyncDevice::from_fd(fd)? };
-    
-    // Or borrow without taking ownership
-    // let dev = unsafe { tun_rs::BorrowedSyncDevice::borrow_raw(fd)? };
-
-    // Also works with async devices
-    // let async_dev = unsafe { tun_rs::AsyncDevice::from_fd(fd)? };
-
+fn use_owned_fd(fd: OwnedFd) -> std::io::Result<()> {
+    let dev = SyncDevice::from_fd(fd)?;
     let mut buf = [0; 4096];
-    loop {
-        let amount = dev.recv(&mut buf)?;
-        println!("Received: {:?}", &buf[0..amount]);
-    }
+    let amount = dev.recv(&mut buf)?;
+    println!("Received: {:?}", &buf[..amount]);
+    Ok(())
 }
 
-// NOTE: This is example-only code. In real applications, obtain the fd from:
-// - iOS: Use getTunnelFileDescriptor() method (see iOS section) - KVO method deprecated on iOS 16+
-// - Android: fd = vpnInterface.getFd()  (from VpnService.Builder().establish())
-// - Linux: fd = open("/dev/net/tun", O_RDWR) or use DeviceBuilder instead
-fn get_tun_fd_from_platform() -> RawFd {
-    // See the iOS and Android sections below for complete working examples
-    unimplemented!("Replace with your platform-specific fd acquisition code")
+fn use_borrowed_fd(fd: BorrowedFd<'_>) -> std::io::Result<()> {
+    let dev = BorrowedSyncDevice::from_fd(fd)?;
+    let mut buf = [0; 4096];
+    let amount = dev.recv(&mut buf)?;
+    println!("Received: {:?}", &buf[..amount]);
+    Ok(())
 }
 ```
+
+Platform/FFI APIs often expose only an integer fd. Convert that integer exactly once at the FFI boundary: use `OwnedFd::from_raw_fd` only when ownership is genuinely transferred, or `BorrowedFd::borrow_raw` when the platform keeps ownership. Those constructors are unsafe because Rust cannot infer the foreign ownership contract; the tun-rs APIs above are safe.
 
 ### Linux Hardware Offload (TSO/GSO)
 
@@ -487,8 +472,12 @@ class PacketTunnelProvider: NEPacketTunnelProvider {
 // Rust FFI
 #[no_mangle]
 pub extern "C" fn start_tun(fd: std::os::raw::c_int) {
-    // Create device from file descriptor
-    let tun = unsafe { tun_rs::SyncDevice::from_fd(fd).unwrap() };
+    use std::os::fd::BorrowedFd;
+    use tun_rs::BorrowedSyncDevice;
+
+    // SAFETY: NetworkExtension owns this descriptor and keeps it open while the tunnel runs.
+    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+    let tun = BorrowedSyncDevice::from_fd(fd).unwrap();
     let mut buf = [0u8; 1500];
     while let Ok(len) = tun.recv(&mut buf) {
         // Process packet
@@ -524,7 +513,12 @@ private void startVpn() {
 // Rust JNI binding
 #[no_mangle]
 pub extern "C" fn startTunNative(fd: std::os::raw::c_int) {
-    let tun = unsafe { tun_rs::SyncDevice::from_fd(fd).unwrap() };
+    use std::os::fd::BorrowedFd;
+    use tun_rs::BorrowedSyncDevice;
+
+    // SAFETY: ParcelFileDescriptor retains ownership for this call's tunnel lifetime.
+    let fd = unsafe { BorrowedFd::borrow_raw(fd) };
+    let tun = BorrowedSyncDevice::from_fd(fd).unwrap();
     let mut buf = [0u8; 1500];
     while let Ok(len) = tun.recv(&mut buf) {
         // Process packet

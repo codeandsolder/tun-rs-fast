@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "macOS async raw-fd constructors are the explicit descriptor ownership boundary"
+    reason = "typed fd adoption still contains the internal borrowed-lifetime and ownership rewrap boundaries"
 )]
 
 use crate::async_device::unix;
@@ -10,7 +10,7 @@ use bytes::buf::UninitSlice;
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
 use std::ops::Deref;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::task::{Context, Poll};
 
 mod select_io;
@@ -74,17 +74,6 @@ impl AsyncModel {
         }
     }
 }
-impl FromRawFd for AsyncDevice {
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // SAFETY: FromRawFd transfers ownership of a valid open descriptor to this object.
-        unsafe { AsyncDevice::from_fd(fd) }.unwrap()
-    }
-}
-impl IntoRawFd for AsyncDevice {
-    fn into_raw_fd(self) -> RawFd {
-        self.into_fd().unwrap()
-    }
-}
 impl AsRawFd for AsyncDevice {
     fn as_raw_fd(&self) -> RawFd {
         self.async_model.as_device().as_raw_fd()
@@ -95,29 +84,36 @@ impl AsyncDevice {
         AsyncDevice::new_dev(device.0)
     }
 
-    /// # Safety
-    /// This method is safe if the provided fd is valid
-    /// Construct a AsyncDevice from an existing file descriptor
-    pub unsafe fn from_fd(fd: RawFd) -> io::Result<AsyncDevice> {
-        // SAFETY: from_fd forwards its documented ownership and descriptor-validity contract.
-        AsyncDevice::new_dev(unsafe { DeviceImpl::from_fd(fd)? })
+    /// Takes ownership of an existing Unix TUN/TAP descriptor.
+    ///
+    /// The descriptor is consumed on both success and error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TUN/TAP adoption or async-runtime registration fails.
+    pub fn from_fd(fd: OwnedFd) -> io::Result<AsyncDevice> {
+        AsyncDevice::new_dev(DeviceImpl::from_fd(fd)?)
     }
 
     /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
-    pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        // SAFETY: borrow_raw forwards its documented borrowed-descriptor lifetime contract.
-        AsyncDevice::new_dev(unsafe { DeviceImpl::borrow_raw(fd)? })
+    /// The returned AsyncDevice erases `fd`'s lifetime. The caller must retain the
+    /// BorrowedFd for the complete lifetime of the returned device.
+    pub(crate) unsafe fn borrow_fd(fd: BorrowedFd<'_>) -> io::Result<Self> {
+        // SAFETY: caller preserves the BorrowedFd lifetime around the returned device.
+        AsyncDevice::new_dev(unsafe { DeviceImpl::borrow_fd(fd)? })
     }
-    pub fn into_fd(self) -> io::Result<RawFd> {
+    /// Recovers ownership of the underlying descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the async runtime still holds another reference or if the
+    /// macOS feth/BPF backend has no single descriptor that represents the device.
+    pub fn into_fd(self) -> io::Result<OwnedFd> {
         match self.async_model {
-            AsyncModel::Async(dev) => Ok(dev.into_device()?.into_raw_fd()),
+            AsyncModel::Async(dev) => Ok(SyncDevice(dev.into_device()?).into_fd()),
             AsyncModel::Select(_) => Err(io::Error::new(
                 io::ErrorKind::Unsupported,
-                "into_raw_fd operation is not supported for feth/bpf devices",
+                "owned descriptor extraction is not supported for feth/bpf devices",
             )),
         }
     }

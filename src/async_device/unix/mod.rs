@@ -1,6 +1,6 @@
 #![expect(
     unsafe_code,
-    reason = "async raw-fd constructors are the explicit Unix ownership boundary"
+    reason = "typed fd adoption still contains the internal borrowed-lifetime and ownership rewrap boundaries"
 )]
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
@@ -12,7 +12,7 @@ use crate::SyncDevice;
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
 use std::ops::Deref;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
 /// Descriptor and waker helpers shared by the readiness tests.
 #[cfg(all(
@@ -42,23 +42,6 @@ mod async_io;
 #[cfg(all(feature = "async_io", not(feature = "async_tokio")))]
 pub use self::async_io::AsyncDevice;
 
-impl FromRawFd for AsyncDevice {
-    /// # Safety
-    /// The fd must be valid, open, and refer to a TUN/TAP device.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    ///
-    /// # Panics
-    /// Panics if the descriptor is invalid or violates the platform-specific adoption contract.
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // SAFETY: FromRawFd transfers ownership of a valid open descriptor to this object.
-        unsafe { AsyncDevice::from_fd(fd) }.expect("failed to adopt TUN/TAP file descriptor")
-    }
-}
-impl IntoRawFd for AsyncDevice {
-    fn into_raw_fd(self) -> RawFd {
-        self.into_fd().unwrap()
-    }
-}
 impl AsRawFd for AsyncDevice {
     fn as_raw_fd(&self) -> RawFd {
         self.get_ref().as_raw_fd()
@@ -78,28 +61,32 @@ impl AsyncDevice {
         AsyncDevice::new_dev(device.0)
     }
 
-    /// # Safety
-    /// The fd must be valid, open, and refer to a TUN/TAP device.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    /// Construct an AsyncDevice from an existing file descriptor.
-    pub unsafe fn from_fd(fd: RawFd) -> io::Result<AsyncDevice> {
-        // SAFETY: from_fd forwards its documented ownership and descriptor-validity contract.
-        AsyncDevice::new_dev(unsafe { DeviceImpl::from_fd(fd)? })
+    /// Takes ownership of an existing Unix TUN/TAP descriptor.
+    ///
+    /// The descriptor is consumed on both success and error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if TUN/TAP adoption or async-runtime registration fails.
+    pub fn from_fd(fd: OwnedFd) -> io::Result<AsyncDevice> {
+        AsyncDevice::new_dev(DeviceImpl::from_fd(fd)?)
     }
 
     /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
-    pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        // SAFETY: borrow_raw forwards its documented borrowed-descriptor lifetime contract.
-        AsyncDevice::new_dev(unsafe { DeviceImpl::borrow_raw(fd)? })
+    /// The returned AsyncDevice erases `fd`'s lifetime. The caller must retain the
+    /// BorrowedFd for the complete lifetime of the returned device.
+    pub(crate) unsafe fn borrow_fd(fd: BorrowedFd<'_>) -> io::Result<Self> {
+        // SAFETY: caller preserves the BorrowedFd lifetime around the returned device.
+        AsyncDevice::new_dev(unsafe { DeviceImpl::borrow_fd(fd)? })
     }
 
-    pub fn into_fd(self) -> io::Result<RawFd> {
-        Ok(self.into_device()?.into_raw_fd())
+    /// Recovers ownership of the underlying descriptor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the async runtime still holds another reference to the device.
+    pub fn into_fd(self) -> io::Result<OwnedFd> {
+        Ok(SyncDevice(self.into_device()?).into_fd())
     }
     /// Waits for the device to become readable.
     ///
