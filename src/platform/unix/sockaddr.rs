@@ -31,6 +31,17 @@ unsafe fn sockaddr_to_rs_addr(sa: &sockaddr_union) -> Option<std::net::SocketAdd
     }
 }
 
+pub(crate) fn sockaddr_v4_to_rs_addr(sa: &libc::sockaddr) -> Option<std::net::SocketAddr> {
+    if libc::c_int::from(sa.sa_family) != libc::AF_INET {
+        return None;
+    }
+
+    let data = sa.sa_data.map(|byte| byte as u8);
+    let port = u16::from_be_bytes([data[0], data[1]]);
+    let ip = std::net::Ipv4Addr::new(data[2], data[3], data[4], data[5]);
+    Some(std::net::SocketAddr::new(ip.into(), port))
+}
+
 fn rs_addr_to_sockaddr(addr: std::net::SocketAddr) -> sockaddr_union {
     match addr {
         std::net::SocketAddr::V4(ipv4) => {
@@ -132,12 +143,6 @@ impl From<libc::sockaddr_in> for sockaddr_union {
     }
 }
 
-impl From<libc::sockaddr> for sockaddr_union {
-    fn from(addr: libc::sockaddr) -> Self {
-        sockaddr_union { addr }
-    }
-}
-
 impl From<std::net::SocketAddr> for sockaddr_union {
     fn from(addr: std::net::SocketAddr) -> Self {
         rs_addr_to_sockaddr(addr)
@@ -215,7 +220,7 @@ fn ipaddr_to_sockaddr_writes_through_complete_ifreq_union_storage() {
 
     unsafe { ipaddr_to_sockaddr(old, 0x0208, (&raw mut ifru).cast(), size) };
 
-    let addr = sockaddr_union::from(unsafe { ifru.ifru_addr });
-    let actual = std::net::SocketAddr::try_from(addr).unwrap();
+    let raw = unsafe { ifru.ifru_addr };
+    let actual = sockaddr_v4_to_rs_addr(&raw).unwrap();
     assert_eq!(actual, std::net::SocketAddr::new(old, 0x0208));
 }
