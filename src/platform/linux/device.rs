@@ -1357,7 +1357,7 @@ fn validate_adopted_tun_flags(flags: c_short) -> io::Result<()> {
     if flags & (libc::IFF_VNET_HDR as c_short) != 0 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "Linux raw-fd adoption does not support IFF_VNET_HDR; use an explicitly configured device instead",
+            "Linux descriptor adoption does not support IFF_VNET_HDR; use an explicitly configured device instead",
         ));
     }
     Ok(())

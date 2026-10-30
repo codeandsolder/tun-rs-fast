@@ -84,20 +84,17 @@ loop {
 For iOS and Android, use the file descriptor from the system VPN APIs:
 
 ```no_run
-#[cfg(unix)]
-{
-    use tun_rs::SyncDevice;
-    // On iOS: from PacketTunnelProvider.packetFlow
-    // On Android: from VpnService.Builder.establish()
-    let fd = 7799; // Example value only - obtain from platform VPN APIs
-    let dev = unsafe { SyncDevice::from_fd(fd).unwrap() };
+# #[cfg(unix)]
+# fn use_vpn_fd(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
+use tun_rs::BorrowedSyncDevice;
 
-    let mut buf = [0; 65535];
-    loop {
-        let len = dev.recv(&mut buf).unwrap();
-        println!("Received packet: {:?}", &buf[..len]);
-    }
-}
+// iOS PacketTunnelProvider and Android VpnService normally retain ownership.
+let dev = BorrowedSyncDevice::from_fd(fd)?;
+let mut buf = [0; 65535];
+let len = dev.recv(&mut buf)?;
+println!("Received packet: {:?}", &buf[..len]);
+# Ok(())
+# }
 ```
 
 ## Advanced Features

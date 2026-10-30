@@ -16,28 +16,8 @@ use bytes::buf::UninitSlice;
 use libc::{AF_INET, AF_INET6, SOCK_DGRAM};
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 
-impl FromRawFd for DeviceImpl {
-    /// # Safety
-    ///
-    /// The caller must ensure that `fd` is a valid, open file descriptor for a TUN/TAP device.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    ///
-    /// # Panics
-    ///
-    /// This function will panic if the provided file descriptor is invalid or violates the
-    /// platform-specific adoption contract.
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // SAFETY: FromRawFd transfers ownership of a valid open descriptor to this object.
-        unsafe {
-            // If this panics, the caller violated the descriptor adoption safety contract.
-            DeviceImpl::from_fd(fd).expect(
-                "Failed to adopt TUN/TAP file descriptor; the descriptor must satisfy the platform-specific adoption contract",
-            )
-        }
-    }
-}
 impl AsRawFd for DeviceImpl {
     fn as_raw_fd(&self) -> RawFd {
         self.tun.as_raw_fd()
@@ -45,7 +25,7 @@ impl AsRawFd for DeviceImpl {
 }
 impl AsFd for DeviceImpl {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
+        self.tun.fd.as_fd()
     }
 }
 #[cfg(not(any(target_os = "freebsd", target_os = "netbsd", target_os = "openbsd")))]
@@ -55,23 +35,15 @@ impl std::os::unix::io::IntoRawFd for DeviceImpl {
     }
 }
 impl DeviceImpl {
-    /// # Safety
-    /// The fd passed in must be an owned file descriptor; in particular, it must be open.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    pub(crate) unsafe fn from_fd(fd: RawFd) -> io::Result<Self> {
-        // SAFETY: from_fd's contract transfers ownership of a valid open descriptor.
-        let tun = unsafe { Fd::new_unchecked(fd) };
-        DeviceImpl::from_tun(Tun::new(tun))
+    pub(crate) fn from_fd(fd: OwnedFd) -> io::Result<Self> {
+        DeviceImpl::from_tun(Tun::new(Fd::from_owned(fd)))
     }
     /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
-    pub(crate) unsafe fn borrow_raw(fd: RawFd) -> io::Result<Self> {
-        // SAFETY: borrow_raw's contract guarantees the externally owned descriptor stays valid.
-        let tun = unsafe { Fd::new_unchecked_with_borrow(fd, true) };
+    /// `DeviceImpl` erases the `BorrowedFd` lifetime. The caller must retain the
+    /// original `BorrowedFd` for at least as long as the returned device.
+    pub(crate) unsafe fn borrow_fd(fd: BorrowedFd<'_>) -> io::Result<Self> {
+        // SAFETY: the caller keeps the BorrowedFd lifetime alive around DeviceImpl.
+        let tun = unsafe { Fd::new_unchecked_with_borrow(fd.as_raw_fd(), true) };
         DeviceImpl::from_tun(Tun::new(tun))
     }
     pub(crate) fn is_nonblocking(&self) -> io::Result<bool> {

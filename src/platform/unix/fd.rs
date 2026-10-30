@@ -5,6 +5,7 @@
 
 use std::io;
 use std::io::{IoSlice, IoSliceMut};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::io::{AsRawFd, IntoRawFd, RawFd};
 
 use bytes::buf::UninitSlice;
@@ -33,6 +34,12 @@ pub struct Fd {
 }
 
 impl Fd {
+    pub(crate) fn from_owned(fd: OwnedFd) -> Self {
+        Self {
+            inner: fd.into_raw_fd(),
+            borrow: false,
+        }
+    }
     #[cfg(any(
         target_os = "windows",
         target_os = "macos",
@@ -207,6 +214,13 @@ pub(super) const fn max_iov() -> usize {
 impl AsRawFd for Fd {
     fn as_raw_fd(&self) -> RawFd {
         self.inner
+    }
+}
+
+impl AsFd for Fd {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        // SAFETY: Fd owns or validly borrows this live descriptor for at least &self.
+        unsafe { BorrowedFd::borrow_raw(self.inner) }
     }
 }
 

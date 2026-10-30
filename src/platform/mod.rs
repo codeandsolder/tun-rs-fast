@@ -94,7 +94,7 @@ mod operation_lock_tests {
     }
 }
 #[cfg(unix)]
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, RawFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 #[cfg_attr(
     any(
@@ -164,90 +164,50 @@ pub(crate) fn get_if_addrs_by_name(if_name: String) -> std::io::Result<Vec<Inter
 #[repr(transparent)]
 pub struct SyncDevice(pub(crate) DeviceImpl);
 
-#[cfg_attr(
-    unix,
-    expect(
-        unsafe_code,
-        reason = "raw-fd constructors are the explicit Unix ownership boundary"
-    )
-)]
 impl SyncDevice {
-    /// Creates a `SyncDevice` from a raw file descriptor.
+    /// Creates a synchronous device by taking ownership of an existing Unix file descriptor.
     ///
-    /// # Safety
-    /// - The file descriptor (`fd`) must be an owned file descriptor.
-    /// - It must be valid and open.
-    /// - The file descriptor must refer to a TUN/TAP device.
-    /// - After calling this function, the `SyncDevice` takes ownership of the fd and will close it when dropped.
+    /// Platform-specific TUN/TAP validation and setup can fail, so adoption returns
+    /// an `io::Result`. Ownership is represented by [`OwnedFd`], avoiding a raw-fd
+    /// double-close contract at this API boundary.
     ///
-    /// This function is only available on Unix platforms.
-    ///
-    /// # Example
-    ///
-    /// On iOS using PacketTunnelProvider:
-    ///
-    /// ```no_run
-    /// # #[cfg(unix)]
-    /// # {
-    /// use std::os::fd::RawFd;
-    /// use tun_rs::SyncDevice;
-    ///
-    /// // On iOS, obtain fd from PacketTunnelProvider.packetFlow
-    /// // let fd: RawFd = packet_flow.value(forKeyPath: "socket.fileDescriptor") as! Int32
-    /// let fd: RawFd = 10; // Example value - obtain from platform VPN APIs
-    ///
-    /// // SAFETY: fd must be a valid, open file descriptor to a TUN device
-    /// let dev = unsafe { SyncDevice::from_fd(fd)? };
-    ///
-    /// // Device now owns the file descriptor
-    /// let mut buf = [0u8; 1500];
-    /// let n = dev.recv(&mut buf)?;
-    /// println!("Received {} bytes", n);
-    /// # }
-    /// # Ok::<(), std::io::Error>(())
-    /// ```
-    ///
-    /// On Android using VpnService:
-    ///
-    /// ```no_run
-    /// # #[cfg(unix)]
-    /// # {
-    /// use tun_rs::SyncDevice;
-    ///
-    /// // On Android, obtain fd from VpnService.Builder.establish()
-    /// // ParcelFileDescriptor vpnInterface = builder.establish();
-    /// // int fd = vpnInterface.getFd();
-    /// let fd = 10; // Example value - obtain from VpnService
-    ///
-    /// // SAFETY: fd must be valid and open
-    /// let dev = unsafe { SyncDevice::from_fd(fd)? };
-    ///
-    /// let mut buf = [0u8; 1500];
-    /// loop {
-    ///     let n = dev.recv(&mut buf)?;
-    ///     // Process packet...
-    /// }
-    /// # }
-    /// # Ok::<(), std::io::Error>(())
-    /// ```
-    /// # Safety
     /// On Linux, the descriptor must use `IFF_NO_PI` framing and must not use
-    /// `IFF_VNET_HDR`. Linux does not expose enough read-only state to recover
-    /// arbitrary packet-information/offload framing safely from an adopted fd.
+    /// `IFF_VNET_HDR`; those properties cannot be reconstructed reliably from an
+    /// adopted descriptor. The `OwnedFd` is consumed on both success and error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor is not usable as a TUN/TAP device or
+    /// platform-specific adoption/setup fails.
     #[cfg(unix)]
-    pub unsafe fn from_fd(fd: RawFd) -> std::io::Result<Self> {
-        // SAFETY: from_fd forwards its documented ownership and descriptor-validity contract.
-        unsafe { Ok(SyncDevice(DeviceImpl::from_fd(fd)?)) }
+    pub fn from_fd(fd: OwnedFd) -> std::io::Result<Self> {
+        Ok(SyncDevice(DeviceImpl::from_fd(fd)?))
     }
-    /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// Unlike [`from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
+
+    /// Returns ownership of this device's Unix file descriptor.
     #[cfg(unix)]
-    pub(crate) unsafe fn borrow_raw(fd: RawFd) -> std::io::Result<Self> {
-        // SAFETY: borrow_raw forwards its documented borrowed-descriptor lifetime contract.
-        unsafe { Ok(SyncDevice(DeviceImpl::borrow_raw(fd)?)) }
+    #[expect(
+        unsafe_code,
+        reason = "re-wraps the descriptor returned by an ownership-transferring IntoRawFd implementation"
+    )]
+    pub fn into_fd(self) -> OwnedFd {
+        // SAFETY: DeviceImpl::into_raw_fd transfers ownership of one live descriptor.
+        unsafe { OwnedFd::from_raw_fd(self.0.into_raw_fd()) }
+    }
+
+    /// Builds the internal device around a borrowed descriptor.
+    ///
+    /// # Safety
+    /// The returned `SyncDevice` erases `fd`'s lifetime. Callers must retain the
+    /// `BorrowedFd` for the complete lifetime of the returned device.
+    #[cfg(unix)]
+    #[expect(
+        unsafe_code,
+        reason = "internal lifetime-erasure boundary; public borrowed wrapper retains BorrowedFd"
+    )]
+    pub(crate) unsafe fn borrow_fd(fd: BorrowedFd<'_>) -> std::io::Result<Self> {
+        // SAFETY: caller preserves the BorrowedFd lifetime around the returned device.
+        unsafe { Ok(SyncDevice(DeviceImpl::borrow_fd(fd)?)) }
     }
     /// Receives data from the device into the provided buffer.
     ///
@@ -875,54 +835,21 @@ impl Deref for SyncDevice {
 }
 
 #[cfg(unix)]
-#[expect(
-    unsafe_code,
-    reason = "required by the standard raw-fd ownership-transfer trait"
-)]
-impl FromRawFd for SyncDevice {
-    /// # Safety
-    /// The fd must be valid, open, and refer to a TUN/TAP device.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    ///
-    /// # Panics
-    /// Panics if the descriptor is invalid or violates the platform-specific adoption contract.
-    unsafe fn from_raw_fd(fd: RawFd) -> Self {
-        // SAFETY: FromRawFd transfers ownership of a valid open descriptor to this object.
-        unsafe {
-            SyncDevice::from_fd(fd).expect(
-                "Failed to create device from file descriptor. \
-                 The provided fd must be a valid, open file descriptor for a TUN/TAP device.",
-            )
-        }
-    }
-}
-#[cfg(unix)]
 impl AsRawFd for SyncDevice {
     fn as_raw_fd(&self) -> RawFd {
         self.0.as_raw_fd()
     }
 }
 #[cfg(unix)]
-#[expect(
-    unsafe_code,
-    reason = "BorrowedFd construction is tied to the lifetime of &self"
-)]
 impl AsFd for SyncDevice {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        unsafe { BorrowedFd::borrow_raw(self.as_raw_fd()) }
+        self.0.as_fd()
     }
 }
-#[cfg(unix)]
-impl IntoRawFd for SyncDevice {
-    fn into_raw_fd(self) -> RawFd {
-        self.0.into_raw_fd()
-    }
-}
-
 #[cfg(unix)]
 pub struct BorrowedSyncDevice<'dev> {
     dev: SyncDevice,
-    _phantom: std::marker::PhantomData<&'dev SyncDevice>,
+    _fd: BorrowedFd<'dev>,
 }
 #[cfg(unix)]
 impl Deref for BorrowedSyncDevice<'_> {
@@ -932,23 +859,25 @@ impl Deref for BorrowedSyncDevice<'_> {
     }
 }
 #[cfg(unix)]
-#[expect(
-    unsafe_code,
-    reason = "this impl is the explicit borrowed raw-fd lifetime boundary"
-)]
-impl BorrowedSyncDevice<'_> {
-    /// # Safety
-    /// The fd passed in must be a valid, open file descriptor.
-    /// On Linux, it must use `IFF_NO_PI` framing and must not use `IFF_VNET_HDR`.
-    /// Unlike [`SyncDevice::from_fd`], this function does **not** take ownership of `fd`,
-    /// and therefore will not close it when dropped.  
-    /// The caller is responsible for ensuring the lifetime and eventual closure of `fd`.
-    pub unsafe fn borrow_raw(fd: RawFd) -> std::io::Result<Self> {
-        unsafe {
-            Ok(Self {
-                dev: SyncDevice::borrow_raw(fd)?,
-                _phantom: std::marker::PhantomData,
-            })
-        }
+impl<'dev> BorrowedSyncDevice<'dev> {
+    /// Creates a borrowed synchronous device without taking ownership of the descriptor.
+    ///
+    /// The `BorrowedFd` lifetime statically prevents this wrapper from outliving the
+    /// externally owned descriptor. Dropping the wrapper does not close or destroy the
+    /// externally managed device.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor is not usable as a TUN/TAP device or
+    /// platform-specific adoption/setup fails. The external descriptor remains owned
+    /// by the caller on error.
+    #[expect(
+        unsafe_code,
+        reason = "re-attaches the BorrowedFd lifetime around the internal lifetime-erasing device"
+    )]
+    pub fn from_fd(fd: BorrowedFd<'dev>) -> std::io::Result<Self> {
+        // SAFETY: storing fd in the wrapper preserves the lifetime erased by SyncDevice.
+        let dev = unsafe { SyncDevice::borrow_fd(fd)? };
+        Ok(Self { dev, _fd: fd })
     }
 }

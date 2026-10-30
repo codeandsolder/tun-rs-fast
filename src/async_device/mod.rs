@@ -105,10 +105,8 @@ Useful when the file descriptor is managed externally (e.g., on mobile platforms
 # {
 use tun_rs::BorrowedAsyncDevice;
 
-async fn use_borrowed_fd(fd: std::os::fd::RawFd) -> std::io::Result<()> {
-    // SAFETY: fd must be a valid, open file descriptor
-    // This does NOT take ownership and will NOT close fd
-    let dev = unsafe { BorrowedAsyncDevice::borrow_raw(fd)? };
+async fn use_borrowed_fd(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
+    let dev = BorrowedAsyncDevice::from_fd(fd)?;
 
     let mut buf = vec![0u8; 1500];
     let len = dev.recv(&mut buf).await?;
@@ -163,14 +161,14 @@ All async operations return `io::Result` types. Common errors include:
 - `BrokenPipe` (device was closed)
 - Platform-specific errors
 
-## Safety Considerations
+## Descriptor Ownership
 
-The `from_fd` and `borrow_raw` methods are `unsafe` because they:
-- Require a valid, open file descriptor
-- Can lead to double-close bugs if ownership is not managed correctly
-- May cause undefined behavior if the fd is not a valid TUN/TAP device
+Unix descriptor adoption uses Rust's typed fd API:
+- `AsyncDevice::from_fd(OwnedFd)` transfers ownership and returns setup failures as `io::Error`.
+- `BorrowedAsyncDevice::from_fd(BorrowedFd<'_>)` keeps ownership external and cannot outlive the borrowed descriptor.
+- `AsyncDevice::into_fd()` returns `OwnedFd` when the backend supports extraction.
 
-Always ensure proper lifetime management when using these methods.
+Foreign APIs that expose only a raw integer still require one small unsafe conversion to `OwnedFd` or `BorrowedFd` at the FFI boundary; tun-rs itself does not require a raw-fd safety contract.
 */
 
 #[cfg(unix)]
@@ -222,32 +220,20 @@ compile_error! {"More than one asynchronous runtime is simultaneously specified 
 ///
 /// ```no_run
 /// # #[cfg(unix)]
-/// # async fn example(fd: std::os::fd::RawFd) -> std::io::Result<()> {
+/// # async fn example(fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
 /// use tun_rs::BorrowedAsyncDevice;
 ///
-/// // SAFETY: Caller must ensure fd is valid and remains open
-/// let device = unsafe { BorrowedAsyncDevice::borrow_raw(fd)? };
-///
+/// let device = BorrowedAsyncDevice::from_fd(fd)?;
 /// let mut buffer = vec![0u8; 1500];
 /// let n = device.recv(&mut buffer).await?;
 /// println!("Received {} bytes", n);
-///
-/// // fd is still valid after device is dropped
 /// # Ok(())
 /// # }
 /// ```
-///
-/// # Safety
-///
-/// When using `borrow_raw`, you must ensure:
-/// 1. The file descriptor is valid and open
-/// 2. The file descriptor is a TUN/TAP device
-/// 3. The file descriptor outlives the `BorrowedAsyncDevice`
-/// 4. No other code closes the file descriptor while in use
 #[cfg(unix)]
 pub struct BorrowedAsyncDevice<'dev> {
     dev: AsyncDevice,
-    _phantom: std::marker::PhantomData<&'dev AsyncDevice>,
+    _fd: std::os::fd::BorrowedFd<'dev>,
 }
 #[cfg(unix)]
 impl std::ops::Deref for BorrowedAsyncDevice<'_> {
@@ -257,71 +243,25 @@ impl std::ops::Deref for BorrowedAsyncDevice<'_> {
     }
 }
 #[cfg(unix)]
-impl BorrowedAsyncDevice<'_> {
-    /// Borrows an existing file descriptor without taking ownership.
+impl<'dev> BorrowedAsyncDevice<'dev> {
+    /// Creates a borrowed async device without taking ownership of the descriptor.
     ///
-    /// Creates a `BorrowedAsyncDevice` from a raw file descriptor. The file descriptor
-    /// will **not** be closed when this device is dropped - the caller retains ownership
-    /// and is responsible for closing it.
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure that:
-    ///
-    /// - `fd` is a valid, open file descriptor
-    /// - `fd` refers to a TUN/TAP device (not a regular file, socket, etc.)
-    /// - `fd` remains open for the lifetime of the returned `BorrowedAsyncDevice`
-    /// - No other code attempts to close `fd` while the device is in use
-    /// - The file descriptor is not used in conflicting ways (e.g., both blocking and non-blocking)
-    ///
-    /// Violating these requirements may result in:
-    /// - I/O errors
-    /// - Undefined behavior (in case of use-after-close)
-    /// - Resource leaks (if the original fd is never closed)
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # #[cfg(unix)]
-    /// # async fn example() -> std::io::Result<()> {
-    /// use std::os::fd::RawFd;
-    /// use tun_rs::BorrowedAsyncDevice;
-    ///
-    /// // Obtain fd from iOS PacketTunnelProvider or Android VpnService
-    /// let fd: RawFd = get_vpn_fd(); // exposition-only
-    ///
-    /// // SAFETY: fd is valid and managed by the OS framework
-    /// let device = unsafe { BorrowedAsyncDevice::borrow_raw(fd)? };
-    ///
-    /// // Use the device...
-    /// let mut buf = vec![0u8; 1500];
-    /// let n = device.recv(&mut buf).await?;
-    ///
-    /// // device is dropped here, but fd remains valid
-    /// // Caller must close fd when done
-    ///
-    /// # fn get_vpn_fd() -> RawFd { 0 }
-    /// # Ok(())
-    /// # }
-    /// ```
+    /// The `BorrowedFd` lifetime statically prevents this wrapper from outliving the
+    /// externally owned descriptor. Creating an async wrapper may enable nonblocking
+    /// mode or apply other platform setup to the shared underlying device.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file descriptor cannot be configured for async I/O.
-    /// Common causes:
-    /// - Invalid file descriptor
-    /// - File descriptor does not refer to a TUN/TAP device
-    /// - Platform-specific configuration failures
+    /// Returns an error if TUN/TAP adoption or async-runtime registration fails. The
+    /// descriptor remains externally owned, though setup attempted before the error may
+    /// have changed descriptor/device state.
     #[expect(
         unsafe_code,
-        reason = "the caller guarantees the external descriptor outlives this borrowed async device"
+        reason = "re-attaches the BorrowedFd lifetime around the internal lifetime-erasing async device"
     )]
-    pub unsafe fn borrow_raw(fd: std::os::fd::RawFd) -> std::io::Result<Self> {
-        unsafe {
-            Ok(Self {
-                dev: AsyncDevice::borrow_raw(fd)?,
-                _phantom: std::marker::PhantomData,
-            })
-        }
+    pub fn from_fd(fd: std::os::fd::BorrowedFd<'dev>) -> std::io::Result<Self> {
+        // SAFETY: storing fd in the wrapper preserves the lifetime erased by AsyncDevice.
+        let dev = unsafe { AsyncDevice::borrow_fd(fd)? };
+        Ok(Self { dev, _fd: fd })
     }
 }

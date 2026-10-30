@@ -14,7 +14,7 @@ When an external source and the implementation disagree, the implementation is t
 | --- | --- | --- |
 | IPv4 prefix lengths are 0–32 and masks are left-contiguous | **External:** RFC 4632 §§3.1, 5.1 | All valid prefixes round-trip; non-contiguous masks and >32 are rejected; `/0` is accepted. |
 | IPv6 prefixes are a count of contiguous high-order bits | **External:** RFC 4291 §2.3 | Prefixes 0–128 round-trip; non-contiguous masks and >128 are rejected. |
-| POSIX `readv`/`writev` scatter/gather ordering and descriptor ownership boundaries | **External:** POSIX + Rust `AsFd`/`BorrowedFd`/`FromRawFd` contracts | Vectored data order is preserved; owned raw-fd conversion transfers ownership; borrowed wrappers never close the fd. |
+| POSIX `readv`/`writev` scatter/gather ordering and descriptor ownership boundaries | **External:** POSIX + Rust `AsFd`/`BorrowedFd`/`OwnedFd` contracts; crate fallible typed `from_fd`/`into_fd` adoption APIs | Vectored data order is preserved; `OwnedFd` transfers ownership without a naked integer contract; fallible adoption reports setup errors; `BorrowedFd` wrappers cannot outlive or close the external descriptor. |
 | `poll()` timeout finer than its resolution is rounded **up** | **External:** POSIX `poll()` | Positive sub-millisecond durations become at least 1 ms; large Rust durations are not silently shortened to `c_int::MAX` ms overall. |
 | Interruptible read cancellation remains observable across readiness races | **Crate contract**, implemented on POSIX readiness primitives | A signalled interrupt wins if device and interrupt fds are simultaneously ready; `WouldBlock` retries do not reset the caller's total timeout. |
 | IPv6 socket conversion preserves flowinfo and scope ID | **External:** Rust `SocketAddrV6`, POSIX/RFC `sockaddr_in6`; Rust std's platform conversion is the reference mapping | `sin6_flowinfo` and `sin6_scope_id` survive Rust↔C round-trip, including nonzero values. |
@@ -64,7 +64,7 @@ These are not claims about an RFC or kernel ABI. They are project API decisions 
 - RFC 4291 — IPv6 addressing/prefix semantics: https://www.rfc-editor.org/rfc/rfc4291.html
 - POSIX `poll()`: https://pubs.opengroup.org/onlinepubs/9799919799/functions/poll.html
 - POSIX `readv()`/`writev()`: https://pubs.opengroup.org/onlinepubs/9799919799/functions/readv.html and https://pubs.opengroup.org/onlinepubs/9799919799/functions/writev.html
-- Rust raw/borrowed fd contracts: https://doc.rust-lang.org/std/os/fd/ and `FromRawFd`
+- Rust typed fd contracts: https://doc.rust-lang.org/std/os/fd/; ownership adoption/extraction uses `OwnedFd`, while borrowed wrappers accept `BorrowedFd`
 - Rust `SocketAddrV6`: https://doc.rust-lang.org/std/net/struct.SocketAddrV6.html
 - Linux virtio-net UAPI: https://github.com/torvalds/linux/blob/master/include/uapi/linux/virtio_net.h
 - Linux virtio-net conversion rules: https://github.com/torvalds/linux/blob/master/include/linux/virtio_net.h
