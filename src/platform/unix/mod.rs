@@ -33,7 +33,6 @@ pub use interrupt::InterruptEvent;
 mod tun;
 pub(crate) use self::tun::Tun;
 
-#[must_use]
 pub(crate) fn read_operation_lock(
     lock: &std::sync::RwLock<()>,
 ) -> std::sync::RwLockReadGuard<'_, ()> {
@@ -41,7 +40,6 @@ pub(crate) fn read_operation_lock(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[must_use]
 pub(crate) fn write_operation_lock(
     lock: &std::sync::RwLock<()>,
 ) -> std::sync::RwLockWriteGuard<'_, ()> {
