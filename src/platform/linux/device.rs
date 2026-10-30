@@ -47,6 +47,17 @@ fn tx_queue_len_to_c_int(value: u32) -> io::Result<c_int> {
     })
 }
 
+#[cfg(feature = "address-management")]
+fn ipv6_prefix_from_netmask(netmask: IpAddr) -> io::Result<u8> {
+    match netmask {
+        IpAddr::V6(mask) => mask.prefix(),
+        IpAddr::V4(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "IPv6 address has an IPv4 netmask",
+        )),
+    }
+}
+
 fn tx_queue_len_from_c_int(value: c_int) -> io::Result<u32> {
     u32::try_from(value).map_err(|_| {
         io::Error::new(
@@ -778,6 +789,7 @@ impl DeviceImpl {
         gso_split(input, hdr, bufs, sizes, offset, is_v6)
     }
     pub fn remove_address_v6_impl(&self, addr: Ipv6Addr, prefix: u8) -> io::Result<()> {
+        let prefix = crate::builder::validate_ipv6_prefix(prefix)?;
         unsafe {
             let if_index = self.if_index_impl()?;
             let ctl = ctl_v6()?;
@@ -1102,7 +1114,10 @@ impl DeviceImpl {
         let interface = netconfig_rs::Interface::try_from_index(self.if_index_impl()?)
             .map_err(io::Error::from)?;
         interface
-            .add_address(IpNet::new_assert(address.ipv4()?.into(), netmask.prefix()?))
+            .add_address(IpNet::new_assert(
+                address.ipv4()?.into(),
+                crate::builder::validated_ipv4_prefix(&netmask)?,
+            ))
             .map_err(io::Error::from)
     }
     /// Removes an IP address from the interface.
@@ -1153,7 +1168,7 @@ impl DeviceImpl {
                     if let Some(ip_addr) = x.address.ip_addr() {
                         if ip_addr == addr {
                             if let Some(netmask) = x.address.netmask() {
-                                let prefix = ipnet::ip_mask_to_prefix(netmask).unwrap_or(0);
+                                let prefix = ipv6_prefix_from_netmask(netmask)?;
                                 self.remove_address_v6_impl(addr_v6, prefix)?
                             }
                         }
@@ -1198,7 +1213,7 @@ impl DeviceImpl {
             let ctl = ctl_v6()?;
             let mut ifrv6: in6_ifreq = mem::zeroed();
             ifrv6.ifr6_ifindex = interface_index_to_c_int(if_index)?;
-            ifrv6.ifr6_prefixlen = u32::from(netmask.prefix()?);
+            ifrv6.ifr6_prefixlen = u32::from(crate::builder::validated_ipv6_prefix(&netmask)?);
             ifrv6.ifr6_addr =
                 sockaddr_union::from(std::net::SocketAddr::new(addr.ipv6()?.into(), 0))
                     .addr6
@@ -1301,6 +1316,32 @@ impl DeviceImpl {
 
             Ok(mac)
         }
+    }
+}
+
+#[cfg(all(test, feature = "address-management"))]
+mod ipv6_netmask_tests {
+    use super::ipv6_prefix_from_netmask;
+    use std::{
+        io,
+        net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    };
+
+    #[test]
+    fn rejects_non_contiguous_ipv6_netmask() {
+        let mask = Ipv6Addr::from(u128::MAX ^ (1_u128 << 63));
+        assert!(matches!(
+            ipv6_prefix_from_netmask(IpAddr::V6(mask)),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData
+        ));
+    }
+
+    #[test]
+    fn rejects_ipv4_netmask_for_ipv6_address() {
+        assert!(matches!(
+            ipv6_prefix_from_netmask(IpAddr::V4(Ipv4Addr::LOCALHOST)),
+            Err(error) if error.kind() == io::ErrorKind::InvalidData
+        ));
     }
 }
 
