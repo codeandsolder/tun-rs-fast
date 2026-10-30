@@ -996,13 +996,7 @@ fn checksum_valid(pkt: &[u8], iph_len: u8, proto: u8, is_v6: bool) -> bool {
         return false;
     }
 
-    let Ok(pkt_len) = u16::try_from(pkt.len()) else {
-        return false;
-    };
-    let Ok(iph_len_u16) = u16::try_from(iph_len) else {
-        return false;
-    };
-    let Some(len_for_pseudo) = pkt_len.checked_sub(iph_len_u16) else {
+    let Some((_, len_for_pseudo)) = wire_length_fields(pkt.len(), iph_len, is_v6) else {
         return false;
     };
 
@@ -1023,7 +1017,18 @@ enum CoalesceResult {
     PSHEnding,
     ItemInvalidCSum,
     PktInvalidCSum,
+    ExceedsWireLength,
     Success,
+}
+
+fn wire_length_fields(pkt_len: usize, iph_len: usize, is_v6: bool) -> Option<(u16, u16)> {
+    let transport_len = u16::try_from(pkt_len.checked_sub(iph_len)?).ok()?;
+    let ip_len = if is_v6 {
+        transport_len
+    } else {
+        u16::try_from(pkt_len).ok()?
+    };
+    Some((ip_len, transport_len))
 }
 
 /// coalesceUDPPackets attempts to coalesce pkt with the packet described by
@@ -1039,6 +1044,9 @@ fn coalesce_udp_packets<B: ExpandBuffer>(
     // let pkt_head = &buf[bufs_offset..]; // the packet that will end up at the front
     let headers_len = item.iph_len as usize + UDP_H_LEN;
     let coalesced_len = buf[bufs_offset..].len() + pkt.len() - headers_len;
+    if wire_length_fields(coalesced_len, usize::from(item.iph_len), is_v6).is_none() {
+        return CoalesceResult::ExceedsWireLength;
+    }
     if bufs[item.bufs_index as usize].buf_capacity() < bufs_offset * 2 + coalesced_len {
         // We don't want to allocate a new underlying array if capacity is
         // too small.
@@ -1083,6 +1091,9 @@ fn coalesce_tcp_packets<B: ExpandBuffer>(
     let headers_len = (item.iph_len + item.tcph_len) as usize;
     let coalesced_len =
         bufs[item.bufs_index as usize].as_ref()[bufs_offset..].len() + pkt.len() - headers_len;
+    if wire_length_fields(coalesced_len, usize::from(item.iph_len), is_v6).is_none() {
+        return CoalesceResult::ExceedsWireLength;
+    }
     // Copy data
     if mode == CanCoalesce::Prepend {
         if bufs[pkt_bufs_index].buf_capacity() < 2 * bufs_offset + coalesced_len {
@@ -1186,11 +1197,6 @@ fn tcp_gro<B: ExpandBuffer>(
 ) -> GroResult {
     let pkt_storage = bufs[pkt_i].as_ref()[offset..].to_vec();
     let pkt = pkt_storage.as_slice();
-    if pkt.len() > u16::MAX as usize {
-        // A valid IPv4 or IPv6 packet will never exceed this.
-        return GroResult::Noop;
-    }
-
     let mut iph_len = ((pkt[0] & 0x0F) * 4) as usize;
     if is_v6 {
         iph_len = 40;
@@ -1394,6 +1400,14 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                 let buf = bufs[item.bufs_index as usize].as_mut();
                 let pkt = &mut buf[offset..];
                 let pkt_len = pkt.len();
+                let Some((ip_len_field, transport_len)) =
+                    wire_length_fields(pkt_len, usize::from(item.iph_len), item.key.is_v6)
+                else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "coalesced TCP packet length does not fit wire header fields",
+                    ));
+                };
 
                 // Calculate the pseudo header checksum and place it at the TCP
                 // checksum offset. Downstream checksum offloading will combine
@@ -1414,12 +1428,12 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the (IPv4) header checksum.
                 if item.key.is_v6 {
                     hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV6;
-                    write_be_u16(&mut pkt[4..6], pkt_len as u16 - item.iph_len as u16);
+                    write_be_u16(&mut pkt[4..6], ip_len_field);
                 } else {
                     hdr.gso_type = VIRTIO_NET_HDR_GSO_TCPV4;
                     pkt[10] = 0;
                     pkt[11] = 0;
-                    write_be_u16(&mut pkt[2..4], pkt_len as u16);
+                    write_be_u16(&mut pkt[2..4], ip_len_field);
                     let iph_csum = !checksum(&pkt[..item.iph_len as usize], 0);
                     write_be_u16(&mut pkt[10..12], iph_csum);
                 }
@@ -1432,7 +1446,7 @@ pub fn apply_tcp_coalesce_accounting<B: ExpandBuffer>(
                     IPPROTO_TCP as _,
                     &src_addr[..addr_len],
                     &dst_addr[..addr_len],
-                    pkt_len as u16 - item.iph_len as u16,
+                    transport_len,
                 );
                 let tcp_csum = checksum(&[], psum);
                 write_be_u16(
@@ -1472,6 +1486,14 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 let buf = bufs[item.bufs_index as usize].as_mut();
                 let pkt = &mut buf[offset..];
                 let pkt_len = pkt.len();
+                let Some((ip_len_field, transport_len)) =
+                    wire_length_fields(pkt_len, usize::from(item.iph_len), item.key.is_v6)
+                else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "coalesced UDP packet length does not fit wire header fields",
+                    ));
+                };
 
                 // Calculate the pseudo header checksum and place it at the UDP
                 // checksum offset. Downstream checksum offloading will combine
@@ -1491,12 +1513,12 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the total len (IPv4) or payload len (IPv6).
                 // Recalculate the (IPv4) header checksum.
                 if item.key.is_v6 {
-                    write_be_u16(&mut pkt[4..6], pkt_len as u16 - item.iph_len as u16);
+                    write_be_u16(&mut pkt[4..6], ip_len_field);
                     // set new IPv6 header payload len
                 } else {
                     pkt[10] = 0;
                     pkt[11] = 0;
-                    write_be_u16(&mut pkt[2..4], pkt_len as u16); // set new total length
+                    write_be_u16(&mut pkt[2..4], ip_len_field); // set new total length
                     let iph_csum = !checksum(&pkt[..item.iph_len as usize], 0);
                     write_be_u16(&mut pkt[10..12], iph_csum); // set IPv4 header checksum field
                 }
@@ -1506,14 +1528,14 @@ pub fn apply_udp_coalesce_accounting<B: ExpandBuffer>(
                 // Recalculate the UDP len field value
                 write_be_u16(
                     &mut pkt[(item.iph_len as usize + 4)..(item.iph_len as usize + 6)],
-                    pkt_len as u16 - item.iph_len as u16,
+                    transport_len,
                 );
 
                 let psum = pseudo_header_checksum_no_fold(
                     IPPROTO_UDP as _,
                     &src_addr[..addr_len],
                     &dst_addr[..addr_len],
-                    pkt_len as u16 - item.iph_len as u16,
+                    transport_len,
                 );
 
                 let udp_csum = checksum(&[], psum);
@@ -1581,11 +1603,6 @@ fn udp_gro<B: ExpandBuffer>(
 ) -> GroResult {
     let pkt_storage = bufs[pkt_i].as_ref()[offset..].to_vec();
     let pkt = pkt_storage.as_slice();
-    if pkt.len() > u16::MAX as usize {
-        // A valid IPv4 or IPv6 packet will never exceed this.
-        return GroResult::Noop;
-    }
-
     let mut iph_len = ((pkt[0] & 0x0F) * 4) as usize;
     if is_v6 {
         iph_len = 40;
@@ -2609,6 +2626,50 @@ mod tests {
         pkt[IPH_LEN + 16..IPH_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
 
         pkt
+    }
+
+    #[test]
+    fn wire_length_fields_allow_full_ipv6_payload_but_reject_overflow() {
+        assert_eq!(
+            wire_length_fields(40 + usize::from(u16::MAX), 40, true),
+            Some((u16::MAX, u16::MAX))
+        );
+        assert_eq!(
+            wire_length_fields(usize::from(u16::MAX), 20, false),
+            Some((u16::MAX, u16::MAX - 20))
+        );
+        assert_eq!(
+            wire_length_fields(usize::from(u16::MAX) + 1, 20, false),
+            None
+        );
+        assert_eq!(
+            wire_length_fields(41 + usize::from(u16::MAX), 40, true),
+            None
+        );
+    }
+
+    #[test]
+    fn handle_gro_does_not_create_packets_larger_than_wire_length_fields() -> io::Result<()> {
+        const PAYLOAD_LEN: usize = 33_000;
+        const PACKET_LEN: usize = 40 + PAYLOAD_LEN;
+        const LARGE_CAPACITY: usize = 70_000;
+
+        let mut first = Vec::with_capacity(LARGE_CAPACITY);
+        first.resize(VIRTIO_NET_HDR_LEN, 0);
+        first.extend_from_slice(&make_ipv4_tcp_packet(1, PAYLOAD_LEN));
+
+        let mut second = Vec::with_capacity(LARGE_CAPACITY);
+        second.resize(VIRTIO_NET_HDR_LEN, 0);
+        second.extend_from_slice(&make_ipv4_tcp_packet(33_001, PAYLOAD_LEN));
+
+        let mut bufs = vec![first, second];
+        let mut table = GROTable::new();
+        table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false)?;
+
+        assert_eq!(table.to_write, vec![0, 1]);
+        assert_eq!(bufs[0].len(), VIRTIO_NET_HDR_LEN + PACKET_LEN);
+        assert_eq!(bufs[1].len(), VIRTIO_NET_HDR_LEN + PACKET_LEN);
+        Ok(())
     }
 
     #[test]
