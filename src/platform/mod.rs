@@ -57,6 +57,16 @@ use getifaddrs::Interface;
 use std::io::{IoSlice, IoSliceMut};
 use std::ops::Deref;
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "windows",
+))]
 pub(crate) fn read_operation_lock(
     lock: &std::sync::RwLock<()>,
 ) -> std::sync::RwLockReadGuard<'_, ()> {
@@ -64,6 +74,16 @@ pub(crate) fn read_operation_lock(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "ohos")),
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "windows",
+))]
 pub(crate) fn write_operation_lock(
     lock: &std::sync::RwLock<()>,
 ) -> std::sync::RwLockWriteGuard<'_, ()> {
@@ -71,7 +91,19 @@ pub(crate) fn write_operation_lock(
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-#[cfg(test)]
+#[cfg(all(
+    test,
+    any(
+        all(target_os = "linux", not(target_env = "ohos")),
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "windows",
+    )
+))]
 mod operation_lock_tests {
     use super::{read_operation_lock, write_operation_lock};
     use std::sync::RwLock;

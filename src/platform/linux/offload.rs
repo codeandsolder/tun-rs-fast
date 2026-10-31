@@ -2743,22 +2743,26 @@ mod tests {
     fn udp_gro_rejects_mismatched_udp_length() -> io::Result<()> {
         const PAYLOAD_LEN: usize = 32;
         const ACTUAL_UDP_LEN: u16 = (UDP_H_LEN + PAYLOAD_LEN) as u16;
-        let malformed = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, ACTUAL_UDP_LEN - 1);
-        assert!(checksum_valid(&malformed, 20, IPPROTO_UDP as u8, false));
+        let udp_protocol =
+            u8::try_from(IPPROTO_UDP).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        for declared_udp_len in [ACTUAL_UDP_LEN - 1, ACTUAL_UDP_LEN + 1] {
+            let malformed = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, declared_udp_len);
+            assert!(checksum_valid(&malformed, 20, udp_protocol, false));
 
-        let mut first = Vec::with_capacity(256);
-        first.resize(VIRTIO_NET_HDR_LEN, 0);
-        first.extend_from_slice(&malformed);
-        let mut second = Vec::with_capacity(256);
-        second.resize(VIRTIO_NET_HDR_LEN, 0);
-        second.extend_from_slice(&malformed);
-        let original_len = first.len();
-        let mut bufs = vec![first, second];
-        let mut table = GROTable::new();
-        table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, true)?;
+            let mut first = Vec::with_capacity(256);
+            first.resize(VIRTIO_NET_HDR_LEN, 0);
+            first.extend_from_slice(&malformed);
+            let mut second = Vec::with_capacity(256);
+            second.resize(VIRTIO_NET_HDR_LEN, 0);
+            second.extend_from_slice(&malformed);
+            let original_len = first.len();
+            let mut bufs = vec![first, second];
+            let mut table = GROTable::new();
+            table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, true)?;
 
-        assert_eq!(table.to_write, vec![0, 1]);
-        assert_eq!(bufs[0].len(), original_len);
+            assert_eq!(table.to_write, vec![0, 1]);
+            assert_eq!(bufs[0].len(), original_len);
+        }
 
         let valid = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, ACTUAL_UDP_LEN);
         let mut first = Vec::with_capacity(256);
@@ -2772,6 +2776,51 @@ mod tests {
         table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, true)?;
         assert_eq!(table.to_write, vec![0]);
         Ok(())
+    }
+
+    fn make_ipv6_tcp_packet(seq: u32, payload_len: usize) -> io::Result<Vec<u8>> {
+        const IPH_LEN: usize = 40;
+        const TCPH_LEN: usize = 20;
+
+        let transport_len = TCPH_LEN
+            .checked_add(payload_len)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let transport_len_u16 = u16::try_from(transport_len)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let total_len = IPH_LEN
+            .checked_add(transport_len)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mut pkt = vec![0u8; total_len];
+
+        let protocol =
+            u8::try_from(IPPROTO_TCP).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        pkt[0] = 0x60;
+        pkt[4..6].copy_from_slice(&transport_len_u16.to_be_bytes());
+        pkt[6] = protocol;
+        pkt[7] = 64;
+        pkt[8..24].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+        pkt[24..40].copy_from_slice(&[0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+
+        pkt[IPH_LEN..IPH_LEN + 2].copy_from_slice(&10000u16.to_be_bytes());
+        pkt[IPH_LEN + 2..IPH_LEN + 4].copy_from_slice(&10001u16.to_be_bytes());
+        pkt[IPH_LEN + 4..IPH_LEN + 8].copy_from_slice(&seq.to_be_bytes());
+        pkt[IPH_LEN + 8..IPH_LEN + 12].copy_from_slice(&1u32.to_be_bytes());
+        pkt[IPH_LEN + 12] = 5 << 4;
+        pkt[IPH_LEN + 13] = TCP_FLAG_ACK;
+        pkt[IPH_LEN + 14..IPH_LEN + 16].copy_from_slice(&4096u16.to_be_bytes());
+
+        let mut pattern = 0u8;
+        for byte in &mut pkt[IPH_LEN + TCPH_LEN..] {
+            *byte = pattern;
+            pattern = pattern.wrapping_add(1);
+        }
+
+        let pseudo =
+            pseudo_header_checksum_no_fold(protocol, &pkt[8..24], &pkt[24..40], transport_len_u16);
+        let tcp_checksum = !checksum(&pkt[IPH_LEN..], pseudo);
+        pkt[IPH_LEN + 16..IPH_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
+
+        Ok(pkt)
     }
 
     #[test]
@@ -2792,6 +2841,74 @@ mod tests {
             wire_length_fields(41 + usize::from(u16::MAX), 40, true),
             None
         );
+    }
+
+    #[test]
+    fn ipv6_gro_coalesces_at_full_payload_length_boundary() -> io::Result<()> {
+        const FIRST_PAYLOAD_LEN: u16 = 32_758;
+        const SECOND_PAYLOAD_LEN: u16 = 32_757;
+        const IPV6_HEADER_LEN: usize = 40;
+        const TCP_HEADER_LEN: usize = 20;
+        let coalesced_packet_len = IPV6_HEADER_LEN + usize::from(u16::MAX);
+        const LARGE_CAPACITY: usize = 65_664;
+
+        assert_eq!(
+            TCP_HEADER_LEN + usize::from(FIRST_PAYLOAD_LEN) + usize::from(SECOND_PAYLOAD_LEN),
+            usize::from(u16::MAX)
+        );
+
+        let mut first = Vec::with_capacity(LARGE_CAPACITY);
+        first.resize(VIRTIO_NET_HDR_LEN, 0);
+        first.extend_from_slice(&make_ipv6_tcp_packet(1, usize::from(FIRST_PAYLOAD_LEN))?);
+
+        let mut second = Vec::with_capacity(LARGE_CAPACITY);
+        second.resize(VIRTIO_NET_HDR_LEN, 0);
+        second.extend_from_slice(&make_ipv6_tcp_packet(
+            1 + u32::from(FIRST_PAYLOAD_LEN),
+            usize::from(SECOND_PAYLOAD_LEN),
+        )?);
+
+        let mut bufs = vec![first, second];
+        let mut table = GROTable::new();
+        table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false)?;
+
+        assert_eq!(table.to_write, vec![0]);
+        let hdr = VirtioNetHdr::decode(&bufs[0][..VIRTIO_NET_HDR_LEN])?;
+        assert_eq!(hdr.gso_type, VIRTIO_NET_HDR_GSO_TCPV6);
+        assert_eq!(hdr.gso_size, FIRST_PAYLOAD_LEN);
+
+        let pkt = &bufs[0][VIRTIO_NET_HDR_LEN..];
+        assert_eq!(pkt.len(), coalesced_packet_len);
+        assert_eq!(u16::from_be_bytes([pkt[4], pkt[5]]), u16::MAX);
+        Ok(())
+    }
+
+    #[test]
+    fn udp_coalesce_rejects_packets_larger_than_wire_length_fields() {
+        const PACKET_LEN: usize = 33_028;
+        let mut bufs = vec![vec![0; PACKET_LEN]];
+        let pkt = vec![0; PACKET_LEN];
+        let mut item = UdpGROItem {
+            key: UdpFlowKey {
+                src_addr: [0; 16],
+                dst_addr: [0; 16],
+                src_port: 1,
+                dst_port: 2,
+                is_v6: false,
+            },
+            bufs_index: 0,
+            num_merged: 0,
+            gso_size: 33_000,
+            iph_len: 20,
+            c_sum_known_invalid: false,
+        };
+
+        assert!(matches!(
+            coalesce_udp_packets(&pkt, &mut item, &mut bufs, 0, false),
+            CoalesceResult::ExceedsWireLength
+        ));
+        assert_eq!(bufs[0].len(), PACKET_LEN);
+        assert_eq!(item.num_merged, 0);
     }
 
     #[test]
