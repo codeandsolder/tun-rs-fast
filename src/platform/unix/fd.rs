@@ -244,9 +244,42 @@ impl Drop for Fd {
 
 #[cfg(test)]
 mod tests {
-    use super::Fd;
+    use super::{checked_iov_count, syscall_result_len, Fd};
     use std::fs::File;
+    use std::io;
+    use std::io::{IoSlice, IoSliceMut};
     use std::os::fd::AsRawFd;
+    use std::os::unix::net::UnixStream;
+
+    #[test]
+    fn syscall_result_len_rejects_negative_results() {
+        assert!(matches!(syscall_result_len(0), Ok(0)));
+        assert!(syscall_result_len(-1).is_err());
+    }
+
+    #[test]
+    fn iov_count_rejects_values_outside_c_int_range() {
+        assert!(matches!(checked_iov_count(0), Ok(0)));
+        assert!(checked_iov_count(usize::MAX).is_err());
+    }
+
+    #[test]
+    fn vectored_io_transfers_nonempty_buffers() -> io::Result<()> {
+        let (reader, writer) = UnixStream::pair()?;
+        let reader = Fd::from_owned(reader.into());
+        let writer = Fd::from_owned(writer.into());
+
+        let write_bufs = [IoSlice::new(b"ab"), IoSlice::new(b"cde")];
+        assert_eq!(writer.writev(&write_bufs)?, 5);
+
+        let mut first = [0u8; 2];
+        let mut second = [0u8; 3];
+        let mut read_bufs = [IoSliceMut::new(&mut first), IoSliceMut::new(&mut second)];
+        assert_eq!(reader.readv(&mut read_bufs)?, 5);
+        assert_eq!(&first, b"ab");
+        assert_eq!(&second, b"cde");
+        Ok(())
+    }
 
     #[test]
     fn should_drop_cleanup_matches_ownership() {

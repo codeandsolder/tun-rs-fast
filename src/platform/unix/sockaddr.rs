@@ -239,7 +239,7 @@ fn ipv6_conversion_preserves_flowinfo_and_scope_id() {
     assert_eq!(actual, old);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[test]
 fn ipaddr_to_sockaddr_writes_through_complete_ifreq_union_storage() {
     let old = std::net::IpAddr::V4([10, 26, 1, 100].into());
@@ -254,4 +254,17 @@ fn ipaddr_to_sockaddr_writes_through_complete_ifreq_union_storage() {
     let raw = unsafe { ifru.ifru_addr };
     let actual = sockaddr_v4_to_rs_addr(&raw).unwrap();
     assert_eq!(actual, std::net::SocketAddr::new(old, 0x0208));
+}
+
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[test]
+fn generic_sockaddr_decoder_rejects_non_ipv4_families() {
+    let family = libc::sa_family_t::try_from(libc::AF_INET6);
+    assert!(family.is_ok(), "AF_INET6 must fit Linux sa_family_t");
+    let raw = libc::sockaddr {
+        sa_family: family.unwrap_or_default(),
+        sa_data: [0; 14],
+    };
+
+    assert_eq!(sockaddr_v4_to_rs_addr(&raw), None);
 }
