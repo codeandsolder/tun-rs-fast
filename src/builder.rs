@@ -259,6 +259,10 @@ pub enum Layer {
 /// This structure stores settings such as the device name, operating layer,
 /// and platform-specific parameters (e.g., GUID, wintun file, ring capacity on Windows).
 #[derive(Clone, Default, Debug)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) struct DeviceConfig {
     /// The name of the device/interface.
     pub(crate) dev_name: Option<String>,
@@ -442,7 +446,7 @@ impl DeviceBuilderGuard<'_> {
         target_os = "macos",
         target_os = "netbsd"
     ))]
-    pub fn mac_addr(&mut self, mac_addr: [u8; 6]) -> &mut Self {
+    pub const fn mac_addr(&mut self, mac_addr: [u8; 6]) -> &mut Self {
         self.0.mac_addr = Some(mac_addr);
         self
     }
@@ -550,7 +554,7 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// Linux only.
     #[cfg(target_os = "linux")]
-    pub fn tx_queue_len(&mut self, tx_queue_len: u32) -> &mut Self {
+    pub const fn tx_queue_len(&mut self, tx_queue_len: u32) -> &mut Self {
         self.0.tx_queue_len = Some(tx_queue_len);
         self
     }
@@ -599,9 +603,9 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// # Platform
     ///
-    /// Linux only. Requires kernel support for IFF_VNET_HDR (Linux 2.6.32+).
+    /// Linux only. Requires kernel support for `IFF_VNET_HDR` (Linux 2.6.32+).
     #[cfg(target_os = "linux")]
-    pub fn offload(&mut self, offload: bool) -> &mut Self {
+    pub const fn offload(&mut self, offload: bool) -> &mut Self {
         self.0.offload = Some(offload);
         self
     }
@@ -659,9 +663,9 @@ impl DeviceBuilderGuard<'_> {
     ///
     /// # Platform
     ///
-    /// Linux only. Requires kernel support for IFF_MULTI_QUEUE.
+    /// Linux only. Requires kernel support for `IFF_MULTI_QUEUE`.
     #[cfg(target_os = "linux")]
-    pub fn multi_queue(&mut self, multi_queue: bool) -> &mut Self {
+    pub const fn multi_queue(&mut self, multi_queue: bool) -> &mut Self {
         self.0.multi_queue = Some(multi_queue);
         self
     }
@@ -681,7 +685,7 @@ impl DeviceBuilderGuard<'_> {
         target_os = "openbsd",
         target_os = "netbsd"
     ))]
-    pub fn packet_information(&mut self, packet_information: bool) -> &mut Self {
+    pub const fn packet_information(&mut self, packet_information: bool) -> &mut Self {
         self.0.packet_information = Some(packet_information);
         self
     }
@@ -908,11 +912,13 @@ pub struct DeviceBuilder {
 }
 
 impl DeviceBuilder {
-    /// Creates a new DeviceBuilder instance with default settings.
+    /// Creates a new `DeviceBuilder` instance with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self::default().enable(true)
     }
     /// Sets the device name.
+    #[must_use]
     pub fn name<S: Into<String>>(mut self, dev_name: S) -> Self {
         self.dev_name = Some(dev_name.into());
         self
@@ -924,7 +930,8 @@ impl DeviceBuilder {
         self
     }
     /// Sets the device MTU (Maximum Transmission Unit).
-    pub fn mtu(mut self, mtu: u16) -> Self {
+    #[must_use]
+    pub const fn mtu(mut self, mtu: u16) -> Self {
         self.mtu = Some(mtu);
         #[cfg(windows)]
         {
@@ -954,7 +961,8 @@ impl DeviceBuilder {
         target_os = "macos",
         target_os = "netbsd"
     ))]
-    pub fn mac_addr(mut self, mac_addr: [u8; 6]) -> Self {
+    #[must_use]
+    pub const fn mac_addr(mut self, mac_addr: [u8; 6]) -> Self {
         self.mac_addr = Some(mac_addr);
         self
     }
@@ -969,6 +977,11 @@ impl DeviceBuilder {
     /// use tun_rs::DeviceBuilder;
     /// DeviceBuilder::new().ipv4(Ipv4Addr::new(10, 0, 0, 12), 24, None);
     /// ```
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "builder conversion adapters intentionally accept owned or borrowed values for call-site ergonomics"
+    )]
     pub fn ipv4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         mut self,
         address: IPv4,
@@ -987,6 +1000,11 @@ impl DeviceBuilder {
     /// use tun_rs::DeviceBuilder;
     /// DeviceBuilder::new().ipv6("CDCD:910A:2222:5498:8475:1111:3900:2021", 64);
     /// ```
+    #[must_use]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "builder conversion adapters intentionally accept owned or borrowed values for call-site ergonomics"
+    )]
     pub fn ipv6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         mut self,
         address: IPv6,
@@ -1011,6 +1029,7 @@ impl DeviceBuilder {
     ///     ("CDCD:910A:2222:5498:8475:1111:3900:2023", 64),
     /// ]);
     /// ```
+    #[must_use]
     pub fn ipv6_tuple<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         mut self,
         addrs: &[(IPv6, Netmask)],
@@ -1033,7 +1052,8 @@ impl DeviceBuilder {
     ///
     /// * L2 corresponds to TAP
     /// * L3 corresponds to TUN
-    pub fn layer(mut self, layer: Layer) -> Self {
+    #[must_use]
+    pub const fn layer(mut self, layer: Layer) -> Self {
         self.layer = Some(layer);
         self
     }
@@ -1109,20 +1129,23 @@ impl DeviceBuilder {
     }
     /// Sets the transmit queue length on Linux.
     #[cfg(target_os = "linux")]
-    pub fn tx_queue_len(mut self, tx_queue_len: u32) -> Self {
+    #[must_use]
+    pub const fn tx_queue_len(mut self, tx_queue_len: u32) -> Self {
         self.tx_queue_len = Some(tx_queue_len);
         self
     }
     /// Enables TUN offloads on Linux.
     /// After enabling, use `recv_multiple`/`send_multiple` for data transmission.
     #[cfg(target_os = "linux")]
-    pub fn offload(mut self, offload: bool) -> Self {
+    #[must_use]
+    pub const fn offload(mut self, offload: bool) -> Self {
         self.offload = Some(offload);
         self
     }
     /// Enables multi-queue support on Linux.
     #[cfg(target_os = "linux")]
-    pub fn multi_queue(mut self, multi_queue: bool) -> Self {
+    #[must_use]
+    pub const fn multi_queue(mut self, multi_queue: bool) -> Self {
         self.multi_queue = Some(multi_queue);
         self
     }
@@ -1142,7 +1165,8 @@ impl DeviceBuilder {
         target_os = "openbsd",
         target_os = "netbsd"
     ))]
-    pub fn packet_information(mut self, packet_information: bool) -> Self {
+    #[must_use]
+    pub const fn packet_information(mut self, packet_information: bool) -> Self {
         self.packet_information = Some(packet_information);
         self
     }
@@ -1211,7 +1235,8 @@ impl DeviceBuilder {
     /// # See Also
     ///
     /// - [`inherit_enable_state`](Self::inherit_enable_state) - Preserve existing device state
-    pub fn enable(mut self, enable: bool) -> Self {
+    #[must_use]
+    pub const fn enable(mut self, enable: bool) -> Self {
         self.enabled = Some(enable);
         self
     }
@@ -1248,10 +1273,18 @@ impl DeviceBuilder {
     /// # See Also
     ///
     /// - [`enable`](Self::enable) - Explicitly enable or disable the device
-    pub fn inherit_enable_state(mut self) -> Self {
+    #[must_use]
+    pub const fn inherit_enable_state(mut self) -> Self {
         self.enabled = None;
         self
     }
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "keep one non-const cross-platform helper signature because the Windows configuration path uses non-const MAC formatting on Rust 1.99"
+        )
+    )]
     pub(crate) fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),
@@ -1353,6 +1386,10 @@ impl DeviceBuilder {
         Ok(())
     }
     /// Builds a synchronous device instance and applies all configuration parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if device creation fails or any requested configuration cannot be applied.
     pub fn build_sync(mut self) -> io::Result<SyncDevice> {
         let device = DeviceImpl::new(self.build_config())?;
         self.config(&device)?;
@@ -1395,6 +1432,7 @@ impl DeviceBuilder {
     ///    opt.associate_route(false).packet_information(false);
     /// }).build_sync().unwrap();
     /// ````
+    #[must_use]
     pub fn with<F: FnMut(&mut DeviceBuilderGuard)>(mut self, mut f: F) -> Self {
         let mut borrow = DeviceBuilderGuard(&mut self);
         f(&mut borrow);
@@ -1406,6 +1444,10 @@ impl DeviceBuilder {
 pub trait ToIpv4Address {
     /// Attempts to convert the implementing type into an `Ipv4Addr`.
     /// Returns the IPv4 address on success or an error on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value cannot be converted to a valid IPv4 address.
     fn ipv4(&self) -> io::Result<Ipv4Addr>;
 }
 impl ToIpv4Address for Ipv4Addr {
@@ -1416,8 +1458,8 @@ impl ToIpv4Address for Ipv4Addr {
 impl ToIpv4Address for IpAddr {
     fn ipv4(&self) -> io::Result<Ipv4Addr> {
         match self {
-            IpAddr::V4(ip) => Ok(*ip),
-            IpAddr::V6(_) => Err(io::Error::new(
+            Self::V4(ip) => Ok(*ip),
+            Self::V6(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid address",
             )),
@@ -1445,6 +1487,10 @@ impl ToIpv4Address for &str {
 pub trait ToIpv6Address {
     /// Attempts to convert the implementing type into an `Ipv6Addr`.
     /// Returns the IPv6 address on success or an error on failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value cannot be converted to a valid IPv6 address.
     fn ipv6(&self) -> io::Result<Ipv6Addr>;
 }
 
@@ -1456,11 +1502,11 @@ impl ToIpv6Address for Ipv6Addr {
 impl ToIpv6Address for IpAddr {
     fn ipv6(&self) -> io::Result<Ipv6Addr> {
         match self {
-            IpAddr::V4(_) => Err(io::Error::new(
+            Self::V4(_) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "invalid address",
             )),
-            IpAddr::V6(ip) => Ok(*ip),
+            Self::V6(ip) => Ok(*ip),
         }
     }
 }
@@ -1490,20 +1536,36 @@ fn validate_prefix(prefix: u8, max: u8) -> io::Result<u8> {
     Ok(prefix)
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(super) fn validate_ipv4_prefix(prefix: u8) -> io::Result<u8> {
     validate_prefix(prefix, 32)
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(super) fn validate_ipv6_prefix(prefix: u8) -> io::Result<u8> {
     validate_prefix(prefix, 128)
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(super) fn validated_ipv4_prefix<Netmask: ToIpv4Netmask + ?Sized>(
     netmask: &Netmask,
 ) -> io::Result<u8> {
     validate_ipv4_prefix(netmask.prefix()?)
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(super) fn validated_ipv6_prefix<Netmask: ToIpv6Netmask + ?Sized>(
     netmask: &Netmask,
 ) -> io::Result<u8> {
@@ -1513,8 +1575,16 @@ pub(super) fn validated_ipv6_prefix<Netmask: ToIpv6Netmask + ?Sized>(
 /// Trait for converting various types into an IPv4 netmask (prefix length).
 pub trait ToIpv4Netmask {
     /// Returns the prefix length (i.e., the number of consecutive 1s in the netmask).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value does not describe a valid IPv4 prefix or contiguous netmask.
     fn prefix(&self) -> io::Result<u8>;
     /// Computes the IPv4 netmask based on the prefix length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prefix or netmask is invalid.
     fn netmask(&self) -> io::Result<Ipv4Addr> {
         let prefix = validated_ipv4_prefix(self)?;
         let ip = u32::MAX.checked_shl(32 - u32::from(prefix)).unwrap_or(0);
@@ -1571,8 +1641,16 @@ impl ToIpv4Netmask for &str {
 /// Trait for converting various types into an IPv6 netmask (prefix length).
 pub trait ToIpv6Netmask {
     /// Returns the prefix length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the value does not describe a valid IPv6 prefix or contiguous netmask.
     fn prefix(&self) -> io::Result<u8>;
     /// Computes the IPv6 netmask based on the prefix length.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the prefix or netmask is invalid.
     fn netmask(&self) -> io::Result<Ipv6Addr> {
         let prefix = validated_ipv6_prefix(self)?;
         let ip = u128::MAX.checked_shl(128 - u32::from(prefix)).unwrap_or(0);

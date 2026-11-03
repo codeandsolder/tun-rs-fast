@@ -4,8 +4,8 @@
 )]
 
 use crate::platform::linux::offload::{
-    gso_none_checksum, gso_split, gso_transport_protocol, handle_gro, VirtioNetHdr,
-    VIRTIO_NET_HDR_F_NEEDS_CSUM, VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_LEN,
+    gso_none_checksum, gso_split, gso_transport_protocol, handle_gro, TransportProtocol,
+    VirtioNetHdr, VIRTIO_NET_HDR_F_NEEDS_CSUM, VIRTIO_NET_HDR_GSO_NONE, VIRTIO_NET_HDR_LEN,
 };
 use crate::platform::unix::device::{ctl, ctl_v6};
 use crate::platform::{ExpandBuffer, GROTable};
@@ -63,7 +63,7 @@ fn ipv6_prefix_from_netmask(netmask: IpAddr) -> io::Result<u8> {
     }
 }
 
-fn tx_queue_len_from_c_int(value: c_int) -> u32 {
+const fn tx_queue_len_from_c_int(value: c_int) -> u32 {
     // SIOCGIFTXQLEN copies the kernel's unsigned tx_queue_len through the
     // signed ifr_qlen ABI field, so preserve the field's 32-bit representation.
     u32::from_ne_bytes(value.to_ne_bytes())
@@ -99,9 +99,9 @@ pub struct DeviceImpl {
 impl DeviceImpl {
     /// Create a new `Device` for the given `Configuration`.
     pub(crate) fn new(config: DeviceConfig) -> std::io::Result<Self> {
-        let dev_name = match config.dev_name.as_ref() {
+        let dev_name = match config.dev_name {
             Some(tun_name) => {
-                let tun_name = CString::new(tun_name.clone())?;
+                let tun_name = CString::new(tun_name)?;
 
                 if tun_name.as_bytes_with_nul().len() > IFNAMSIZ {
                     return Err(std::io::Error::new(
@@ -119,8 +119,9 @@ impl DeviceImpl {
         // Create the device node if it is missing.
         // Silently ignore errors, let opening the device report an error.
         // This way, we don't fail if someone races us to create the device node.
-        if let Ok(false) = std::fs::exists("/dev/net/tun") {
+        if matches!(std::fs::exists("/dev/net/tun"), Ok(false)) {
             std::fs::create_dir_all("/dev/net").ok();
+            // SAFETY: the path is a static NUL-terminated C string and the mode/device values are fixed Linux ABI values.
             unsafe {
                 libc::mknod(
                     c"/dev/net/tun".as_ptr(),
@@ -130,6 +131,7 @@ impl DeviceImpl {
             }
         }
 
+        // SAFETY: request storage is initialized before use; copied names are bounds-checked and all FFI calls receive live descriptors and call-scoped pointers.
         unsafe {
             let mut req: ifreq = mem::zeroed();
 
@@ -193,7 +195,7 @@ impl DeviceImpl {
                 (false, false)
             };
 
-            let device = DeviceImpl {
+            let device = Self {
                 tun: Tun::new(tun_fd),
                 vnet_hdr,
                 udp_gso,
@@ -208,7 +210,7 @@ impl DeviceImpl {
         // SAFETY: self owns a live TUN descriptor and the offload mask is composed of TUN_F_* flags.
         unsafe { tunsetoffload(self.as_raw_fd(), tun_tcp_offloads as _) }
             .map(|_| ())
-            .map_err(|e| e.into())
+            .map_err(std::convert::Into::into)
     }
     unsafe fn set_tcp_udp_offloads(&self) -> io::Result<()> {
         let tun_tcp_offloads = libc::TUN_F_CSUM | libc::TUN_F_TSO4 | libc::TUN_F_TSO6;
@@ -216,7 +218,7 @@ impl DeviceImpl {
         // SAFETY: self owns a live TUN descriptor and the offload mask is composed of TUN_F_* flags.
         unsafe { tunsetoffload(self.as_raw_fd(), (tun_tcp_offloads | tun_udp_offloads) as _) }
             .map(|_| ())
-            .map_err(|e| e.into())
+            .map_err(std::convert::Into::into)
     }
     /// Wraps an arbitrary owned descriptor (socketpair, pipe) without the
     /// `TUNGETIFF` validation so readiness behaviour can be tested without
@@ -255,7 +257,7 @@ impl DeviceImpl {
     ///
     /// # Description
     /// When multi-queue is enabled, create a new queue by duplicating an existing one.
-    pub(crate) fn try_clone(&self) -> io::Result<DeviceImpl> {
+    pub(crate) fn try_clone(&self) -> io::Result<Self> {
         let flags = self.flags;
         let iff_multi_queue = ifreq_flag(IFF_MULTI_QUEUE)?;
         if flags & iff_multi_queue != iff_multi_queue {
@@ -264,6 +266,7 @@ impl DeviceImpl {
                 "iff_multi_queue not enabled",
             ));
         }
+        // SAFETY: the request is initialized for this interface and all TUN ioctls receive live descriptors and call-scoped pointers.
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_flags = flags;
@@ -272,7 +275,7 @@ impl DeviceImpl {
             if let Err(err) = tunsetiff(tun_fd.inner, (&raw mut req).cast::<c_int>()) {
                 return Err(io::Error::from(err));
             }
-            let dev = DeviceImpl {
+            let dev = Self {
                 tun: Tun::new(tun_fd),
                 vnet_hdr: self.vnet_hdr,
                 udp_gso: self.udp_gso,
@@ -281,7 +284,7 @@ impl DeviceImpl {
             };
             if dev.vnet_hdr {
                 if dev.udp_gso {
-                    dev.set_tcp_udp_offloads()?
+                    dev.set_tcp_udp_offloads()?;
                 } else {
                     dev.set_tcp_offloads()?;
                 }
@@ -293,13 +296,15 @@ impl DeviceImpl {
     /// Returns whether UDP Generic Segmentation Offload (GSO) is enabled.
     ///
     /// This is determined by the `udp_gso` flag in the device.
-    pub fn udp_gso(&self) -> bool {
+    #[must_use]
+    pub const fn udp_gso(&self) -> bool {
         self.udp_gso
     }
     /// Returns whether TCP Generic Segmentation Offload (GSO) is enabled.
     ///
     /// In this implementation, this is represented by the `vnet_hdr` flag.
-    pub fn tcp_gso(&self) -> bool {
+    #[must_use]
+    pub const fn tcp_gso(&self) -> bool {
         self.vnet_hdr
     }
     /// Sets the transmit queue length for the network interface.
@@ -308,12 +313,17 @@ impl DeviceImpl {
     /// assigns the desired transmit queue length to the `ifru_metric` field,
     /// and calls the `change_tx_queue_len` function using the control file descriptor.
     /// If the underlying operation fails, an I/O error is returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the queue length cannot be represented by the Linux ABI or the ioctl fails.
     pub fn set_tx_queue_len(&self, tx_queue_len: u32) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: the request is initialized for this interface and the ioctl only borrows it for the duration of the call.
         unsafe {
             let mut ifreq = self.request()?;
             ifreq.ifr_ifru.ifru_metric = tx_queue_len_to_c_int(tx_queue_len)?;
-            if let Err(err) = change_tx_queue_len(ctl()?.as_raw_fd(), &ifreq) {
+            if let Err(err) = change_tx_queue_len(ctl()?.as_raw_fd(), &raw const ifreq) {
                 return Err(io::Error::from(err));
             }
         }
@@ -323,11 +333,16 @@ impl DeviceImpl {
     ///
     /// This function constructs an interface request structure and calls `tx_queue_len`
     /// to populate it with the current transmit queue length. The value is then returned.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Linux queue-length query fails.
     pub fn tx_queue_len(&self) -> io::Result<u32> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
+        // SAFETY: the request is writable initialized storage and the ioctl only borrows it for the duration of the call.
         unsafe {
             let mut ifreq = self.request()?;
-            if let Err(err) = tx_queue_len(ctl()?.as_raw_fd(), &mut ifreq) {
+            if let Err(err) = tx_queue_len(ctl()?.as_raw_fd(), &raw mut ifreq) {
                 return Err(io::Error::from(err));
             }
             Ok(tx_queue_len_from_c_int(ifreq.ifr_ifru.ifru_metric))
@@ -357,8 +372,13 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel rejects the persistence request.
     pub fn persist(&self) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: self owns a live TUN descriptor and the ioctl only reads the scalar argument during the call.
         unsafe {
             if let Err(err) = tunsetpersist(self.as_raw_fd(), &1) {
                 Err(io::Error::from(err))
@@ -389,10 +409,15 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel rejects the owner update.
     pub fn user(&self, value: i32) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: self owns a live TUN descriptor and the ioctl only reads the scalar owner value during the call.
         unsafe {
-            if let Err(err) = tunsetowner(self.as_raw_fd(), &value) {
+            if let Err(err) = tunsetowner(self.as_raw_fd(), &raw const value) {
                 Err(io::Error::from(err))
             } else {
                 Ok(())
@@ -421,10 +446,15 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel rejects the group update.
     pub fn group(&self, value: i32) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: self owns a live TUN descriptor and the ioctl only reads the scalar group value during the call.
         unsafe {
-            if let Err(err) = tunsetgroup(self.as_raw_fd(), &value) {
+            if let Err(err) = tunsetgroup(self.as_raw_fd(), &raw const value) {
                 Err(io::Error::from(err))
             } else {
                 Ok(())
@@ -490,13 +520,17 @@ impl DeviceImpl {
     /// - Use `IDEAL_BATCH_SIZE` for optimal batch size (typically 128 packets)
     /// - Reuse the same `GROTable` instance across calls to avoid allocations
     /// - Enable offload via `.offload(true)` in `DeviceBuilder` for best performance
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if GRO accounting fails or writing a coalesced packet to the TUN device fails.
     pub fn send_multiple<B: ExpandBuffer>(
         &self,
         gro_table: &mut GROTable,
         bufs: &mut [B],
         offset: usize,
     ) -> io::Result<usize> {
-        self.send_multiple0(gro_table, bufs, offset, |tun, buf| tun.send(buf))
+        self.send_multiple0(gro_table, bufs, offset, super::super::unix::Tun::send)
     }
     pub(crate) fn send_multiple0<B: ExpandBuffer, W: FnMut(&Tun, &[u8]) -> io::Result<usize>>(
         &self,
@@ -550,7 +584,7 @@ impl DeviceImpl {
                             return Err(e);
                         }
                     }
-                    err = Err(e)
+                    err = Err(e);
                 }
             }
         }
@@ -625,6 +659,10 @@ impl DeviceImpl {
     /// - Use `IDEAL_BATCH_SIZE` (128) for the number of output buffers
     /// - A single `recv_multiple` call may return multiple MTU-sized packets from one large GSO packet
     /// - The performance benefit is most noticeable with TCP traffic using large send/receive windows
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if reading from the TUN device fails or a received virtio/GSO packet is malformed.
     pub fn recv_multiple<B: AsRef<[u8]> + AsMut<[u8]>>(
         &self,
         original_buffer: &mut [u8],
@@ -655,10 +693,10 @@ impl DeviceImpl {
             if len <= VIRTIO_NET_HDR_LEN {
                 Err(io::Error::other(format!(
                     "length of packet ({len}) <= VIRTIO_NET_HDR_LEN ({VIRTIO_NET_HDR_LEN})",
-                )))?
+                )))?;
             }
             let hdr = VirtioNetHdr::decode(&original_buffer[..VIRTIO_NET_HDR_LEN])?;
-            self.handle_virtio_read(
+            Self::handle_virtio_read(
                 hdr,
                 &mut original_buffer[VIRTIO_NET_HDR_LEN..len],
                 bufs,
@@ -677,12 +715,11 @@ impl DeviceImpl {
             Ok(1)
         }
     }
-    /// https://github.com/WireGuard/wireguard-go/blob/12269c2761734b15625017d8565745096325392f/tun/tun_linux.go#L375
+    /// <https://github.com/WireGuard/wireguard-go/blob/12269c2761734b15625017d8565745096325392f/tun/tun_linux.go#L375>
     /// handleVirtioRead splits in into bufs, leaving offset bytes at the front of
     /// each buffer. It mutates sizes to reflect the size of each element of bufs,
     /// and returns the number of packets read.
     pub(crate) fn handle_virtio_read<B: AsRef<[u8]> + AsMut<[u8]>>(
-        &self,
         mut hdr: VirtioNetHdr,
         input: &mut [u8],
         bufs: &mut [B],
@@ -718,7 +755,7 @@ impl DeviceImpl {
                 Err(io::Error::other(format!(
                     "read len {len} overflows bufs element len {}",
                     bufs[0].as_ref().len()
-                )))?
+                )))?;
             }
             sizes[0] = len;
             bufs[0].as_mut()[offset..offset + len].copy_from_slice(input);
@@ -752,21 +789,21 @@ impl DeviceImpl {
         // of the entire first packet when the kernel is handling it as part of a
         // FORWARD path. Instead, parse the transport header length and add it onto
         // csumStart, which is synonymous for IP header length.
-        if transport_protocol == libc::IPPROTO_UDP {
+        if transport_protocol == TransportProtocol::Udp {
             hdr.hdr_len = hdr.csum_start.checked_add(8).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "UDP header length overflow")
             })?;
         } else {
             if len <= hdr.csum_start as usize + 12 {
-                Err(io::Error::other("packet is too short"))?
+                Err(io::Error::other("packet is too short"))?;
             }
 
-            let tcp_h_len = ((input[hdr.csum_start as usize + 12] as u16) >> 4) * 4;
+            let tcp_h_len = (u16::from(input[hdr.csum_start as usize + 12]) >> 4) * 4;
             if !(20..=60).contains(&tcp_h_len) {
                 // A TCP header must be between 20 and 60 bytes in length.
                 Err(io::Error::other(format!(
                     "tcp header len is invalid: {tcp_h_len}"
-                )))?
+                )))?;
             }
             hdr.hdr_len = hdr.csum_start.checked_add(tcp_h_len).ok_or_else(|| {
                 io::Error::new(io::ErrorKind::InvalidInput, "TCP header length overflow")
@@ -776,13 +813,13 @@ impl DeviceImpl {
             Err(io::Error::other(format!(
                 "length of packet ({len}) < virtioNetHdr.hdr_len ({})",
                 hdr.hdr_len
-            )))?
+            )))?;
         }
         if hdr.hdr_len < hdr.csum_start {
             Err(io::Error::other(format!(
                 "virtioNetHdr.hdrLen ({}) < virtioNetHdr.csumStart ({})",
                 hdr.hdr_len, hdr.csum_start
-            )))?
+            )))?;
         }
         let c_sum_at = usize::from(hdr.csum_start) + usize::from(hdr.csum_offset);
         if c_sum_at
@@ -796,8 +833,13 @@ impl DeviceImpl {
         }
         gso_split(input, hdr, bufs, sizes, offset, is_v6)
     }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface lookup fails, the prefix cannot be represented, or the removal ioctl fails.
     pub fn remove_address_v6_impl(&self, addr: Ipv6Addr, prefix: u8) -> io::Result<()> {
         let prefix = crate::builder::validate_ipv6_prefix(prefix)?;
+        // SAFETY: the IPv6 request is fully initialized before the ioctl, which receives a live control descriptor and a call-scoped pointer.
         unsafe {
             let if_index = self.if_index_impl()?;
             let ctl = ctl_v6()?;
@@ -807,7 +849,7 @@ impl DeviceImpl {
             ifrv6.ifr6_addr = sockaddr_union::from(std::net::SocketAddr::new(addr.into(), 0))
                 .addr6
                 .sin6_addr;
-            if let Err(err) = siocdifaddr_in6(ctl.as_raw_fd(), &ifrv6) {
+            if let Err(err) = siocdifaddr_in6(ctl.as_raw_fd(), &raw const ifrv6) {
                 return Err(io::Error::from(err));
             }
         }
@@ -817,25 +859,26 @@ impl DeviceImpl {
 
 impl DeviceImpl {
     /// Prepare a new request.
-    unsafe fn request(&self) -> io::Result<ifreq> {
-        // SAFETY: this method forwards the same interface-name validity contract to request().
-        unsafe { request(&self.name_impl()?) }
+    fn request(&self) -> io::Result<ifreq> {
+        request(&self.name_impl()?)
     }
     fn set_address_v4(&self, addr: Ipv4Addr) -> io::Result<()> {
+        // SAFETY: the interface request is initialized before its union storage is encoded and passed to the ioctl for this call only.
         unsafe {
             let mut req = self.request()?;
             ipaddr_to_sockaddr(addr, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
-            if let Err(err) = siocsifaddr(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
         }
         Ok(())
     }
     fn set_netmask(&self, value: Ipv4Addr) -> io::Result<()> {
+        // SAFETY: the interface request is initialized before its union storage is encoded and passed to the ioctl for this call only.
         unsafe {
             let mut req = self.request()?;
             ipaddr_to_sockaddr(value, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
-            if let Err(err) = siocsifnetmask(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifnetmask(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -843,10 +886,11 @@ impl DeviceImpl {
     }
 
     fn set_destination(&self, value: Ipv4Addr) -> io::Result<()> {
+        // SAFETY: the interface request is initialized before its union storage is encoded and passed to the ioctl for this call only.
         unsafe {
             let mut req = self.request()?;
             ipaddr_to_sockaddr(value, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
-            if let Err(err) = siocsifdstaddr(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifdstaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -881,15 +925,17 @@ impl DeviceImpl {
 
     /// Retrieves the name of the network interface.
     pub(crate) fn name_impl(&self) -> io::Result<String> {
+        // SAFETY: self owns a live TUN descriptor; name only performs TUNGETIFF into local request storage.
         unsafe { name(self.as_raw_fd()) }
     }
 
     fn ifru_flags(&self) -> io::Result<i16> {
+        // SAFETY: the request is writable initialized storage and the flags ioctl only borrows it during the call.
         unsafe {
             let ctl = ctl()?;
             let mut req = self.request()?;
 
-            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &mut req) {
+            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &raw mut req) {
                 return Err(io::Error::from(err));
             }
             Ok(req.ifr_ifru.ifru_flags)
@@ -913,10 +959,18 @@ impl DeviceImpl {
 //Public User Interface
 impl DeviceImpl {
     /// Retrieves the name of the network interface.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface name cannot be read from the TUN descriptor.
     pub fn name(&self) -> io::Result<String> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
         self.name_impl()
     }
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the IPv6 address removal request fails.
     pub fn remove_address_v6(&self, addr: Ipv6Addr, prefix: u8) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
         self.remove_address_v6_impl(addr, prefix)
@@ -946,8 +1000,13 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the new name is invalid for the Linux ABI or the rename ioctl fails.
     pub fn set_name(&self, value: &str) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: the new name is converted to a bounded C string before copying into initialized request storage and issuing the ioctl.
         unsafe {
             let tun_name = CString::new(value)?;
 
@@ -962,7 +1021,7 @@ impl DeviceImpl {
                 value.len(),
             );
 
-            if let Err(err) = siocsifname(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifname(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
 
@@ -971,7 +1030,11 @@ impl DeviceImpl {
     }
     /// Checks whether the network interface is currently running.
     ///
-    /// The interface is considered running if both the IFF_UP and IFF_RUNNING flags are set.
+    /// The interface is considered running if both the `IFF_UP` and `IFF_RUNNING` flags are set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface flags cannot be queried.
     pub fn is_running(&self) -> io::Result<bool> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
         let flags = self.ifru_flags()?;
@@ -980,17 +1043,22 @@ impl DeviceImpl {
     }
     /// Enables or disables the network interface.
     ///
-    /// If `value` is true, the interface is enabled by setting the IFF_UP and IFF_RUNNING flags.
-    /// If false, the IFF_UP flag is cleared. The change is applied using a system call.
+    /// If `value` is true, the interface is enabled by setting the `IFF_UP` and `IFF_RUNNING` flags.
+    /// If false, the `IFF_UP` flag is cleared. The change is applied using a system call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface flags cannot be queried or updated.
     pub fn enabled(&self, value: bool) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
         let running_flags = ifreq_flag(IFF_UP | IFF_RUNNING)?;
         let iff_up = ifreq_flag(IFF_UP)?;
+        // SAFETY: both flag ioctls use initialized request storage and a live control descriptor, with pointers scoped to each call.
         unsafe {
             let ctl = ctl()?;
             let mut req = self.request()?;
 
-            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &mut req) {
+            if let Err(err) = siocgifflags(ctl.as_raw_fd(), &raw mut req) {
                 return Err(io::Error::from(err));
             }
 
@@ -1000,7 +1068,7 @@ impl DeviceImpl {
                 req.ifr_ifru.ifru_flags &= !iff_up;
             }
 
-            if let Err(err) = siocsifflags(ctl.as_raw_fd(), &req) {
+            if let Err(err) = siocsifflags(ctl.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
 
@@ -1029,11 +1097,16 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the broadcast-address query fails or the kernel address cannot be decoded.
     pub fn broadcast(&self) -> io::Result<IpAddr> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
+        // SAFETY: the broadcast-address ioctl writes into initialized request storage through a call-scoped pointer.
         unsafe {
             let mut req = self.request()?;
-            if let Err(err) = siocgifbrdaddr(ctl()?.as_raw_fd(), &mut req) {
+            if let Err(err) = siocgifbrdaddr(ctl()?.as_raw_fd(), &raw mut req) {
                 return Err(io::Error::from(err));
             }
             let raw = req.ifr_ifru.ifru_broadaddr;
@@ -1046,12 +1119,17 @@ impl DeviceImpl {
     ///
     /// This function converts the given IP address into a sockaddr structure (with a specified overwrite size)
     /// and then applies it to the interface via a system call.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the broadcast address cannot be encoded or the ioctl fails.
     pub fn set_broadcast(&self, value: IpAddr) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: the request is initialized before its union storage is encoded and passed to the broadcast-address ioctl.
         unsafe {
             let mut req = self.request()?;
             ipaddr_to_sockaddr(value, 0, (&raw mut req.ifr_ifru).cast(), OVERWRITE_SIZE);
-            if let Err(err) = siocsifbrdaddr(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifbrdaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -1078,6 +1156,14 @@ impl DeviceImpl {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(feature = "address-management")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "conversion adapters intentionally accept owned or borrowed values for call-site ergonomics"
+    )]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an address/netmask is invalid or the underlying interface update fails.
     pub fn set_network_address<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -1116,6 +1202,14 @@ impl DeviceImpl {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(feature = "address-management")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "conversion adapters intentionally accept owned or borrowed values for call-site ergonomics"
+    )]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address/netmask is invalid or the kernel rejects the address addition.
     pub fn add_address_v4<IPv4: ToIpv4Address, Netmask: ToIpv4Netmask>(
         &self,
         address: IPv4,
@@ -1160,6 +1254,10 @@ impl DeviceImpl {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(feature = "address-management")]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if interface enumeration fails or the kernel rejects the address removal.
     pub fn remove_address(&self, addr: IpAddr) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
         match addr {
@@ -1174,13 +1272,13 @@ impl DeviceImpl {
                 }
             }
             IpAddr::V6(addr_v6) => {
-                let addrs = crate::platform::get_if_addrs_by_name(self.name_impl()?)?;
+                let addrs = crate::platform::get_if_addrs_by_name(&self.name_impl()?)?;
                 for x in addrs {
                     if let Some(ip_addr) = x.address.ip_addr() {
                         if ip_addr == addr {
                             if let Some(netmask) = x.address.netmask() {
                                 let prefix = ipv6_prefix_from_netmask(netmask)?;
-                                self.remove_address_v6_impl(addr_v6, prefix)?
+                                self.remove_address_v6_impl(addr_v6, prefix)?;
                             }
                         }
                     }
@@ -1213,12 +1311,21 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "conversion adapters intentionally accept owned or borrowed values for call-site ergonomics"
+    )]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the address/netmask or interface index is invalid, or the kernel rejects the address addition.
     pub fn add_address_v6<IPv6: ToIpv6Address, Netmask: ToIpv6Netmask>(
         &self,
         addr: IPv6,
         netmask: Netmask,
     ) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: the IPv6 request is fully initialized before the ioctl, which receives a live control descriptor and a call-scoped pointer.
         unsafe {
             let if_index = self.if_index_impl()?;
             let ctl = ctl_v6()?;
@@ -1229,7 +1336,7 @@ impl DeviceImpl {
                 sockaddr_union::from(std::net::SocketAddr::new(addr.ipv6()?.into(), 0))
                     .addr6
                     .sin6_addr;
-            if let Err(err) = siocsifaddr_in6(ctl.as_raw_fd(), &ifrv6) {
+            if let Err(err) = siocsifaddr_in6(ctl.as_raw_fd(), &raw const ifrv6) {
                 return Err(io::Error::from(err));
             }
         }
@@ -1239,12 +1346,17 @@ impl DeviceImpl {
     ///
     /// This function constructs an interface request and uses a system call (via `siocgifmtu`)
     /// to obtain the MTU. The result is then converted to a u16.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the MTU query fails or the kernel value cannot be represented as `u16`.
     pub fn mtu(&self) -> io::Result<u16> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
+        // SAFETY: the MTU ioctl writes into initialized request storage through a call-scoped pointer.
         unsafe {
             let mut req = self.request()?;
 
-            if let Err(err) = siocgifmtu(ctl()?.as_raw_fd(), &mut req) {
+            if let Err(err) = siocgifmtu(ctl()?.as_raw_fd(), &raw mut req) {
                 return Err(io::Error::from(err));
             }
 
@@ -1277,13 +1389,18 @@ impl DeviceImpl {
     /// # }
     /// # Ok::<(), std::io::Error>(())
     /// ```
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel rejects the MTU update.
     pub fn set_mtu(&self, value: u16) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: the request and MTU field are initialized before being borrowed by the ioctl for the duration of the call.
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_mtu = i32::from(value);
 
-            if let Err(err) = siocsifmtu(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifmtu(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -1294,14 +1411,19 @@ impl DeviceImpl {
     /// This function constructs an interface request and copies the provided MAC address
     /// into the hardware address field. It then applies the change via a system call.
     /// This operation is typically supported only for TAP devices.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the kernel rejects the MAC-address update.
     pub fn set_mac_address(&self, eth_addr: [u8; ETHER_ADDR_LEN as usize]) -> io::Result<()> {
         let _guard = crate::platform::write_operation_lock(&self.op_lock);
+        // SAFETY: the hardware-address request is initialized and fully populated before the ioctl borrows it for the call.
         unsafe {
             let mut req = self.request()?;
             req.ifr_ifru.ifru_hwaddr.sa_family = ARPHRD_ETHER;
             req.ifr_ifru.ifru_hwaddr.sa_data[0..ETHER_ADDR_LEN as usize]
                 .copy_from_slice(eth_addr.map(u8::cast_signed).as_slice());
-            if let Err(err) = siocsifhwaddr(ctl()?.as_raw_fd(), &req) {
+            if let Err(err) = siocsifhwaddr(ctl()?.as_raw_fd(), &raw const req) {
                 return Err(io::Error::from(err));
             }
             Ok(())
@@ -1311,12 +1433,17 @@ impl DeviceImpl {
     ///
     /// This function queries the MAC address by the interface name using a helper function.
     /// An error is returned if the MAC address cannot be found.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the MAC-address query fails.
     pub fn mac_address(&self) -> io::Result<[u8; ETHER_ADDR_LEN as usize]> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
+        // SAFETY: the hardware-address ioctl writes into initialized request storage through a call-scoped pointer.
         unsafe {
             let mut req = self.request()?;
 
-            siocgifhwaddr(ctl()?.as_raw_fd(), &mut req).map_err(io::Error::from)?;
+            siocgifhwaddr(ctl()?.as_raw_fd(), &raw mut req).map_err(io::Error::from)?;
 
             let hw = &req.ifr_ifru.ifru_hwaddr.sa_data;
 
@@ -1357,6 +1484,7 @@ mod ipv6_netmask_tests {
 }
 
 fn tun_flags(fd: RawFd) -> io::Result<c_short> {
+    // SAFETY: TUNGETIFF writes into initialized local request storage; an invalid fd is reported by the kernel rather than dereferenced by Rust.
     unsafe {
         let mut req: ifreq = mem::zeroed();
         tungetiff(fd, (&raw mut req).cast::<c_int>()).map_err(io::Error::from)?;
@@ -1387,10 +1515,18 @@ unsafe fn name(fd: RawFd) -> io::Result<String> {
     Ok(tun_name)
 }
 
-unsafe fn request(name: &str) -> io::Result<ifreq> {
-    // SAFETY: ifreq is C request storage and callers guarantee name fits ifr_name.
+fn request(name: &str) -> io::Result<ifreq> {
+    if name.len() >= IFNAMSIZ {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "interface name too long",
+        ));
+    }
+    // SAFETY: `ifreq` is C request storage; zero initialization is a valid starting state
+    // and guarantees a trailing NUL after the bounded interface-name copy below.
     let mut req: ifreq = unsafe { mem::zeroed() };
-    // SAFETY: source and destination are non-overlapping and the caller guarantees the copy fits.
+    // SAFETY: the explicit IFNAMSIZ check bounds the copy, and the source/destination
+    // regions are distinct for the duration of this call.
     unsafe {
         ptr::copy_nonoverlapping(
             name.as_ptr().cast::<c_char>(),

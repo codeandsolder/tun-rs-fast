@@ -9,6 +9,8 @@ use futures_core::Stream;
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use crate::platform::offload::{GsoOutputCapacity, VirtioNetHdr};
+#[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+use crate::platform::DeviceImpl;
 use crate::AsyncDevice;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 use crate::{GROTable, IDEAL_BATCH_SIZE, VIRTIO_NET_HDR_LEN};
@@ -716,9 +718,9 @@ impl PacketSplitter {
             recv_buffer_size,
         }
     }
-    fn handle(&mut self, dev: &AsyncDevice, input: &mut [u8]) -> io::Result<()> {
+    fn handle(&mut self, input: &mut [u8]) -> io::Result<()> {
         self.handle_with(input, |hdr, input, bufs, sizes| {
-            dev.handle_virtio_read(hdr, input, bufs, sizes, 0)
+            DeviceImpl::handle_virtio_read(hdr, input, bufs, sizes, 0)
         })
     }
     fn handle_with(
@@ -1120,7 +1122,7 @@ where
 
         #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
         if let Some(packet_splitter) = &mut self.state.packet_splitter {
-            packet_splitter.handle(self.dev.borrow(), &mut self.state.rd)?;
+            packet_splitter.handle(&mut self.state.rd)?;
             if let Some(buf) = packet_splitter.next() {
                 if let Some(frame) = self.codec.decode_eof(buf)? {
                     return Poll::Ready(Some(Ok(frame)));

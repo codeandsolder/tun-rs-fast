@@ -115,6 +115,10 @@ fn strip_packet_info_write_len(len: usize) -> io::Result<usize> {
     })
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) struct Tun {
     pub(crate) fd: Fd,
     #[cfg(any(
@@ -129,7 +133,7 @@ pub(crate) struct Tun {
 }
 
 impl Tun {
-    pub(crate) fn new(fd: Fd) -> Self {
+    pub(crate) const fn new(fd: Fd) -> Self {
         Self {
             fd,
             #[cfg(any(

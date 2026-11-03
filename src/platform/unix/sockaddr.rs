@@ -186,29 +186,30 @@ impl<T: Into<std::net::IpAddr>> From<(T, u16)> for sockaddr_union {
 }
 
 #[test]
-fn test_conversion() {
+fn test_conversion() -> std::io::Result<()> {
     let old = std::net::SocketAddr::new([127, 0, 0, 1].into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
     // SAFETY: `addr` was initialized by `rs_addr_to_sockaddr` as an IPv4 sockaddr.
     unsafe {
-        if cfg!(target_endian = "big") {
-            assert_eq!(0x7f000001, addr.addr4.sin_addr.s_addr);
+        #[cfg(target_endian = "big")]
+        {
+            assert_eq!(0x7f00_0001, addr.addr4.sin_addr.s_addr);
             assert_eq!(0x0208, addr.addr4.sin_port);
-        } else if cfg!(target_endian = "little") {
-            assert_eq!(0x0100007f, addr.addr4.sin_addr.s_addr);
+        }
+        #[cfg(target_endian = "little")]
+        {
+            assert_eq!(0x0100_007f, addr.addr4.sin_addr.s_addr);
             assert_eq!(0x0802, addr.addr4.sin_port);
-        } else {
-            unreachable!();
         }
     };
     // SAFETY: `addr` was initialized by `rs_addr_to_sockaddr`; its family selects the active member.
-    let ip = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+    let ip = unsafe { sockaddr_to_rs_addr(&addr) }.ok_or(std::io::ErrorKind::InvalidData)?;
     assert_eq!(ip, old);
 
     let old = std::net::SocketAddr::new(std::net::Ipv6Addr::LOCALHOST.into(), 0x0208);
     let addr = rs_addr_to_sockaddr(old);
     // SAFETY: `addr` was initialized by `rs_addr_to_sockaddr`; its family selects the active member.
-    let ip = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+    let ip = unsafe { sockaddr_to_rs_addr(&addr) }.ok_or(std::io::ErrorKind::InvalidData)?;
     assert_eq!(ip, old);
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
@@ -220,13 +221,14 @@ fn test_conversion() {
         // SAFETY: `addr` provides complete writable union storage for `size` bytes.
         unsafe { ipaddr_to_sockaddr(old, 0x0208, (&raw mut addr).cast(), size) };
         // SAFETY: `ipaddr_to_sockaddr` initialized the sockaddr member selected by its family.
-        let ip = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+        let ip = unsafe { sockaddr_to_rs_addr(&addr) }.ok_or(std::io::ErrorKind::InvalidData)?;
         assert_eq!(ip, std::net::SocketAddr::new(old, 0x0208));
     }
+    Ok(())
 }
 
 #[test]
-fn ipv6_conversion_preserves_flowinfo_and_scope_id() {
+fn ipv6_conversion_preserves_flowinfo_and_scope_id() -> std::io::Result<()> {
     let old = std::net::SocketAddr::V6(std::net::SocketAddrV6::new(
         std::net::Ipv6Addr::LOCALHOST,
         0x0208,
@@ -235,13 +237,14 @@ fn ipv6_conversion_preserves_flowinfo_and_scope_id() {
     ));
     let addr = rs_addr_to_sockaddr(old);
     // SAFETY: `addr` was initialized by `rs_addr_to_sockaddr`; its family selects the active member.
-    let actual = unsafe { sockaddr_to_rs_addr(&addr).unwrap() };
+    let actual = unsafe { sockaddr_to_rs_addr(&addr) }.ok_or(std::io::ErrorKind::InvalidData)?;
     assert_eq!(actual, old);
+    Ok(())
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 #[test]
-fn ipaddr_to_sockaddr_writes_through_complete_ifreq_union_storage() {
+fn ipaddr_to_sockaddr_writes_through_complete_ifreq_union_storage() -> std::io::Result<()> {
     let old = std::net::IpAddr::V4([10, 26, 1, 100].into());
     // SAFETY: zero is a valid bit pattern for this libc ioctl union storage.
     let mut ifru: libc::__c_anonymous_ifr_ifru = unsafe { std::mem::zeroed() };
@@ -252,8 +255,9 @@ fn ipaddr_to_sockaddr_writes_through_complete_ifreq_union_storage() {
 
     // SAFETY: the preceding write initialized the leading sockaddr member of the ioctl union.
     let raw = unsafe { ifru.ifru_addr };
-    let actual = sockaddr_v4_to_rs_addr(&raw).unwrap();
+    let actual = sockaddr_v4_to_rs_addr(&raw).ok_or(std::io::ErrorKind::InvalidData)?;
     assert_eq!(actual, std::net::SocketAddr::new(old, 0x0208));
+    Ok(())
 }
 
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]

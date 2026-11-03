@@ -23,13 +23,15 @@ fn main() -> Result<(), std::io::Error> {
     let (tx, rx) = std::sync::mpsc::channel();
 
     let handle = ctrlc2::set_handler(move || {
-        tx.send(()).expect("Signal error.");
+        let _ = tx.send(());
         true
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(std::io::Error::other)?;
 
-    main_entry(rx)?;
-    handle.join().unwrap();
+    main_entry(&rx)?;
+    handle
+        .join()
+        .map_err(|_| std::io::Error::other("Ctrl-C handler thread panicked"))?;
     Ok(())
 }
 #[cfg(any(
@@ -38,7 +40,7 @@ fn main() -> Result<(), std::io::Error> {
     target_os = "android",
     all(target_os = "linux", target_env = "ohos")
 ))]
-fn main_entry(_quit: Receiver<()>) -> Result<(), std::io::Error> {
+fn main_entry(_quit: &Receiver<()>) -> Result<(), std::io::Error> {
     unimplemented!()
 }
 #[cfg(any(
@@ -49,7 +51,7 @@ fn main_entry(_quit: Receiver<()>) -> Result<(), std::io::Error> {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
-fn main_entry(quit: Receiver<()>) -> Result<(), std::io::Error> {
+fn main_entry(quit: &Receiver<()>) -> Result<(), std::io::Error> {
     let dev = Arc::new(
         DeviceBuilder::new()
             .name("utun66")
