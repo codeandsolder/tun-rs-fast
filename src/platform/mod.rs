@@ -1,4 +1,8 @@
 #[cfg(unix)]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) mod unix;
 
 #[cfg(all(
@@ -20,6 +24,10 @@ pub use unix::InterruptEvent;
 #[cfg(feature = "interruptible")]
 pub use windows::InterruptEvent;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) mod linux;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
 pub use self::linux::*;
@@ -67,6 +75,10 @@ use std::ops::Deref;
     target_os = "netbsd",
     target_os = "windows",
 ))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) fn read_operation_lock(
     lock: &std::sync::RwLock<()>,
 ) -> std::sync::RwLockReadGuard<'_, ()> {
@@ -84,6 +96,10 @@ pub(crate) fn read_operation_lock(
     target_os = "netbsd",
     target_os = "windows",
 ))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) fn write_operation_lock(
     lock: &std::sync::RwLock<()>,
 ) -> std::sync::RwLockWriteGuard<'_, ()> {
@@ -140,6 +156,10 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawF
         reason = "generic mobile and OHOS backends do not expose Ethernet address helpers"
     )
 )]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) const ETHER_ADDR_LEN: u8 = 6;
 
 #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
@@ -156,13 +176,17 @@ pub(crate) const ETHER_ADDR_LEN: u8 = 6;
         reason = "these backends do not expose address enumeration through the shared getifaddrs helper"
     )
 )]
-pub(crate) fn get_if_addrs_by_name(if_name: String) -> std::io::Result<Vec<Interface>> {
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
+pub(crate) fn get_if_addrs_by_name(if_name: &str) -> std::io::Result<Vec<Interface>> {
     let addrs = getifaddrs::getifaddrs()?;
     let ifs = addrs.filter(|v| v.name == if_name).collect();
     Ok(ifs)
 }
 
-/// A transparent wrapper around DeviceImpl, providing synchronous I/O operations.
+/// A transparent wrapper around `DeviceImpl`, providing synchronous I/O operations.
 ///
 /// # Examples
 ///
@@ -213,7 +237,7 @@ impl SyncDevice {
     /// platform-specific adoption/setup fails.
     #[cfg(unix)]
     pub fn from_fd(fd: OwnedFd) -> std::io::Result<Self> {
-        Ok(SyncDevice(DeviceImpl::from_fd(fd)?))
+        Ok(Self(DeviceImpl::from_fd(fd)?))
     }
 
     /// Returns ownership of this device's Unix file descriptor.
@@ -222,6 +246,7 @@ impl SyncDevice {
         unsafe_code,
         reason = "re-wraps the descriptor returned by an ownership-transferring IntoRawFd implementation"
     )]
+    #[must_use]
     pub fn into_fd(self) -> OwnedFd {
         // SAFETY: DeviceImpl::into_raw_fd transfers ownership of one live descriptor.
         unsafe { OwnedFd::from_raw_fd(self.0.into_raw_fd()) }
@@ -239,7 +264,7 @@ impl SyncDevice {
     )]
     pub(crate) unsafe fn borrow_fd(fd: BorrowedFd<'_>) -> std::io::Result<Self> {
         // SAFETY: caller preserves the BorrowedFd lifetime around the returned device.
-        unsafe { Ok(SyncDevice(DeviceImpl::borrow_fd(fd)?)) }
+        unsafe { Ok(Self(DeviceImpl::borrow_fd(fd)?)) }
     }
     /// Receives data from the device into the provided buffer.
     ///
@@ -260,6 +285,10 @@ impl SyncDevice {
     /// # Note
     /// Blocking the current thread if no packet is available
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying device read fails.
     pub fn recv(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         self.0.recv(buf)
     }
@@ -279,6 +308,10 @@ impl SyncDevice {
     /// tun.send(b"hello").unwrap();
     /// ```
     #[inline]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying device write fails.
     pub fn send(&self, buf: &[u8]) -> std::io::Result<usize> {
         self.0.send(buf)
     }
@@ -675,6 +708,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying vectored device read fails.
     pub fn recv_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> std::io::Result<usize> {
         self.0.recv_vectored(bufs)
     }
@@ -708,6 +745,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying vectored device write fails.
     pub fn send_vectored(&self, bufs: &[IoSlice<'_>]) -> std::io::Result<usize> {
         self.0.send_vectored(bufs)
     }
@@ -736,6 +777,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor flags cannot be queried.
     pub fn is_nonblocking(&self) -> std::io::Result<bool> {
         self.0.is_nonblocking()
     }
@@ -773,6 +818,10 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(unix)]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the descriptor flags cannot be queried or updated.
     pub fn set_nonblocking(&self, nonblocking: bool) -> std::io::Result<()> {
         self.0.set_nonblocking(nonblocking)
     }
@@ -780,7 +829,7 @@ impl SyncDevice {
     /// Creates a new queue for multi-queue TUN/TAP devices on Linux.
     ///
     /// # Prerequisites
-    /// - The `IFF_MULTI_QUEUE` flag must be enabled (via `.multi_queue(true)` in DeviceBuilder).
+    /// - The `IFF_MULTI_QUEUE` flag must be enabled (via `.multi_queue(true)` in `DeviceBuilder`).
     /// - The system must support network interface multi-queue functionality.
     ///
     /// # Description
@@ -825,9 +874,13 @@ impl SyncDevice {
     /// # Ok::<(), std::io::Error>(())
     /// ```
     #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
-    pub fn try_clone(&self) -> std::io::Result<SyncDevice> {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if a new queue cannot be created or configured.
+    pub fn try_clone(&self) -> std::io::Result<Self> {
         let device_impl = self.0.try_clone()?;
-        Ok(SyncDevice(device_impl))
+        Ok(Self(device_impl))
     }
 }
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]

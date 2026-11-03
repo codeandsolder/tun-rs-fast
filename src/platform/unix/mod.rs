@@ -6,6 +6,10 @@ mod sockaddr;
     target_os = "netbsd",
     target_os = "macos"
 ))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) use sockaddr::sockaddr_union;
 
 #[cfg(any(
@@ -22,19 +26,39 @@ pub(crate) use sockaddr::sockaddr_union;
         reason = "only the Linux backend imports this shared sockaddr conversion helper"
     )
 )]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) use sockaddr::ipaddr_to_sockaddr;
 #[cfg(all(target_os = "linux", not(target_env = "ohos")))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) use sockaddr::sockaddr_v4_to_rs_addr;
 
 mod fd;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) use self::fd::Fd;
 #[cfg(feature = "interruptible")]
 mod interrupt;
 #[cfg(feature = "interruptible")]
 pub use interrupt::InterruptEvent;
 mod tun;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) use self::tun::Tun;
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) mod device;
 
 #[cfg(all(

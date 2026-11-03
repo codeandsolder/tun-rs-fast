@@ -36,7 +36,7 @@ impl std::os::unix::io::IntoRawFd for DeviceImpl {
 }
 impl DeviceImpl {
     pub(crate) fn from_fd(fd: OwnedFd) -> io::Result<Self> {
-        DeviceImpl::from_tun(Tun::new(Fd::from_owned(fd)))
+        Self::from_tun(Tun::new(Fd::from_owned(fd)))
     }
     /// # Safety
     /// `DeviceImpl` erases the `BorrowedFd` lifetime. The caller must retain the
@@ -44,7 +44,7 @@ impl DeviceImpl {
     pub(crate) unsafe fn borrow_fd(fd: BorrowedFd<'_>) -> io::Result<Self> {
         // SAFETY: the caller keeps the BorrowedFd lifetime alive around DeviceImpl.
         let tun = unsafe { Fd::new_unchecked_with_borrow(fd.as_raw_fd(), true) };
-        DeviceImpl::from_tun(Tun::new(tun))
+        Self::from_tun(Tun::new(tun))
     }
     pub(crate) fn is_nonblocking(&self) -> io::Result<bool> {
         self.tun.is_nonblocking()
@@ -168,8 +168,12 @@ impl DeviceImpl {
     /// Retrieves the interface index for the network interface.
     ///
     /// This function converts the interface name (obtained via `self.name()`) into a
-    /// C-compatible string (CString) and then calls the libc function `if_nametoindex`
+    /// C-compatible string (`CString`) and then calls the libc function `if_nametoindex`
     /// to retrieve the corresponding interface index.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface name cannot be converted for the C API or the system lookup fails.
     pub fn if_index(&self) -> io::Result<u32> {
         let _guard = crate::platform::read_operation_lock(&self.op_lock);
         self.if_index_impl()
@@ -184,8 +188,12 @@ impl DeviceImpl {
     /// then iterates over the returned list of interface addresses, extracting and collecting
     /// the IP addresses into a vector.
     #[cfg(any(not(target_os = "linux"), feature = "address-management"))]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the interface name or system address enumeration fails.
     pub fn addresses(&self) -> io::Result<Vec<std::net::IpAddr>> {
-        Ok(crate::platform::get_if_addrs_by_name(self.name_impl()?)?
+        Ok(crate::platform::get_if_addrs_by_name(&self.name_impl()?)?
             .iter()
             .filter_map(|v| v.address.ip_addr())
             .collect())
@@ -229,11 +237,19 @@ impl DeviceImpl {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) unsafe fn ctl() -> io::Result<Fd> {
     // SAFETY: libc::socket has no additional Rust-side memory-safety preconditions.
     Fd::new(unsafe { libc::socket(AF_INET, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) })
 }
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) unsafe fn ctl() -> io::Result<Fd> {
     // SAFETY: libc::socket has no additional Rust-side memory-safety preconditions.
     let fd = Fd::new(unsafe { libc::socket(AF_INET, SOCK_DGRAM, 0) })?;
@@ -246,11 +262,19 @@ pub(crate) unsafe fn ctl() -> io::Result<Fd> {
     target_os = "openbsd",
     target_os = "netbsd",
 ))]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) unsafe fn ctl_v6() -> io::Result<Fd> {
     // SAFETY: libc::socket has no additional Rust-side memory-safety preconditions.
     Fd::new(unsafe { libc::socket(AF_INET6, SOCK_DGRAM | libc::SOCK_CLOEXEC, 0) })
 }
 #[cfg(target_os = "macos")]
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) unsafe fn ctl_v6() -> io::Result<Fd> {
     // SAFETY: libc::socket has no additional Rust-side memory-safety preconditions.
     let fd = Fd::new(unsafe { libc::socket(AF_INET6, SOCK_DGRAM, 0) })?;

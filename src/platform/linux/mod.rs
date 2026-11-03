@@ -2,6 +2,10 @@ mod sys;
 
 mod checksum;
 mod device;
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "crate-only visibility is intentional and prevents accidental public API expansion through re-exports"
+)]
 pub(crate) mod offload;
 #[doc(hidden)]
 pub use checksum::{checksum, checksum_no_fold};

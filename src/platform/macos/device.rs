@@ -135,7 +135,7 @@ impl DeviceImpl {
     fn remove_all_address_v4(&self, associate_route: bool) -> io::Result<()> {
         let mut req_v4 = self.request()?;
 
-        if let Ok(addrs) = crate::platform::get_if_addrs_by_name(self.name_impl()?) {
+        if let Ok(addrs) = crate::platform::get_if_addrs_by_name(&self.name_impl()?) {
             for v in addrs {
                 let Some(addr) = v.address.ip_addr() else {
                     continue;
@@ -339,7 +339,7 @@ impl DeviceImpl {
                     if let Err(err) = siocdifaddr(ctl()?.as_raw_fd(), &req_v4) {
                         return Err(io::Error::from(err));
                     }
-                    if let Ok(addrs) = crate::platform::get_if_addrs_by_name(self.name_impl()?) {
+                    if let Ok(addrs) = crate::platform::get_if_addrs_by_name(&self.name_impl()?) {
                         for v in addrs.iter().filter(|v| v.address.ip_addr() == Some(addr)) {
                             let Some(netmask) = v.address.netmask() else {
                                 continue;
