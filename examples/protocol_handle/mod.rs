@@ -26,7 +26,7 @@ fn handle_ipv4_ping(ip_pkt: &Ipv4Packet) -> Option<Vec<u8>> {
     );
 
     let mut icmp_payload = ip_pkt.payload().to_owned();
-    let mut mutable_icmp_pkt = MutableIcmpPacket::new(&mut icmp_payload).unwrap();
+    let mut mutable_icmp_pkt = MutableIcmpPacket::new(&mut icmp_payload)?;
     mutable_icmp_pkt.set_icmp_type(IcmpTypes::EchoReply);
     mutable_icmp_pkt.set_checksum(pnet_packet::icmp::checksum(
         &mutable_icmp_pkt.to_immutable(),
@@ -34,7 +34,7 @@ fn handle_ipv4_ping(ip_pkt: &Ipv4Packet) -> Option<Vec<u8>> {
 
     let total_len = ip_pkt.get_total_length() as usize;
     let mut response_buf = vec![0u8; total_len];
-    let mut res_ipv4_pkt = MutableIpv4Packet::new(&mut response_buf).unwrap();
+    let mut res_ipv4_pkt = MutableIpv4Packet::new(&mut response_buf)?;
 
     res_ipv4_pkt.set_version(4);
     res_ipv4_pkt.set_header_length(ip_pkt.get_header_length());
@@ -67,7 +67,7 @@ fn handle_ipv6_ping(ip_pkt: &Ipv6Packet) -> Option<Vec<u8>> {
     );
 
     let mut icmp_payload = ip_pkt.payload().to_owned();
-    let mut mutable_icmpv6_pkt = MutableIcmpv6Packet::new(&mut icmp_payload).unwrap();
+    let mut mutable_icmpv6_pkt = MutableIcmpv6Packet::new(&mut icmp_payload)?;
     mutable_icmpv6_pkt.set_icmpv6_type(Icmpv6Types::EchoReply);
 
     let checksum = pnet_packet::icmpv6::checksum(
@@ -79,12 +79,12 @@ fn handle_ipv6_ping(ip_pkt: &Ipv6Packet) -> Option<Vec<u8>> {
 
     let total_len = 40 + icmp_payload.len();
     let mut response_buf = vec![0u8; total_len];
-    let mut res_ipv6_pkt = MutableIpv6Packet::new(&mut response_buf).unwrap();
+    let mut res_ipv6_pkt = MutableIpv6Packet::new(&mut response_buf)?;
 
     res_ipv6_pkt.set_version(6);
     res_ipv6_pkt.set_traffic_class(0);
     res_ipv6_pkt.set_flow_label(0);
-    res_ipv6_pkt.set_payload_length(icmp_payload.len() as u16);
+    res_ipv6_pkt.set_payload_length(u16::try_from(icmp_payload.len()).ok()?);
     res_ipv6_pkt.set_next_header(IpNextHeaderProtocols::Icmpv6);
     res_ipv6_pkt.set_hop_limit(64);
     res_ipv6_pkt.set_source(ip_pkt.get_destination());

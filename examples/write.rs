@@ -15,13 +15,15 @@ fn main() -> std::io::Result<()> {
     let (tx, rx) = std::sync::mpsc::channel();
 
     let handle = ctrlc2::set_handler(move || {
-        tx.send(()).expect("Signal error.");
+        let _ = tx.send(());
         true
     })
-    .expect("Error setting Ctrl-C handler");
+    .map_err(std::io::Error::other)?;
 
-    main_entry(rx)?;
-    handle.join().unwrap();
+    main_entry(&rx)?;
+    handle
+        .join()
+        .map_err(|_| std::io::Error::other("Ctrl-C handler thread panicked"))?;
     Ok(())
 }
 #[cfg(any(
@@ -31,7 +33,7 @@ fn main() -> std::io::Result<()> {
     target_os = "netbsd",
     all(target_os = "linux", target_env = "ohos")
 ))]
-fn main_entry(_quit: Receiver<()>) -> std::io::Result<()> {
+fn main_entry(_quit: &Receiver<()>) -> std::io::Result<()> {
     unimplemented!()
 }
 #[cfg(any(
@@ -41,7 +43,7 @@ fn main_entry(_quit: Receiver<()>) -> std::io::Result<()> {
     target_os = "freebsd",
     target_os = "openbsd",
 ))]
-fn main_entry(quit: Receiver<()>) -> std::io::Result<()> {
+fn main_entry(quit: &Receiver<()>) -> std::io::Result<()> {
     let dev = Arc::new(
         DeviceBuilder::new()
             .ipv4(Ipv4Addr::new(10, 0, 0, 9), 24, None)
@@ -59,10 +61,10 @@ fn main_entry(quit: Receiver<()>) -> std::io::Result<()> {
             println!("amount == {amount:?}");
             let amount = amount?;
             let pkt = &buf[0..amount];
-            handle_pkt(pkt, &dev).unwrap();
+            handle_pkt(pkt, &dev)?;
         }
     });
-    quit.recv().expect("Quit error.");
+    quit.recv().map_err(std::io::Error::other)?;
     Ok(())
 }
 

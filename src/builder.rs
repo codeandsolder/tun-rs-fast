@@ -1278,7 +1278,11 @@ impl DeviceBuilder {
         self.enabled = None;
         self
     }
-    pub(crate) const fn build_config(&mut self) -> DeviceConfig {
+    #[expect(
+        clippy::missing_const_for_fn,
+        reason = "build_config constructs heap-backed platform configuration and is not const-compatible on Rust 1.99"
+    )]
+    pub(crate) fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
             dev_name: self.dev_name.take(),
             #[cfg(windows)]

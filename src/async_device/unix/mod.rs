@@ -287,7 +287,7 @@ impl AsyncDevice {
                 )))?
             }
             let hdr = VirtioNetHdr::decode(&original_buffer[..VIRTIO_NET_HDR_LEN])?;
-            tun.handle_virtio_read(
+            DeviceImpl::handle_virtio_read(
                 hdr,
                 &mut original_buffer[VIRTIO_NET_HDR_LEN..len],
                 bufs,
@@ -336,7 +336,7 @@ impl AsyncDevice {
                 )));
             }
             let hdr = VirtioNetHdr::decode(&original_buffer[..VIRTIO_NET_HDR_LEN])?;
-            tun.handle_virtio_read(
+            DeviceImpl::handle_virtio_read(
                 hdr,
                 &mut original_buffer[VIRTIO_NET_HDR_LEN..len],
                 bufs,

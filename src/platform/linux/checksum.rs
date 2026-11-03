@@ -290,7 +290,7 @@ mod tests {
                 // Calculate the expected value using the scalar benchmark function
                 let expected = checksum_no_fold_scalar(&data, initial);
                 if is_x86_feature_detected!("avx2") {
-                    // Calculate the actual value using the AVX2 function
+                    // SAFETY: the runtime feature check above proves AVX2 is available on this CPU.
                     let actual = unsafe { checksum_no_fold_avx2(&data, initial) };
 
                     // Assert that the results are equal
@@ -301,6 +301,7 @@ mod tests {
                     );
                 }
                 if is_x86_feature_detected!("sse4.1") {
+                    // SAFETY: the runtime feature check above proves SSE4.1 is available on this CPU.
                     let actual = unsafe { checksum_no_fold_sse41(&data, initial) };
 
                     // Assert that the results are equal

@@ -282,41 +282,52 @@ mod tests {
     }
 
     #[test]
-    fn should_drop_cleanup_matches_ownership() {
-        let owned = unsafe { Fd::new_unchecked(1) };
+    fn should_drop_cleanup_matches_ownership() -> io::Result<()> {
+        let (owned_stream, borrowed_stream) = UnixStream::pair()?;
+        let owned = Fd::from_owned(owned_stream.into());
         assert!(owned.should_drop_cleanup());
 
-        let borrowed = unsafe { Fd::new_unchecked_with_borrow(1, true) };
+        // SAFETY: `borrowed_stream` keeps this live descriptor open for the wrapper lifetime.
+        let borrowed = unsafe { Fd::new_unchecked_with_borrow(borrowed_stream.as_raw_fd(), true) };
         assert!(!borrowed.should_drop_cleanup());
 
+        // SAFETY: `-1` is intentionally used to exercise the invalid-descriptor ownership state only.
         let invalid = unsafe { Fd::new_unchecked_with_borrow(-1, false) };
         assert!(!invalid.should_drop_cleanup());
+        Ok(())
     }
 
     #[test]
-    fn borrowed_fd_drop_leaves_descriptor_open() {
-        let file = File::open("/dev/null").unwrap();
+    fn borrowed_fd_drop_leaves_descriptor_open() -> io::Result<()> {
+        let file = File::open("/dev/null")?;
         let raw_fd = file.as_raw_fd();
 
+        // SAFETY: `raw_fd` is live for the whole wrapper lifetime because `file` remains in scope.
         let fd = unsafe { Fd::new_unchecked_with_borrow(raw_fd, true) };
         drop(fd);
 
+        // SAFETY: `raw_fd` is still owned by `file` and is live here.
         assert!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) } >= 0);
+        Ok(())
     }
 
     #[test]
-    fn owned_fd_drop_closes_descriptor() {
-        let file = File::open("/dev/null").unwrap();
+    fn owned_fd_drop_closes_descriptor() -> io::Result<()> {
+        let file = File::open("/dev/null")?;
+        // SAFETY: `file` owns a live descriptor; `dup` returns an independent descriptor on success.
         let raw_fd = unsafe { libc::dup(file.as_raw_fd()) };
         assert!(raw_fd >= 0);
 
+        // SAFETY: the successful `dup` above returned a live descriptor now exclusively owned by `fd`.
         let fd = unsafe { Fd::new_unchecked(raw_fd) };
         drop(fd);
 
+        // SAFETY: `fcntl(F_GETFD)` accepts any integer descriptor and reports `EBADF` for a closed one.
         assert_eq!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) }, -1);
         assert_eq!(
             std::io::Error::last_os_error().raw_os_error(),
             Some(libc::EBADF)
         );
+        Ok(())
     }
 }

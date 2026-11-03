@@ -100,7 +100,7 @@ loop {
 use crate::platform::linux::checksum::{checksum, pseudo_header_checksum_no_fold};
 use bytes::BytesMut;
 #[cfg(test)]
-use libc::{IPPROTO_TCP, IPPROTO_UDP};
+use libc::IPPROTO_TCP;
 use std::hash::{BuildHasher, Hash};
 use std::io;
 
@@ -2265,7 +2265,7 @@ fn write_gso_segment(
 ///
 /// Returns an error if the virtio header or packet is malformed, arithmetic overflows, or the output buffers lack capacity.
 pub fn gso_split<B: AsRef<[u8]> + AsMut<[u8]>>(
-    input: &mut [u8],
+    input: &[u8],
     hdr: VirtioNetHdr,
     out_bufs: &mut [B],
     sizes: &mut [usize],
@@ -2593,6 +2593,13 @@ impl ExpandBuffer for &mut Vec<u8> {
 mod tests {
     use super::*;
 
+    fn require_error<T>(result: io::Result<T>, message: &'static str) -> io::Result<io::Error> {
+        match result {
+            Err(error) => Ok(error),
+            Ok(_) => Err(io::Error::other(message)),
+        }
+    }
+
     #[derive(Clone, Copy, Eq, Hash, PartialEq)]
     struct CollidingFlowKey(u16);
 
@@ -2608,7 +2615,7 @@ mod tests {
     }
 
     #[test]
-    fn flow_table_resolves_collisions_grows_and_resets() {
+    fn flow_table_resolves_collisions_grows_and_resets() -> io::Result<()> {
         let mut table = GroFlowTable::<
             CollidingFlowKey,
             u16,
@@ -2617,7 +2624,7 @@ mod tests {
         let count = GRO_FLOW_TABLE_SLOTS + 17;
 
         for value in 0..count {
-            let value = u16::try_from(value).unwrap();
+            let value = u16::try_from(value).map_err(io::Error::other)?;
             assert!(table
                 .lookup_or_insert_with(CollidingFlowKey(value), || value)
                 .is_none());
@@ -2625,12 +2632,10 @@ mod tests {
         assert_eq!(table.values().count(), count);
 
         for value in 0..count {
-            let value = u16::try_from(value).unwrap();
+            let value = u16::try_from(value).map_err(io::Error::other)?;
             let items = table
-                .lookup_or_insert_with(CollidingFlowKey(value), || {
-                    panic!("existing key reinserted")
-                })
-                .unwrap();
+                .lookup_or_insert_with(CollidingFlowKey(value), || u16::MAX)
+                .ok_or_else(|| io::Error::other("existing key was unexpectedly reinserted"))?;
             assert_eq!(items, &[value]);
         }
 
@@ -2640,9 +2645,10 @@ mod tests {
             .lookup_or_insert_with(CollidingFlowKey(7), || 7)
             .is_none());
         let items = table
-            .lookup_or_insert_with(CollidingFlowKey(7), || panic!("existing key reinserted"))
-            .unwrap();
+            .lookup_or_insert_with(CollidingFlowKey(7), || u16::MAX)
+            .ok_or_else(|| io::Error::other("existing key was unexpectedly reinserted"))?;
         assert_eq!(items, &[7]);
+        Ok(())
     }
 
     #[test]
@@ -2668,7 +2674,7 @@ mod tests {
     }
 
     #[test]
-    fn flow_table_grows_before_reaching_full_occupancy() {
+    fn flow_table_grows_before_reaching_full_occupancy() -> io::Result<()> {
         type CollisionTable =
             GroFlowTable<CollidingFlowKey, u16, std::hash::BuildHasherDefault<ZeroHasher>>;
 
@@ -2678,7 +2684,7 @@ mod tests {
         let initial_slots = lazy_table.slots.len();
         let load_limit = initial_slots * 3 / 4;
         for value in 0..load_limit {
-            let value = u16::try_from(value).unwrap();
+            let value = u16::try_from(value).map_err(io::Error::other)?;
             assert!(lazy_table
                 .lookup_or_insert_with(CollidingFlowKey(value), || value)
                 .is_none());
@@ -2686,12 +2692,12 @@ mod tests {
         assert_eq!(lazy_table.slots.len(), initial_slots);
 
         let existing = lazy_table
-            .lookup_or_insert_with(CollidingFlowKey(0), || panic!("existing key reinserted"))
-            .unwrap();
+            .lookup_or_insert_with(CollidingFlowKey(0), || u16::MAX)
+            .ok_or_else(|| io::Error::other("existing key was unexpectedly reinserted"))?;
         assert_eq!(existing, &[0]);
         assert_eq!(lazy_table.slots.len(), initial_slots);
 
-        let next = u16::try_from(load_limit).unwrap();
+        let next = u16::try_from(load_limit).map_err(io::Error::other)?;
         assert!(lazy_table
             .lookup_or_insert_with(CollidingFlowKey(next), || next)
             .is_none());
@@ -2699,7 +2705,7 @@ mod tests {
 
         let mut insert_table = make_table();
         for value in 0..load_limit {
-            let value = u16::try_from(value).unwrap();
+            let value = u16::try_from(value).map_err(io::Error::other)?;
             insert_table.insert(CollidingFlowKey(value), value);
         }
         assert_eq!(insert_table.slots.len(), initial_slots);
@@ -2708,16 +2714,17 @@ mod tests {
         assert_eq!(insert_table.slots.len(), initial_slots);
         assert_eq!(
             insert_table
-                .lookup_or_insert_with(CollidingFlowKey(0), || panic!("existing key reinserted"))
-                .unwrap(),
+                .lookup_or_insert_with(CollidingFlowKey(0), || u16::MAX - 1)
+                .ok_or_else(|| io::Error::other("existing key was unexpectedly reinserted"))?,
             &[0, u16::MAX]
         );
 
         insert_table.insert(CollidingFlowKey(next), next);
         assert_eq!(insert_table.slots.len(), initial_slots * 2);
+        Ok(())
     }
 
-    fn make_ipv4_tcp_packet(seq: u32, payload_len: usize) -> Vec<u8> {
+    fn make_ipv4_tcp_packet(seq: u32, payload_len: usize) -> io::Result<Vec<u8>> {
         const IPH_LEN: usize = 20;
         const TCPH_LEN: usize = 20;
 
@@ -2725,11 +2732,15 @@ mod tests {
         let mut pkt = vec![0u8; total_len];
 
         pkt[0] = 0x45;
-        pkt[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        pkt[2..4].copy_from_slice(
+            &u16::try_from(total_len)
+                .map_err(io::Error::other)?
+                .to_be_bytes(),
+        );
         pkt[4..6].copy_from_slice(&0x1234u16.to_be_bytes());
         pkt[6] = 0x40;
         pkt[8] = 64;
-        pkt[9] = IPPROTO_TCP as u8;
+        pkt[9] = TransportProtocol::Tcp.wire_value();
         pkt[12..16].copy_from_slice(&[10, 0, 0, 1]);
         pkt[16..20].copy_from_slice(&[10, 0, 0, 2]);
 
@@ -2741,67 +2752,74 @@ mod tests {
         pkt[IPH_LEN + 13] = TCP_FLAG_ACK;
         pkt[IPH_LEN + 14..IPH_LEN + 16].copy_from_slice(&4096u16.to_be_bytes());
 
-        for (idx, byte) in pkt[IPH_LEN + TCPH_LEN..].iter_mut().enumerate() {
-            *byte = idx as u8;
+        let mut pattern = 0u8;
+        for byte in &mut pkt[IPH_LEN + TCPH_LEN..] {
+            *byte = pattern;
+            pattern = pattern.wrapping_add(1);
         }
 
         let ip_checksum = !checksum(&pkt[..IPH_LEN], 0);
         pkt[10..12].copy_from_slice(&ip_checksum.to_be_bytes());
 
         let pseudo = pseudo_header_checksum_no_fold(
-            IPPROTO_TCP as u8,
+            TransportProtocol::Tcp.wire_value(),
             &pkt[12..16],
             &pkt[16..20],
-            (TCPH_LEN + payload_len) as u16,
+            u16::try_from(TCPH_LEN + payload_len).map_err(io::Error::other)?,
         );
         let tcp_checksum = !checksum(&pkt[IPH_LEN..], pseudo);
         pkt[IPH_LEN + 16..IPH_LEN + 18].copy_from_slice(&tcp_checksum.to_be_bytes());
 
-        pkt
+        Ok(pkt)
     }
 
     fn make_ipv4_udp_packet_with_declared_len(
         payload_len: usize,
         declared_udp_len: u16,
-    ) -> Vec<u8> {
+    ) -> io::Result<Vec<u8>> {
         const IPH_LEN: usize = 20;
         const UDPH_LEN: usize = 8;
         let total_len = IPH_LEN + UDPH_LEN + payload_len;
         let mut pkt = vec![0u8; total_len];
         pkt[0] = 0x45;
-        pkt[2..4].copy_from_slice(&(total_len as u16).to_be_bytes());
+        pkt[2..4].copy_from_slice(
+            &u16::try_from(total_len)
+                .map_err(io::Error::other)?
+                .to_be_bytes(),
+        );
         pkt[6] = 0x40;
         pkt[8] = 64;
-        pkt[9] = IPPROTO_UDP as u8;
+        pkt[9] = TransportProtocol::Udp.wire_value();
         pkt[12..16].copy_from_slice(&[10, 0, 0, 1]);
         pkt[16..20].copy_from_slice(&[10, 0, 0, 2]);
         pkt[IPH_LEN..IPH_LEN + 2].copy_from_slice(&10000u16.to_be_bytes());
         pkt[IPH_LEN + 2..IPH_LEN + 4].copy_from_slice(&10001u16.to_be_bytes());
         pkt[IPH_LEN + 4..IPH_LEN + 6].copy_from_slice(&declared_udp_len.to_be_bytes());
-        for (index, byte) in pkt[IPH_LEN + UDPH_LEN..].iter_mut().enumerate() {
-            *byte = index as u8;
+        let mut pattern = 0u8;
+        for byte in &mut pkt[IPH_LEN + UDPH_LEN..] {
+            *byte = pattern;
+            pattern = pattern.wrapping_add(1);
         }
         let ip_checksum = !checksum(&pkt[..IPH_LEN], 0);
         pkt[10..12].copy_from_slice(&ip_checksum.to_be_bytes());
         let pseudo = pseudo_header_checksum_no_fold(
-            IPPROTO_UDP as u8,
+            TransportProtocol::Udp.wire_value(),
             &pkt[12..16],
             &pkt[16..20],
-            (UDPH_LEN + payload_len) as u16,
+            u16::try_from(UDPH_LEN + payload_len).map_err(io::Error::other)?,
         );
         let udp_checksum = !checksum(&pkt[IPH_LEN..], pseudo);
         pkt[IPH_LEN + 6..IPH_LEN + 8].copy_from_slice(&udp_checksum.to_be_bytes());
-        pkt
+        Ok(pkt)
     }
 
     #[test]
     fn udp_gro_rejects_mismatched_udp_length() -> io::Result<()> {
         const PAYLOAD_LEN: usize = 32;
-        const ACTUAL_UDP_LEN: u16 = (UDP_H_LEN + PAYLOAD_LEN) as u16;
-        let udp_protocol =
-            u8::try_from(IPPROTO_UDP).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+        const ACTUAL_UDP_LEN: u16 = 40;
+        let udp_protocol = TransportProtocol::Udp.wire_value();
         for declared_udp_len in [ACTUAL_UDP_LEN - 1, ACTUAL_UDP_LEN + 1] {
-            let malformed = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, declared_udp_len);
+            let malformed = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, declared_udp_len)?;
             assert!(checksum_valid(&malformed, 20, udp_protocol, false));
 
             let mut first = Vec::with_capacity(256);
@@ -2819,7 +2837,7 @@ mod tests {
             assert_eq!(bufs[0].len(), original_len);
         }
 
-        let valid = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, ACTUAL_UDP_LEN);
+        let valid = make_ipv4_udp_packet_with_declared_len(PAYLOAD_LEN, ACTUAL_UDP_LEN)?;
         let mut first = Vec::with_capacity(256);
         first.resize(VIRTIO_NET_HDR_LEN, 0);
         first.extend_from_slice(&valid);
@@ -2904,8 +2922,8 @@ mod tests {
         const SECOND_PAYLOAD_LEN: u16 = 32_757;
         const IPV6_HEADER_LEN: usize = 40;
         const TCP_HEADER_LEN: usize = 20;
-        let coalesced_packet_len = IPV6_HEADER_LEN + usize::from(u16::MAX);
         const LARGE_CAPACITY: usize = 65_664;
+        let coalesced_packet_len = IPV6_HEADER_LEN + usize::from(u16::MAX);
 
         assert_eq!(
             TCP_HEADER_LEN + usize::from(FIRST_PAYLOAD_LEN) + usize::from(SECOND_PAYLOAD_LEN),
@@ -2974,11 +2992,11 @@ mod tests {
 
         let mut first = Vec::with_capacity(LARGE_CAPACITY);
         first.resize(VIRTIO_NET_HDR_LEN, 0);
-        first.extend_from_slice(&make_ipv4_tcp_packet(1, PAYLOAD_LEN));
+        first.extend_from_slice(&make_ipv4_tcp_packet(1, PAYLOAD_LEN)?);
 
         let mut second = Vec::with_capacity(LARGE_CAPACITY);
         second.resize(VIRTIO_NET_HDR_LEN, 0);
-        second.extend_from_slice(&make_ipv4_tcp_packet(33_001, PAYLOAD_LEN));
+        second.extend_from_slice(&make_ipv4_tcp_packet(33_001, PAYLOAD_LEN)?);
 
         let mut bufs = vec![first, second];
         let mut table = GROTable::new();
@@ -2992,46 +3010,61 @@ mod tests {
 
     #[test]
     fn checksum_valid_rejects_truncated_headers_without_panic() {
-        assert!(!checksum_valid(&[0; 19], 20, IPPROTO_TCP as u8, false));
-        assert!(!checksum_valid(&[0; 39], 40, IPPROTO_TCP as u8, true));
+        assert!(!checksum_valid(
+            &[0; 19],
+            20,
+            TransportProtocol::Tcp.wire_value(),
+            false
+        ));
+        assert!(!checksum_valid(
+            &[0; 39],
+            40,
+            TransportProtocol::Tcp.wire_value(),
+            true
+        ));
     }
 
     #[test]
     fn checksum_valid_rejects_oversized_packets() {
         let pkt = vec![0u8; usize::from(u16::MAX) + 1];
-        assert!(!checksum_valid(&pkt, 20, IPPROTO_TCP as u8, false));
+        assert!(!checksum_valid(
+            &pkt,
+            20,
+            TransportProtocol::Tcp.wire_value(),
+            false
+        ));
     }
 
     #[test]
-    fn handle_gro_rejects_invalid_offset() {
+    fn handle_gro_rejects_invalid_offset() -> io::Result<()> {
         let mut table = GROTable::new();
         let mut bufs = vec![vec![0u8; VIRTIO_NET_HDR_LEN]];
-        let err = table
-            .apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false)
-            .unwrap_err();
-
+        let err = require_error(
+            table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false),
+            "invalid GRO offset unexpectedly accepted",
+        )?;
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        Ok(())
     }
 
     #[test]
-    fn handle_gro_ignores_truncated_tcp_header_without_panic() {
+    fn handle_gro_ignores_truncated_tcp_header_without_panic() -> io::Result<()> {
         let mut table = GROTable::new();
         let mut buf = vec![0u8; VIRTIO_NET_HDR_LEN];
         let mut pkt = vec![0u8; 60];
         pkt[0] = 0x4f;
         pkt[2..4].copy_from_slice(&60u16.to_be_bytes());
-        pkt[9] = IPPROTO_TCP as u8;
+        pkt[9] = TransportProtocol::Tcp.wire_value();
         buf.extend_from_slice(&pkt);
         let mut bufs = vec![buf];
 
-        table
-            .apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false)
-            .unwrap();
+        table.apply_gro(&mut bufs, VIRTIO_NET_HDR_LEN, false)?;
+        Ok(())
     }
 
     #[test]
-    fn gso_split_rejects_zero_gso_size() {
-        let mut input = make_ipv4_tcp_packet(1, 128);
+    fn gso_split_rejects_zero_gso_size() -> io::Result<()> {
+        let input = make_ipv4_tcp_packet(1, 128)?;
         let hdr = VirtioNetHdr {
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
             hdr_len: 40,
@@ -3043,14 +3076,17 @@ mod tests {
         let mut out = vec![vec![0u8; 1500]; 2];
         let mut sizes = vec![0usize; 2];
 
-        let err = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false).unwrap_err();
-
+        let err = require_error(
+            gso_split(&input, hdr, &mut out, &mut sizes, 0, false),
+            "zero GSO size unexpectedly accepted",
+        )?;
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        Ok(())
     }
 
     #[test]
-    fn gso_split_rejects_small_output_buffer() {
-        let mut input = make_ipv4_tcp_packet(1, 512);
+    fn gso_split_rejects_small_output_buffer() -> io::Result<()> {
+        let input = make_ipv4_tcp_packet(1, 512)?;
         let hdr = VirtioNetHdr {
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
             hdr_len: 40,
@@ -3062,14 +3098,17 @@ mod tests {
         let mut out = vec![vec![0u8; 64]; 4];
         let mut sizes = vec![0usize; 4];
 
-        let err = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false).unwrap_err();
-
+        let err = require_error(
+            gso_split(&input, hdr, &mut out, &mut sizes, 0, false),
+            "undersized GSO output buffer unexpectedly accepted",
+        )?;
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        Ok(())
     }
 
     #[test]
-    fn gso_split_ignores_unused_output_buffers() {
-        let mut input = make_ipv4_tcp_packet(1, 512);
+    fn gso_split_ignores_unused_output_buffers() -> io::Result<()> {
+        let input = make_ipv4_tcp_packet(1, 512)?;
         let hdr = VirtioNetHdr {
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
             hdr_len: 40,
@@ -3081,10 +3120,11 @@ mod tests {
         let mut out = vec![vec![0u8; 296], vec![0u8; 296], vec![]];
         let mut sizes = vec![0usize; 3];
 
-        let count = gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false).unwrap();
+        let count = gso_split(&input, hdr, &mut out, &mut sizes, 0, false)?;
 
         assert_eq!(count, 2);
         assert_eq!(&sizes[..count], &[296, 296]);
+        Ok(())
     }
 }
 
@@ -3130,7 +3170,7 @@ mod gso_type_contract_tests {
         input[0] = 0x45; // IPv4, 20-byte header
         let total_len = u16::try_from(input.len()).map_err(io::Error::other)?;
         input[2..4].copy_from_slice(&total_len.to_be_bytes());
-        input[9] = libc::IPPROTO_TCP as u8;
+        input[9] = TransportProtocol::Tcp.wire_value();
         input[12..16].copy_from_slice(&[192, 0, 2, 1]);
         input[16..20].copy_from_slice(&[198, 51, 100, 2]);
         input[20..22].copy_from_slice(&1234u16.to_be_bytes());
@@ -3141,7 +3181,7 @@ mod gso_type_contract_tests {
 
         let hdr = super::VirtioNetHdr {
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4 | VIRTIO_NET_HDR_GSO_ECN,
-            hdr_len: HEADER_LEN as u16,
+            hdr_len: u16::try_from(HEADER_LEN).map_err(io::Error::other)?,
             gso_size: 4,
             csum_start: 20,
             csum_offset: 16,
@@ -3150,7 +3190,7 @@ mod gso_type_contract_tests {
         let mut out = vec![vec![0u8; HEADER_LEN + 4]; 2];
         let mut sizes = vec![0usize; 2];
 
-        let count = super::gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)?;
+        let count = super::gso_split(&input, hdr, &mut out, &mut sizes, 0, false)?;
         assert_eq!(count, 2);
         assert_eq!(&sizes[..count], &[HEADER_LEN + 4, HEADER_LEN + 4]);
 
@@ -3167,21 +3207,23 @@ mod gso_type_contract_tests {
     }
 
     #[test]
-    fn rejects_invalid_gso_type_combinations() {
+    fn rejects_invalid_gso_type_combinations() -> io::Result<()> {
         for (gso_type, is_v6) in [
             (VIRTIO_NET_HDR_GSO_TCPV4, true),
             (VIRTIO_NET_HDR_GSO_TCPV6, false),
             (VIRTIO_NET_HDR_GSO_UDP_L4 | VIRTIO_NET_HDR_GSO_ECN, false),
             (0xff, false),
         ] {
-            let err = gso_transport_protocol(gso_type, is_v6)
-                .expect_err("invalid GSO type unexpectedly accepted");
+            let Err(err) = gso_transport_protocol(gso_type, is_v6) else {
+                return Err(io::Error::other("invalid GSO type unexpectedly accepted"));
+            };
             assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         }
+        Ok(())
     }
 
     #[test]
-    fn gso_split_rejects_checksum_field_outside_header_without_mutating_input() {
+    fn gso_split_rejects_checksum_field_outside_header_without_mutating_input() -> io::Result<()> {
         let mut input = vec![0u8; 60];
         input[0] = 0x45;
         input[10] = 0x12;
@@ -3198,21 +3240,25 @@ mod gso_type_contract_tests {
         let mut out = vec![vec![0u8; 60]; 5];
         let mut sizes = vec![0usize; 5];
 
-        let err = super::gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)
-            .expect_err("checksum field outside hdr_len unexpectedly accepted");
+        let Err(err) = super::gso_split(&input, hdr, &mut out, &mut sizes, 0, false) else {
+            return Err(io::Error::other(
+                "checksum field outside hdr_len unexpectedly accepted",
+            ));
+        };
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(input, original);
+        Ok(())
     }
 
     #[test]
-    fn gso_split_rejects_segment_lengths_that_do_not_fit_wire_fields() {
+    fn gso_split_rejects_segment_lengths_that_do_not_fit_wire_fields() -> io::Result<()> {
         const HEADER_LEN: usize = 40;
         let mut input = vec![0u8; HEADER_LEN + usize::from(u16::MAX)];
         input[0] = 0x45;
         let original = input.clone();
         let hdr = super::VirtioNetHdr {
             gso_type: VIRTIO_NET_HDR_GSO_TCPV4,
-            hdr_len: HEADER_LEN as u16,
+            hdr_len: u16::try_from(HEADER_LEN).map_err(io::Error::other)?,
             gso_size: u16::MAX,
             csum_start: 20,
             csum_offset: 16,
@@ -3221,9 +3267,11 @@ mod gso_type_contract_tests {
         let mut out = vec![vec![0u8; input.len()]];
         let mut sizes = vec![0usize; 1];
 
-        let err = super::gso_split(&mut input, hdr, &mut out, &mut sizes, 0, false)
-            .expect_err("oversized segment unexpectedly accepted");
+        let Err(err) = super::gso_split(&input, hdr, &mut out, &mut sizes, 0, false) else {
+            return Err(io::Error::other("oversized segment unexpectedly accepted"));
+        };
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
         assert_eq!(input, original);
+        Ok(())
     }
 }
