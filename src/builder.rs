@@ -1278,9 +1278,12 @@ impl DeviceBuilder {
         self.enabled = None;
         self
     }
-    #[expect(
-        clippy::missing_const_for_fn,
-        reason = "build_config constructs heap-backed platform configuration and is not const-compatible on Rust 1.99"
+    #[cfg_attr(
+        not(windows),
+        expect(
+            clippy::missing_const_for_fn,
+            reason = "keep one non-const cross-platform helper signature because the Windows configuration path uses non-const MAC formatting on Rust 1.99"
+        )
     )]
     pub(crate) fn build_config(&mut self) -> DeviceConfig {
         DeviceConfig {
